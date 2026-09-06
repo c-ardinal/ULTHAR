@@ -629,7 +629,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             settings = None
             ok = False
         if settings is not None:
-            reg_problems = _check_dispatcher_registration(settings, cfg, deploy_dir)
+            reg_problems = _registration_problems(settings, cfg, deploy_dir)
             for p in reg_problems:
                 print(f"SETTINGS: {p}")
             ok = ok and not reg_problems
@@ -788,6 +788,66 @@ def _check_dispatcher_registration(settings: dict, cfg: dict, deploy_dir: Path) 
     return problems
 
 
+def _check_extra_dispatcher_registrations(settings: dict, cfg: dict, deploy_dir: Path) -> list[str]:
+    """The reverse half of `_check_dispatcher_registration` (F-5 symmetry): a
+    settings.json event that runs THIS deployment's dispatch.py but that
+    `config.dispatch.events` does not declare is a dead route the owner must
+    be told about explicitly, not left to look like a clean --verify. This is
+    exactly the shape a hand-removed route (config.json edited, matching
+    settings.json entry left behind) or a hand-added-too-early one produces.
+
+    Only entries whose command matches the exact `cmd_register_settings`
+    shape AND whose dispatch.py path resolves to THIS deploy_dir's
+    dispatch.py count -- a foreign hook under the same event name, or one
+    routed to some OTHER deployment's dispatch.py, is not ULTHAR's to report
+    here (mirrors DISPATCH_TOKENS matching in the forward check, but this
+    check must not flag someone else's tooling just because it shares an
+    event name ULTHAR does not use). A dispatch.ps1 registration is NEVER
+    flagged here, even unrouted: there is no deployed dispatch.ps1 path to
+    resolve it against (dispatch.ps1 is not on COPY_TABLE), so a legacy
+    pre-cutover entry left in its original ps1 form is invisible to this
+    specific check -- `cmd_register_settings`'s own LEGACY EVENT detection
+    (broader: ps1 or py) is what surfaces that case instead.
+
+    Skips entirely when `dispatch.events` is empty: the forward check already
+    fails loudly and immediately in that case (`cfg['dispatch']['events'] is
+    empty`), and every settings.json event would then be "not routed" by
+    definition -- listing every one of them on top of that early failure is
+    noise, not a second finding."""
+    expected_events = set(cfg.get("dispatch", {}).get("events", {}).keys())
+    if not expected_events:
+        return []
+    dispatch_py = deploy_dir / "dispatch.py"
+    problems: list[str] = []
+    for event, rules in settings.get("hooks", {}).items():
+        if event in expected_events:
+            continue
+        for rule in rules if isinstance(rules, list) else []:
+            for h in rule.get("hooks", []) if isinstance(rule, dict) else []:
+                if not isinstance(h, dict):
+                    continue
+                m = _REGISTERED_CMD_RE.match(str(h.get("command", "")))
+                if m and Path(m.group(2)) == dispatch_py:
+                    problems.append(f"{event} is registered in settings.json but "
+                                     f"config.dispatch.events does not route it")
+                    break
+            else:
+                continue
+            break
+    return problems
+
+
+def _registration_problems(settings: dict, cfg: dict, deploy_dir: Path) -> list[str]:
+    """The complete `SETTINGS:` verdict --verify reports: forward
+    (`_check_dispatcher_registration`) then reverse
+    (`_check_extra_dispatcher_registrations`). The ONE shared call point, so
+    `cmd_register_settings`'s post-write self-verification -- which claims to
+    "re-run the SAME strict check --verify uses" -- actually does, instead of
+    silently checking only the forward half."""
+    return (_check_dispatcher_registration(settings, cfg, deploy_dir)
+            + _check_extra_dispatcher_registrations(settings, cfg, deploy_dir))
+
+
 def _unique_backup_path(settings_path: Path) -> Path:
     """A `.bak-<timestamp>` scheme alone can collide and overwrite an earlier
     backup within the same second. Appends a numeric suffix (`-1`, `-2`, ...)
@@ -815,17 +875,27 @@ def cmd_register_settings(args: argparse.Namespace) -> int:
     an explicit, unmissable acknowledgement gate.
 
     LEGACY EVENTS. The pre-cutover settings.json this helper exists to migrate
-    has FOUR dispatch.ps1 registrations -- PreToolUse, Stop, SessionStart and a
-    PostCompact one that PE-20 removed from `dispatch.events` but deliberately
-    LEFT in settings.json (an owner-gated file; deleting the now-dead entry is a
-    separate proposal for the owner, not this helper's call). So the count check
-    is per-EXPECTED-EVENT, not a total: every event in `dispatch.events` must be
-    rewritten exactly once, and any FURTHER dispatch.ps1 registration is
-    rewritten too and reported. It is rewritten rather than dropped because
-    dispatch.py resolves an event with no config route to zero rules and allows
-    with empty stdout -- a harmless no-op -- whereas deleting it would edit an
-    owner-gated file beyond what was asked. A total-equality check refused
-    exactly the legacy state this helper was written for.
+    can carry a registration for an event `dispatch.events` does NOT route --
+    e.g. a PostCompact one PE-20 removed from the routing table but
+    deliberately LEFT in settings.json (an owner-gated file; deleting the
+    now-dead entry is a separate proposal for the owner, not this helper's
+    call). This is NEVER rewritten, in either direction (ps1 or already-py):
+    an unrouted event's registration is not this helper's to touch, and
+    rewriting a ps1 one into dispatch.py form used to produce an unrouted
+    dispatch.py registration -- exactly what --verify's reverse check reports
+    as F-5 drift for the py form (though NOT for a ps1 one left as ps1 --
+    the reverse check only ever resolves a py registration against THIS
+    deploy_dir's dispatch.py; see `_check_extra_dispatcher_registrations`'s
+    docstring), so a "successful" migration used to silently hand back a
+    state --verify could immediately fail. Left alone and reported instead:
+    printed as `LEGACY EVENT: <event> is registered in settings.json but
+    config.dispatch.events does not route it; ULTHAR will never run it.
+    Remove the entry (this tool does not edit entries it did not write).` --
+    true regardless of form, so it never overclaims what --verify will
+    separately decide -- and the command exits non-zero whenever ANY such
+    unrouted registration is found. The count check for EXPECTED events is
+    still per-event, not a total: every event in `dispatch.events` must be
+    rewritten exactly once.
 
     Transactional and self-verifying: (1) validates the pre-state is exactly
     the expected 'every event .ps1-only' shape before touching anything; (2)
@@ -834,10 +904,13 @@ def cmd_register_settings(args: argparse.Namespace) -> int:
     writes to a temp file beside settings.json and
     `os.replace`s it in (atomic on both platforms, same volume), so an
     interruption mid-write cannot leave settings.json empty; (4) re-reads the
-    written file and re-verifies it with the same strict check --verify
-    uses; (5) on verification failure, automatically restores the backup and
-    reports the failure -- never leaves a half-correct settings.json in
-    place."""
+    written file and re-verifies it with `_registration_problems`, the SAME
+    combined forward+reverse check --verify uses (not the forward half alone);
+    (5) on a genuine write-verification failure, automatically restores the
+    backup and reports the failure -- never leaves a half-correct settings.json
+    in place. A known, already-reported LEGACY EVENT is excluded from that
+    rollback decision: it is the owner's untouched data, not something this
+    write broke, so it earns a non-zero exit but not a discarded rewrite."""
     if not args.confirm_parity_passed:
         print("REFUSING: --register-settings requires --confirm-parity-passed "
               "(I-10: backup -> parity green -> rewrite, in that order).")
@@ -896,9 +969,43 @@ def cmd_register_settings(args: argparse.Namespace) -> int:
     backup_path.write_text(raw_text, encoding="utf-8", newline="\n")
     print(f"Backed up {settings_path} -> {backup_path}")
 
+    # LEGACY detection, BEFORE any rewrite: an event `dispatch.events` does not
+    # route, carrying ANY dispatch registration (ps1 or already-py) at all --
+    # not this helper's to touch in either direction (see docstring). Detected
+    # as ps1 form, or py form pointing at THIS deployment's dispatch.py
+    # (deliberately not the broad DISPATCH_TOKENS match, so other
+    # deployments' dispatch.py are not flagged).
+    legacy_found: list[str] = []
+    for event, rules in hooks_by_event.items():
+        if event in expected_events:
+            continue
+        for rule in rules if isinstance(rules, list) else []:
+            for h in rule.get("hooks", []) if isinstance(rule, dict) else []:
+                if not isinstance(h, dict):
+                    continue
+                cmd = str(h.get("command", ""))
+                # "Ours": either a ps1 registration (I-7's own convention for
+                # that form -- there is no deployed path to compare against)
+                # or a py registration resolving to THIS deploy_dir's
+                # dispatch.py, exactly the reverse check's own criterion. A
+                # foreign hook that merely happens to mention "dispatch.py"
+                # (someone else's tool, someone else's deployment) is neither,
+                # and must not make this command disagree with --verify.
+                m = _REGISTERED_CMD_RE.match(cmd)
+                is_ours = "dispatch.ps1" in cmd or (m is not None and Path(m.group(2)) == dispatch_py)
+                if is_ours:
+                    legacy_found.append(event)
+                    break
+            else:
+                continue
+            break
+    legacy_found = sorted(set(legacy_found))
+
     changed = 0
     changed_by_event: dict[str, int] = {}
     for event, rules in hooks_by_event.items():
+        if event not in expected_events:
+            continue  # LEGACY: never touched, reported separately below
         for rule in rules if isinstance(rules, list) else []:
             for h in rule.get("hooks", []) if isinstance(rule, dict) else []:
                 if not isinstance(h, dict):
@@ -919,22 +1026,23 @@ def cmd_register_settings(args: argparse.Namespace) -> int:
               f"once; got {wrong} -- no write performed, settings.json is UNCHANGED "
               f"(backup at {backup_path} is harmless to keep)")
         return 1
-    legacy = sorted(e for e in changed_by_event if e not in expected_events)
 
     tmp_path = settings_path.with_name(settings_path.name + ".tmp-register")
     new_text = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
     tmp_path.write_text(new_text, encoding="utf-8", newline="\n")
     os.replace(tmp_path, settings_path)  # atomic rename-over, same volume
     print(f"Rewrote {changed} dispatch.ps1 -> dispatch.py registration(s) in {settings_path}")
-    for event in legacy:
-        print(f"LEGACY EVENT: {event} is registered in settings.json but has no "
-              f"dispatch.events route -- rewritten to dispatch.py, where it resolves "
-              f"to zero rules and allows with no output. Removing the entry is yours "
-              f"to decide; this installer does not delete from settings.json.")
+    for event in legacy_found:
+        print(f"LEGACY EVENT: {event} is registered in settings.json but "
+              f"config.dispatch.events does not route it; ULTHAR will never run it. "
+              f"Remove the entry (this tool does not edit entries it did not write).")
 
     # Post-write self-verification: re-read what actually landed on disk and
-    # re-run the SAME strict check --verify uses. Roll back automatically on
-    # any discrepancy rather than leaving a half-correct file in place.
+    # re-run `_registration_problems`, the SAME combined forward+reverse check
+    # --verify uses. A problem naming a LEGACY event is excluded from the
+    # rollback decision: it is the owner's data this write never touched, so
+    # it earns the non-zero exit below, not a discarded rewrite of the
+    # expected events that DID succeed.
     try:
         written = json.loads(settings_path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
@@ -942,13 +1050,20 @@ def cmd_register_settings(args: argparse.Namespace) -> int:
               f"-- rolling back to {backup_path}")
         os.replace(backup_path, settings_path)
         return 1
-    post_problems = _check_dispatcher_registration(written, cfg, deploy_dir)
+    post_problems = [p for p in _registration_problems(written, cfg, deploy_dir)
+                      if not any(p.startswith(f"{event} ") for event in legacy_found)]
     if post_problems:
         print("VERIFICATION FAILED: rewritten settings.json does not pass the same "
               f"check --verify uses -- rolling back to {backup_path}:")
         for p in post_problems:
             print(f"  - {p}")
         os.replace(backup_path, settings_path)
+        return 1
+    if legacy_found:
+        print(f"REGISTRATION INCOMPLETE: {len(legacy_found)} legacy event(s) remain "
+              f"unrouted (see LEGACY EVENT above) -- the expected events WERE rewritten; "
+              f"only the legacy entries were left alone -- exiting non-zero so this is "
+              f"never reported as a clean cutover.")
         return 1
     print("VERIFIED: rewritten settings.json passes the full dispatcher-registration check.")
     return 0

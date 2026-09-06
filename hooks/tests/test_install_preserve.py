@@ -275,10 +275,14 @@ def test_register_settings_migrates_the_legacy_four_event_state(p: Probe) -> Non
     could not handle the only state it was written for, and its own regression
     fabricated the post-migration three-event shape instead.
 
-    The extra registration is REWRITTEN, not deleted: dispatch.py resolves an
-    event with no config route to zero rules and allows with no output, so the
-    entry becomes a harmless no-op, whereas deleting it would edit an owner-gated
-    file beyond what was asked. It is reported so it is not invisible."""
+    Send-back (round 2, MEDIUM): the extra registration used to be REWRITTEN to
+    dispatch.py form too, called "a harmless no-op", and the command exited 0
+    VERIFIED -- but an unrouted dispatch.py registration is exactly what
+    --verify's reverse check now fails on, so a "successful" migration handed
+    back a state --verify immediately failed. Now it is left COMPLETELY
+    untouched (still dispatch.ps1, byte-identical), reported via `LEGACY
+    EVENT:`, and the command itself exits non-zero -- the same verdict --verify
+    reaches on this exact state."""
     import subprocess
 
     root = Path(tempfile.mkdtemp(prefix="ulthar-install-legacy-"))
@@ -312,28 +316,397 @@ def test_register_settings_migrates_the_legacy_four_event_state(p: Probe) -> Non
             cfg = json.load(fh)
         expected_events = sorted(cfg.get("dispatch", {}).get("events", {}).keys())
         legacy_events = expected_events + ["PostCompact"]
+        original_postcompact_cmd = f'powershell -File "dispatch.ps1" -Event PostCompact'
 
         settings_path = root / "settings.json"
         settings_path.write_text(json.dumps({"hooks": {
             ev: [{"matcher": "*", "hooks": [
-                {"type": "command", "command": f'powershell -File "dispatch.ps1" -Event {ev}'}
+                {"type": "command", "command": (
+                    original_postcompact_cmd if ev == "PostCompact"
+                    else f'powershell -File "dispatch.ps1" -Event {ev}')}
             ]}] for ev in legacy_events
         }}), encoding="utf-8")
 
         rc, out = run(["--register-settings", "--confirm-parity-passed",
                        "--settings-path", str(settings_path), "--deploy-dir", str(deploy_dir)])
-        p.check("legacy migration: the four-event pre-cutover state is ACCEPTED",
-                rc == 0 and "VERIFIED" in out, out)
+        p.check("legacy migration: the four-event pre-cutover state exits NON-ZERO "
+                "(a leftover legacy event is never a clean cutover)",
+                rc != 0, out)
         p.check("legacy migration: the extra registration is reported, not silent",
-                "LEGACY EVENT: PostCompact" in out, out)
+                "LEGACY EVENT: PostCompact is registered in settings.json but "
+                "config.dispatch.events does not route it; ULTHAR will never run it. "
+                "Remove the entry (this tool does not edit entries it did not write)."
+                in out, out)
 
         written = json.loads(settings_path.read_text(encoding="utf-8"))
         cmds = {ev: written["hooks"][ev][0]["hooks"][0]["command"] for ev in legacy_events}
-        p.check("legacy migration: every event is now a dispatch.py registration",
-                all("dispatch.py" in c and "dispatch.ps1" not in c for c in cmds.values()),
+        p.check("legacy migration: every EXPECTED event is now a dispatch.py registration",
+                all("dispatch.py" in cmds[ev] and "dispatch.ps1" not in cmds[ev]
+                    for ev in expected_events),
                 str(cmds))
-        p.check("legacy migration: PostCompact keeps its own --event argument",
-                cmds["PostCompact"].endswith("--event PostCompact"), cmds["PostCompact"])
+        p.check("legacy migration: PostCompact is left COMPLETELY untouched (byte-identical)",
+                cmds["PostCompact"] == original_postcompact_cmd, cmds["PostCompact"])
+        # NOTE: PostCompact stays dispatch.ps1-form here, which --verify's
+        # reverse check (deliberately, per round-1 scope) never flags -- only
+        # a py registration resolving to THIS deployment's dispatch.py counts.
+        # The LEGACY EVENT message above is worded to be true regardless of
+        # form, so it never claims --verify will independently agree; the
+        # ALREADY-py orphan case where it in fact does agree is covered by
+        # test_register_settings_leaves_a_py_orphan_untouched below.
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_register_settings_leaves_a_py_orphan_untouched(p: Probe) -> None:
+    """Send-back (round 2): pre-state where the three expected events are still
+    dispatch.ps1 (need migrating) but PostCompact is ALREADY a dispatch.py
+    registration pointing at THIS deployment (e.g. a prior manual edit or an
+    older register-settings run, from before a route was removed). This
+    registration was never a candidate for rewriting either before or after
+    the round-2 fix (it does not contain "dispatch.ps1"), so
+    `--register-settings` leaves it byte-identical either way -- what changes
+    is that it is now DETECTED and REPORTED, and the command exits non-zero
+    instead of silently claiming VERIFIED.
+
+    Because this orphan already resolves to THIS deployment's dispatch.py,
+    it is exactly the shape --verify's reverse check flags: running --verify
+    against the resulting settings.json reports the SAME line, and removing
+    the orphaned entry makes --verify (and --register-settings, on a fresh
+    ps1-only settings.json) PASS."""
+    import subprocess
+
+    root = Path(tempfile.mkdtemp(prefix="ulthar-install-py-orphan-"))
+    try:
+        deploy_dir = root / "deploy"
+        home_dir = root / "home"
+        (home_dir / ".claude").mkdir(parents=True)
+
+        def run(args: list[str]) -> tuple[int, str]:
+            env = dict(os.environ)
+            env["USERPROFILE"] = str(home_dir)
+            env["HOME"] = str(home_dir)
+            proc = subprocess.run([sys.executable, str(HOOKS_DIR / "install.py")] + args,
+                                  capture_output=True, timeout=60, env=env)
+            return proc.returncode, (proc.stdout + proc.stderr).decode("utf-8", "replace")
+
+        with redirected_home(root):
+            reason = deploy_skip_reason()
+        if reason:
+            p.skip("register-settings leaves a py orphan untouched", reason)
+            return
+        rc, out = run(["--deploy-dir", str(deploy_dir)])
+        p.check("py orphan: deploy succeeds first (precondition)", rc == 0, out)
+        if rc != 0:
+            return
+
+        with open(install_mod.SKILL_ROOT / "config.json", "r", encoding="utf-8-sig") as fh:
+            cfg = json.load(fh)
+        expected_events = sorted(cfg.get("dispatch", {}).get("events", {}).keys())
+        dispatch_py = deploy_dir / "dispatch.py"
+        orphan_cmd = f'"{sys.executable}" "{dispatch_py}" --event PostCompact'
+
+        # --verify hardcodes <home>/.claude/settings.json (no --settings-path
+        # seam) -- write there so both commands see the SAME file.
+        settings_path = home_dir / ".claude" / "settings.json"
+
+        def write_settings(include_orphan: bool) -> None:
+            hooks = {ev: [{"matcher": "*", "hooks": [
+                {"type": "command", "command": f'powershell -File "dispatch.ps1" -Event {ev}'}
+            ]}] for ev in expected_events}
+            if include_orphan:
+                hooks["PostCompact"] = [{"matcher": "*", "hooks": [
+                    {"type": "command", "command": orphan_cmd}]}]
+            settings_path.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+
+        write_settings(include_orphan=True)
+        rc, out = run(["--register-settings", "--confirm-parity-passed",
+                       "--settings-path", str(settings_path), "--deploy-dir", str(deploy_dir)])
+        p.check("py orphan: --register-settings exits NON-ZERO", rc != 0, out)
+        p.check("py orphan: the LEGACY EVENT line is printed",
+                "LEGACY EVENT: PostCompact is registered in settings.json but "
+                "config.dispatch.events does not route it; ULTHAR will never run it. "
+                "Remove the entry (this tool does not edit entries it did not write)."
+                in out, out)
+
+        written = json.loads(settings_path.read_text(encoding="utf-8"))
+        p.check("py orphan: left byte-identical (never rewritten, never touched)",
+                written["hooks"]["PostCompact"][0]["hooks"][0]["command"] == orphan_cmd,
+                written["hooks"]["PostCompact"])
+        p.check("py orphan: the three expected events are still migrated to dispatch.py",
+                all("dispatch.py" in written["hooks"][ev][0]["hooks"][0]["command"]
+                    for ev in expected_events),
+                str(written["hooks"]))
+
+        # --verify (same settings.json, via the redirected home) reports the
+        # SAME reverse-check line and FAILs -- register-settings' non-zero
+        # exit was not a quieter verdict than --verify's own.
+        rc, out = run(["--verify", "--deploy-dir", str(deploy_dir)])
+        p.check("py orphan: --verify FAILs on the resulting state",
+                rc != 0 and "VERIFY: FAIL" in out, out)
+        p.check("py orphan: --verify reports the exact reverse-check line",
+                "SETTINGS: PostCompact is registered in settings.json but "
+                "config.dispatch.events does not route it" in out, out)
+
+        # Removing the orphan (from the ALREADY-migrated file, not resetting
+        # the three now-correctly-py-form events back to ps1): --verify PASSes.
+        del written["hooks"]["PostCompact"]
+        settings_path.write_text(json.dumps(written), encoding="utf-8")
+        rc, out = run(["--verify", "--deploy-dir", str(deploy_dir)])
+        p.check("py orphan removed: --verify now PASSes", rc == 0 and "VERIFY: PASS" in out, out)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_register_settings_clean_state_and_foreign_hook_still_pass(p: Probe) -> None:
+    """Round-2 send-back review caught two gaps in the round-2 fix itself:
+
+    (1) Flipping the four-event legacy test to assert non-zero removed the
+    ONLY `rc == 0` / VERIFIED assertion `--register-settings` had -- the
+    ordinary, no-legacy-leftover cutover must still exit 0 and print VERIFIED.
+
+    (2) `legacy_found`'s first cut used DISPATCH_TOKENS (substring match) --
+    broader than the reverse check it is meant to agree with. A FOREIGN hook
+    under an unrouted event whose command merely happens to contain the
+    substring "dispatch.py" (someone else's tool, or a DIFFERENT deployment)
+    would have made `--register-settings` print LEGACY EVENT and exit 1 while
+    `--verify` stays silent on it -- the exact class of disagreement this
+    whole send-back exists to close, just pointed the other way. Fixed to
+    match the reverse check's own criterion (ps1, or py resolving to THIS
+    deploy_dir's dispatch.py); this test pins a foreign hook under
+    PostCompact pointing at a DIFFERENT deployment's dispatch.py and confirms
+    it is silently ignored, same as `_check_extra_dispatcher_registrations`
+    itself ignores it."""
+    import subprocess
+
+    root = Path(tempfile.mkdtemp(prefix="ulthar-install-clean-state-"))
+    try:
+        deploy_dir = root / "deploy"
+        home_dir = root / "home"
+        (home_dir / ".claude").mkdir(parents=True)
+
+        def run(args: list[str]) -> tuple[int, str]:
+            env = dict(os.environ)
+            env["USERPROFILE"] = str(home_dir)
+            env["HOME"] = str(home_dir)
+            proc = subprocess.run([sys.executable, str(HOOKS_DIR / "install.py")] + args,
+                                  capture_output=True, timeout=60, env=env)
+            return proc.returncode, (proc.stdout + proc.stderr).decode("utf-8", "replace")
+
+        with redirected_home(root):
+            reason = deploy_skip_reason()
+        if reason:
+            p.skip("register-settings clean state and foreign hook still pass", reason)
+            return
+        rc, out = run(["--deploy-dir", str(deploy_dir)])
+        p.check("clean state: deploy succeeds first (precondition)", rc == 0, out)
+        if rc != 0:
+            return
+
+        with open(install_mod.SKILL_ROOT / "config.json", "r", encoding="utf-8-sig") as fh:
+            cfg = json.load(fh)
+        expected_events = sorted(cfg.get("dispatch", {}).get("events", {}).keys())
+        other_dispatch_py = root / "other-deploy" / "dispatch.py"
+        foreign_cmd = f'"{sys.executable}" "{other_dispatch_py}" --event PostCompact'
+
+        settings_path = root / "settings.json"
+        settings_path.write_text(json.dumps({"hooks": {
+            **{ev: [{"matcher": "*", "hooks": [
+                {"type": "command", "command": f'powershell -File "dispatch.ps1" -Event {ev}'}
+            ]}] for ev in expected_events},
+            "PostCompact": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": foreign_cmd}]}],
+        }}), encoding="utf-8")
+
+        rc, out = run(["--register-settings", "--confirm-parity-passed",
+                       "--settings-path", str(settings_path), "--deploy-dir", str(deploy_dir)])
+        p.check("clean state + foreign hook: --register-settings still exits 0",
+                rc == 0, out)
+        p.check("clean state + foreign hook: still prints VERIFIED",
+                "VERIFIED" in out, out)
+        p.check("clean state + foreign hook: NO LEGACY EVENT line "
+                "(a foreign/other-deployment hook is not ULTHAR's to report)",
+                "LEGACY EVENT" not in out, out)
+
+        written = json.loads(settings_path.read_text(encoding="utf-8"))
+        p.check("clean state + foreign hook: the foreign PostCompact hook is untouched",
+                written["hooks"]["PostCompact"][0]["hooks"][0]["command"] == foreign_cmd,
+                written["hooks"]["PostCompact"])
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_reverse_check_unit(p: Probe) -> None:
+    """Unit-level cover for `install_mod._check_extra_dispatcher_registrations`,
+    the reverse half of F-5's registration check: only entries whose command
+    resolves to THIS deployment's dispatch.py count -- someone else's hook
+    under the same event name, or a hook pointing at a DIFFERENT deployment's
+    dispatch.py, is not ULTHAR's to report."""
+    deploy_dir = Path(tempfile.mkdtemp(prefix="ulthar-reverse-unit-"))
+    try:
+        dispatch_py = deploy_dir / "dispatch.py"
+        dispatch_py.write_text("# stub\n", encoding="utf-8")
+        other_dispatch_py = deploy_dir.parent / "other-deploy" / "dispatch.py"
+        python_exe = "C:/pinned-python/python.exe"
+        cfg = {"paths": {"python_exe": python_exe},
+               "dispatch": {"events": {"PreToolUse": []}}}
+        good_cmd = f'"{python_exe}" "{dispatch_py}" --event PostCompact'
+
+        # An event NOT in dispatch.events, registered to THIS deployment's
+        # dispatch.py -> reported, with the wording --verify prints.
+        extra = {"hooks": {"PostCompact": [{"matcher": "*", "hooks": [
+            {"type": "command", "command": good_cmd}
+        ]}]}}
+        problems = install_mod._check_extra_dispatcher_registrations(extra, cfg, deploy_dir)
+        p.check(
+            "reverse unit: an undeclared event routed to THIS deploy's dispatch.py is reported",
+            problems == ["PostCompact is registered in settings.json but "
+                         "config.dispatch.events does not route it"],
+            str(problems),
+        )
+
+        # A foreign hook under that SAME event, not pointing at dispatch.py at
+        # all -- must not be reported. It is not ULTHAR's hook to comment on.
+        foreign_only = {"hooks": {"PostCompact": [{"matcher": "*", "hooks": [
+            {"type": "command", "command": "echo ok"}
+        ]}]}}
+        p.check(
+            "reverse unit: a foreign hook under an undeclared event is NOT reported",
+            install_mod._check_extra_dispatcher_registrations(foreign_only, cfg, deploy_dir) == [],
+        )
+
+        # A hook pointing at ANOTHER deployment's dispatch.py under an
+        # undeclared event -- also not this deployment's to report.
+        other_deploy_cmd = f'"{python_exe}" "{other_dispatch_py}" --event PostCompact'
+        other_deploy = {"hooks": {"PostCompact": [{"matcher": "*", "hooks": [
+            {"type": "command", "command": other_deploy_cmd}
+        ]}]}}
+        p.check(
+            "reverse unit: a hook routed to a DIFFERENT deployment's dispatch.py is NOT reported",
+            install_mod._check_extra_dispatcher_registrations(other_deploy, cfg, deploy_dir) == [],
+        )
+
+        # An event that IS in dispatch.events is the forward check's job, never
+        # this one's -- even if additionally malformed, it must not duplicate.
+        declared = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+            {"type": "command", "command": f'"{python_exe}" "{dispatch_py}" --event PreToolUse'}
+        ]}]}}
+        p.check(
+            "reverse unit: a DECLARED event is never reported by the reverse check",
+            install_mod._check_extra_dispatcher_registrations(declared, cfg, deploy_dir) == [],
+        )
+
+        # Send-back (round 2, LOW): an empty dispatch.events must not make the
+        # reverse check list every registered event on top of the forward
+        # check's own early "events is empty" failure -- pure noise.
+        empty_cfg = {"paths": {"python_exe": python_exe}, "dispatch": {"events": {}}}
+        p.check(
+            "reverse unit: an EMPTY dispatch.events skips the reverse check entirely "
+            "(no noise on top of the forward check's early failure)",
+            install_mod._check_extra_dispatcher_registrations(extra, empty_cfg, deploy_dir) == [],
+        )
+
+        # Send-back (round 2, MEDIUM fix 2): `_registration_problems` is the ONE
+        # shared call point cmd_verify and cmd_register_settings's post-write
+        # self-check both use -- it must be the concatenation of forward AND
+        # reverse, not either alone (that truthfulness is the whole point of
+        # extracting it).
+        missing_forward = {"hooks": {}}  # PreToolUse (expected) has NO registration at all
+        combined = install_mod._registration_problems(missing_forward, cfg, deploy_dir)
+        p.check(
+            "registration_problems: includes a FORWARD-only problem (missing PreToolUse)",
+            any("PreToolUse" in c and "NO dispatcher registered" in c for c in combined),
+            str(combined),
+        )
+        combined = install_mod._registration_problems(extra, cfg, deploy_dir)
+        p.check(
+            "registration_problems: includes a REVERSE-only problem (undeclared PostCompact)",
+            any("PostCompact is registered in settings.json but "
+                "config.dispatch.events does not route it" in c for c in combined),
+            str(combined),
+        )
+    finally:
+        shutil.rmtree(deploy_dir, ignore_errors=True)
+
+
+def test_verify_reports_undeclared_settings_registration(p: Probe) -> None:
+    """F-5's registration check was one-directional: every `config.dispatch.events`
+    entry needed a settings.json hook, but not the reverse. This is exactly the
+    owner's real cleanup scenario -- a `PostCompact` route removed from
+    config.json's dispatch.events while the matching settings.json entry
+    (still pointed at THIS deployment's dispatch.py) was left behind by hand --
+    and `--verify` used to say nothing and print PASS.
+
+    End-to-end against a real deploy and a real settings.json (via
+    redirected_home, exactly test_register_settings_migrates_the_legacy_four_event_state's
+    technique): a settings.json with every expected event correctly registered
+    PLUS one undeclared `PostCompact` entry pointing at the deployed dispatch.py
+    must FAIL with the exact message; the same file with a FOREIGN `PostCompact`
+    hook (not pointing at dispatch.py at all) must still PASS -- it is not
+    ULTHAR's hook to comment on."""
+    import subprocess
+
+    root = Path(tempfile.mkdtemp(prefix="ulthar-verify-reverse-"))
+    try:
+        deploy_dir = root / "deploy"
+        home_dir = root / "home"
+        (home_dir / ".claude").mkdir(parents=True)
+
+        def run(args: list[str]) -> tuple[int, str]:
+            env = dict(os.environ)
+            env["USERPROFILE"] = str(home_dir)
+            env["HOME"] = str(home_dir)
+            proc = subprocess.run([sys.executable, str(HOOKS_DIR / "install.py")] + args,
+                                  capture_output=True, timeout=60, env=env)
+            return proc.returncode, (proc.stdout + proc.stderr).decode("utf-8", "replace")
+
+        with redirected_home(root):
+            reason = deploy_skip_reason()
+        if reason:
+            p.skip("verify reports an undeclared settings.json registration", reason)
+            return
+
+        rc, out = run(["--deploy-dir", str(deploy_dir)])
+        p.check("reverse e2e: deploy succeeds first (precondition)", rc == 0, out)
+        if rc != 0:
+            return
+
+        with open(install_mod.SKILL_ROOT / "config.json", "r", encoding="utf-8-sig") as fh:
+            cfg = json.load(fh)
+        expected_events = sorted(cfg.get("dispatch", {}).get("events", {}).keys())
+        dispatch_py = deploy_dir / "dispatch.py"
+        good_cmd = lambda ev: f'"{sys.executable}" "{dispatch_py}" --event {ev}'  # noqa: E731
+
+        settings_path = home_dir / ".claude" / "settings.json"
+
+        # (a) every expected event correctly registered, PLUS an undeclared
+        # PostCompact entry pointing at THIS deployment's dispatch.py.
+        settings_path.write_text(json.dumps({"hooks": {
+            **{ev: [{"matcher": "*", "hooks": [
+                {"type": "command", "command": good_cmd(ev)}]}] for ev in expected_events},
+            "PostCompact": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": good_cmd("PostCompact")}]}],
+        }}), encoding="utf-8")
+        rc, out = run(["--verify", "--deploy-dir", str(deploy_dir)])
+        p.check("reverse e2e: an undeclared PostCompact registration -> VERIFY: FAIL",
+                rc != 0 and "VERIFY: FAIL" in out, out)
+        p.check("reverse e2e: the exact message is printed",
+                "SETTINGS: PostCompact is registered in settings.json but "
+                "config.dispatch.events does not route it" in out, out)
+
+        # (b) same expected-event registrations, but PostCompact is a FOREIGN
+        # hook that does not point at dispatch.py at all -- must still PASS.
+        settings_path.write_text(json.dumps({"hooks": {
+            **{ev: [{"matcher": "*", "hooks": [
+                {"type": "command", "command": good_cmd(ev)}]}] for ev in expected_events},
+            "PostCompact": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": "echo ok"}]}],
+        }}), encoding="utf-8")
+        rc, out = run(["--verify", "--deploy-dir", str(deploy_dir)])
+        p.check("reverse e2e: a foreign PostCompact hook -> still VERIFY: PASS",
+                rc == 0 and "VERIFY: PASS" in out, out)
+        p.check("reverse e2e: no SETTINGS line names the foreign PostCompact hook",
+                not any("SETTINGS:" in ln and "PostCompact" in ln for ln in out.splitlines()),
+                out)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -349,6 +722,10 @@ def main() -> int:
     test_link_at_an_owned_path_is_refused(p)
     test_failed_tree_swap_restores_the_previous_tree(p)
     test_register_settings_migrates_the_legacy_four_event_state(p)
+    test_register_settings_leaves_a_py_orphan_untouched(p)
+    test_register_settings_clean_state_and_foreign_hook_still_pass(p)
+    test_reverse_check_unit(p)
+    test_verify_reports_undeclared_settings_registration(p)
 
     root = Path(tempfile.mkdtemp(prefix="ulthar-install-preserve-"))
     stack = contextlib.ExitStack()

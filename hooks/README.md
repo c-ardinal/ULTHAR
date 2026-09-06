@@ -172,7 +172,11 @@ PowerShell 版のコミットを復元すること。
   + `cd-compound` フィクスチャによるスモークテストで exit 1/0 を判定）。
   master に対応の無い配布先ファイルは `EXTRA:` として**報告のみ**（FAIL にはしない）
   ——本スキルが配置していないファイルと、旧コピーセットの残骸とを
-  ディスク上で区別する手段が無いため。欠落・不一致は従来どおり FAIL
+  ディスク上で区別する手段が無いため。欠落・不一致は従来どおり FAIL。
+  `settings.json` 登録は双方向に照合する——`config.dispatch.events` に無いイベントが
+  **この配布先の** `dispatch.py` を指して登録されていれば `SETTINGS: <event> is
+  registered in settings.json but config.dispatch.events does not route it` で FAIL
+  （他ツールのフック・他配布先の `dispatch.py` は対象外）
 - 撤去: `python install.py --uninstall`（`settings.json` の登録解除は手動。
   削除対象は COPY_TABLE が配置したファイルちょうどで、配布先に元からあるファイル
   ——サードパーティのフックやロールバック用 `*.ps1` 一式、`lib/` / `guards/` 内の

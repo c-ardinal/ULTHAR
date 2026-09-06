@@ -157,7 +157,13 @@ vs. deployed files, re-checks `psutil`, smoke-tests one guard, and confirms the
 file with no master counterpart is reported as `EXTRA:` but does not fail the run:
 nothing on disk distinguishes a file ULTHAR never deployed from a leftover of an older
 copy set, and failing would make `--verify` permanently red for anyone keeping their
-own helper in `lib/`.
+own helper in `lib/`. The registration check is symmetric: every event in
+`config.json`'s `dispatch.events` must have a `settings.json` hook (as before), and
+every `settings.json` hook that runs *this deployment's* `dispatch.py` must in turn be
+routed by `dispatch.events` — an orphaned entry left behind after a route is removed
+fails with `SETTINGS: <event> is registered in settings.json but config.dispatch.events
+does not route it`. A foreign hook under the same event name, or one pointing at some
+other deployment's `dispatch.py`, is not ULTHAR's to report and is ignored.
 
 ## Worked example: add an enforcement case with a config edit, no code change
 
