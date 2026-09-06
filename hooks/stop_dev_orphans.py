@@ -18,10 +18,27 @@ guards/dev_process_hygiene.py) -- the guard-purity AST scan only scans
 `guards/*.py`, and this file is deliberately outside that directory. As a CLI
 it may print, call sys.exit and read argv.
 
-`_find_targets` calls `find_dev_processes(root=None)` and applies its own
-case-insensitive root substring filter locally instead of passing `root=`
-through: process command lines must always match case-insensitively, but
-find_dev_processes()'s own root_match is case-sensitive.
+`_find_targets` calls `find_dev_processes_in_ledger(root=None)` and applies
+its own case-insensitive root substring filter locally instead of passing
+`root=` through: process command lines must always match case-insensitively,
+but find_dev_processes_in_ledger()'s own root_match is case-sensitive (same
+composition this module has always used; only the candidate SOURCE changed).
+
+ulthar-enforcement-round1: this CLI now scopes to its OWN session's ledger(s)
+too, the same as guards/dev_process_hygiene.py, per PM decision 4 ("同じ台帳を
+使い、他セッションのプロセスを殺さないこと"). It has no session_id (it is run
+directly, not via a hook payload), so it resolves its own session root the
+same ancestor-walk way the guard's ledger writer does, then finds every
+ledger file recorded under that (root_pid, root_create_time) pair
+(lib.procs.find_ledgers_by_root) -- never a full-table scan, and NEVER
+another session's ledger. Round 2 (M-2): MULTIPLE session_ids (the main
+chain plus any sub-agents) legitimately share one root, each with its own
+ledger file, so this merges entries across every matching ledger rather than
+using only the first one found -- a dev server a sub-agent started must
+still be found by a plain `python stop_dev_orphans.py`. When no root can be
+resolved, or no ledger matches it, _find_targets returns an empty list
+rather than falling back to a wider scan: an unscoped fallback here would be
+exactly the cross-session risk this round exists to close.
 """
 from __future__ import annotations
 
@@ -56,17 +73,41 @@ def _resolve_config_path() -> Path:
     return HERE / "config.json"
 
 
+def _session_ledger_entries(cfg: dict, ctx) -> dict:
+    """This CLI's own session's ledger entries, merged across every ledger
+    that shares this process's resolved (root_pid, root_create_time) -- M-2:
+    a sub-agent's ledger is a SEPARATE file (different session_id) but the
+    same root, and must not be invisible to a plain `stop_dev_orphans.py`
+    run. {} when no session root, or no matching ledger, could be found --
+    never another session's, and never a full-table fallback (see module
+    docstring). Later ledgers win on a PID collision (exceedingly unlikely:
+    would require two of THIS session's own sub-processes to share a pid,
+    which only happens on OS pid reuse across two of them)."""
+    root_pid, _err = procs_mod.resolve_session_root(cfg, ctx)
+    if root_pid is None:
+        return {}
+    root_create_time = procs_mod.process_create_time(root_pid)
+    if root_create_time is None:
+        return {}
+    merged: dict = {}
+    for ledger in procs_mod.find_ledgers_by_root(cfg, ctx, root_pid, root_create_time):
+        merged.update(ledger.get("entries", {}))
+    return merged
+
+
 def _find_targets(cfg: dict, ctx, all_flag: bool, root: str) -> list:
     """orphans ALWAYS qualify; --all additionally pulls in non-orphaned chains
-    matching --root (or every chain, if --root is empty)."""
-    orphans = procs_mod.find_dev_processes(cfg, ctx, orphans_only=True)
+    matching --root (or every chain, if --root is empty). Candidates are
+    sourced from THIS session's own ledger only."""
+    entries = _session_ledger_entries(cfg, ctx)
+    orphans = procs_mod.find_dev_processes_in_ledger(cfg, ctx, entries, orphans_only=True)
     if not all_flag:
         return orphans
     orphan_pids = {p.pid for p in orphans}
-    # root=None disables find_dev_processes()'s own root check (its `root is
-    # None or ...` short-circuits true), returning every name+pattern match
-    # regardless of orphan-ness or root; filtered case-insensitively below.
-    candidates = procs_mod.find_dev_processes(cfg, ctx, orphans_only=False, root=None)
+    # root=None disables find_dev_processes_in_ledger()'s own root check (its
+    # `root is None or ...` short-circuits true), returning every name+pattern
+    # match regardless of orphan-ness or root; filtered case-insensitively below.
+    candidates = procs_mod.find_dev_processes_in_ledger(cfg, ctx, entries, orphans_only=False, root=None)
     if not root:
         return candidates
     needle = root.casefold()

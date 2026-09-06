@@ -482,6 +482,90 @@ def check_guard_purity(p: Probe) -> None:
     p.check("check1b: psutil confined to dev_process_hygiene.py", not psutil_offenders, str(psutil_offenders))
 
 
+def check_h3_psutil_confinement_and_pretooluse_guard(p: Probe) -> None:
+    """ulthar-enforcement-round1 H-3: docs/DESIGN.md previously said psutil
+    "never" runs on PreToolUse; round 2 corrects that (dispatch.py now imports
+    lib.procs, lazily, ONLY for Bash/PowerShell tool calls). This check pins
+    the two halves of that correction that keep it from silently regressing
+    into "psutil on every tool call": (a) no guards/*.py file imports psutil
+    directly (AST, so a docstring merely MENTIONING psutil cannot false
+    positive -- several already do), and (b) dispatch.py's own `from lib
+    import procs` line sits textually AFTER the tool-name check that skips
+    every PreToolUse call except Bash/PowerShell, inside
+    _update_dev_process_ledger -- a source-text assertion, the same style as
+    the dependency-declaration checks above, because this is about WHERE an
+    import statement sits in the file, which only the source text can show."""
+    guards_dir = HOOKS_DIR / "guards"
+    offenders = []
+    for f in sorted(guards_dir.glob("*.py")):
+        if f.name == "__init__.py":
+            continue
+        tree = ast.parse(f.read_text(encoding="utf-8"), filename=str(f))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(a.name == "psutil" for a in node.names):
+                offenders.append(f.name)
+            if isinstance(node, ast.ImportFrom) and node.module == "psutil":
+                offenders.append(f.name)
+    p.check("H-3: no guards/*.py file imports psutil directly (AST, not text)",
+            not offenders, str(offenders))
+
+    dispatch_text = (HOOKS_DIR / "dispatch.py").read_text(encoding="utf-8")
+    module_level_text = dispatch_text.split("\ndef ", 1)[0]
+    p.check("H-3: dispatch.py does not import lib.procs at module level",
+            "import procs" not in module_level_text, "")
+
+    marker_fn = "def _update_dev_process_ledger"
+    if marker_fn not in dispatch_text:
+        p.check("H-3: dispatch.py defines _update_dev_process_ledger", False, "")
+        return
+    fn_body = dispatch_text[dispatch_text.index(marker_fn):]
+    has_guard = "_LEDGER_UPDATE_TOOLS" in fn_body
+    has_import = "from lib import procs" in fn_body
+    p.check("H-3: _update_dev_process_ledger both checks the tool-name allowlist "
+            "and imports lib.procs", has_guard and has_import,
+            f"has_guard={has_guard} has_import={has_import}")
+    if has_guard and has_import:
+        guard_idx = fn_body.index("_LEDGER_UPDATE_TOOLS")
+        import_idx = fn_body.index("from lib import procs")
+        p.check("H-3: the lib.procs import is textually AFTER the tool-name guard "
+                "(so it cannot run before the Bash/PowerShell check)",
+                guard_idx < import_idx, f"guard_idx={guard_idx} import_idx={import_idx}")
+
+
+def check_h2r_no_process_iter_on_hook_path(p: Probe) -> None:
+    """ulthar-enforcement-round1 send-back round 3, H-2R: psutil.process_iter()
+    CONSTRUCTS a Process object per pid and was measured costing 12-16s cold
+    on the reviewer's machine (every hook dispatch is a fresh interpreter, so
+    there is no warm handle cache to amortise it) -- it must never be called
+    from any function reachable on a hook path (Stop's dev_process_hygiene
+    read, or dispatch.py's PreToolUse-Bash-triggered
+    update_session_ledger write). The ONE exception is the legacy
+    list_processes()/find_dev_processes() pair, which backs
+    guards/dev_process_hygiene.py's OWN full-table code path (unchanged since
+    round 1, still directly exercised by test_contract.py's own root-match
+    case and by stop_dev_orphans.py's --all/no-ledger-found edge, never by
+    the session-ledger writer). Source-text, not behavioural: this is about
+    which FUNCTION a call site sits inside, which only the source can show."""
+    procs_path = HOOKS_DIR / "lib" / "procs.py"
+    text = procs_path.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(procs_path))
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == "list_processes"):
+            continue
+        legacy_lines = {n.lineno for n in ast.walk(node) if hasattr(n, "lineno")}
+        for call in ast.walk(tree):
+            if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "process_iter"):
+                continue
+            if call.lineno not in legacy_lines:
+                offenders.append(call.lineno)
+    p.check("H-2R: lib/procs.py calls process_iter() ONLY inside the legacy "
+            "list_processes() function (never on a hook path)",
+            not offenders, f"process_iter( at line(s) {offenders}, outside list_processes()")
+
+
 # ------------------------------------------------------------------ check 5: ownership completeness
 
 OWNERSHIP_TABLE = {
@@ -2227,6 +2311,8 @@ def main() -> int:
 
     print("\n== §5 contract self-enforcement checks ==")
     check_guard_purity(p)
+    check_h3_psutil_confinement_and_pretooluse_guard(p)
+    check_h2r_no_process_iter_on_hook_path(p)
     check_ownership(p, cfg)
     check_single_config_json(p)
     check_shipped_python_exe_empty(p, cfg)

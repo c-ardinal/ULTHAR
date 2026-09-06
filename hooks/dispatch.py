@@ -850,9 +850,51 @@ def main(argv: list[str]) -> int:
     # Surface 2 (the operator notice) is left to dispatch(), which is the only
     # place that knows whether this call's stdout can carry it.
     _log_overlay_disable_once(ctx, payload)
+    _update_dev_process_ledger(event, payload, cfg, ctx)
     result = dispatch(event, payload, cfg, ctx, args.guard,
                       notice_fn=lambda: _overlay_disable_notice(ctx, payload))
     return result.exit_code
+
+
+_LEDGER_UPDATE_TOOLS = {"bash", "powershell"}
+
+
+def _update_dev_process_ledger(event: str, payload: dict, cfg: dict, ctx) -> None:
+    """ulthar-enforcement-round1: keeps <state_dir>/session-procs/<session_id>.json
+    current so guards/dev_process_hygiene.py's Stop-time read is scoped to this
+    session's own descendants instead of a full process-table scan. Called on
+    every Stop (where the guard is about to read it) and on PreToolUse for
+    Bash/PowerShell only (where a dev server actually gets spawned) -- never
+    on every tool call, which would pay psutil's C-extension import cost on
+    the hottest path (row 9) for tool calls that can never start one.
+
+    lib.procs (and therefore psutil) is imported LAZILY here, not at module
+    level -- every OTHER event (Write/Edit/Agent/SendMessage/...) must still
+    never load it. This is dispatcher-owned I/O, not a guard's: guards may not
+    write ledger/session state outside their three named exceptions (CONTRACT
+    section 1), and this runs before any guard even in the chain.
+
+    Best-effort and silent on ordinary failure (a session root that resolves
+    fine this dispatch and fails the next is not a defect, just a process that
+    exited) -- update_session_ledger itself logs the one failure PM decision 1
+    calls out (an unresolvable session root) once per session via a marker
+    file, so nothing here needs to log a second time."""
+    if not cfg.get("dev_processes", {}).get("enabled", True):
+        return
+    if event == "PreToolUse":
+        tool = str(payload.get("tool_name") or "").casefold()
+        if tool not in _LEDGER_UPDATE_TOOLS:
+            return
+    elif event != "Stop":
+        return
+    session_id = str(payload.get("session_id") or "")
+    if not session_id:
+        return
+    try:
+        from lib import procs as procs_mod  # noqa: PLC0415 -- lazy: keep psutil off every other event
+        procs_mod.update_session_ledger(cfg, ctx, session_id)
+    except Exception as exc:  # noqa: BLE001 -- best-effort, never blocks a tool call over this
+        ctx.log_error("dev_process_ledger", exc, sorted(payload.keys()))
 
 
 if __name__ == "__main__":

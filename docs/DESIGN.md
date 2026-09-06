@@ -169,10 +169,28 @@ transcript path indicates a subagent is still classified as a subagent.
 - **`lib/procs.py`** — dev-process discovery. A single implementation over
   `psutil` (no OS-specific branching, no fallback path — a silent fallback would
   mean two behaviours to test and a guard that can quietly change semantics).
-  `psutil` is the runtime's only non-stdlib dependency, and is imported lazily,
-  confined to the Stop-hook path (`dev_process_hygiene`) and the manual
-  `stop_dev_orphans` CLI — never on the PreToolUse path, which runs on every tool
-  call.
+  `psutil` is the runtime's only non-stdlib dependency. `dev_process_hygiene`
+  (Stop) and the manual `stop_dev_orphans` CLI are the only *guard-shaped*
+  consumers; the guard-purity AST scan still asserts no other `guards/*.py`
+  file imports it. As of ulthar-enforcement-round1 (session-scoping), that is
+  no longer the whole story: `dispatch.py` itself also imports `lib.procs`
+  lazily — inside a function, never at its own module level — but ONLY on
+  `PreToolUse` for `Bash`/`PowerShell` tool calls, to snapshot the session's
+  process descendants into a per-session ledger at the one place new ones
+  actually appear (`update_session_ledger`). Every other tool call on
+  `PreToolUse`, and every other event, never touches it. `dev_process_hygiene`
+  itself only ever READS that ledger (targeted per-pid `psutil.Process`/
+  `psutil.pid_exists` probes) — it no longer calls `psutil.process_iter()`
+  over the whole machine on Stop at all.
+  RESIDUE, stated rather than hidden: a wrapper process that is BOTH spawned
+  AND has already exited entirely between two hook dispatches — never
+  overlapping a ledger snapshot — is never recorded, so a long-lived worker it
+  left behind cannot be linked to the session either, even though the ledger
+  widening rule (round 2, H-1: any live pid whose ppid is an already-ledgered
+  pid) catches the same shape of gap once the wrapper WAS captured at least
+  once. Closing the remaining class needs continuous monitoring between hook
+  calls (polling or an OS process-creation subscription), which this
+  hook-driven design does not attempt.
 - **`lib/gitcmd.py`** — git command-line parsing: the global-option prefix
   (`-C|-c|--git-dir|--work-tree|--exec-path`), quote stripping, phase-ordered
   evaluation for git discipline (blanket-staging → destroyers → hook-bypass →
