@@ -174,14 +174,25 @@ transcript path indicates a subagent is still classified as a subagent.
   consumers; the guard-purity AST scan still asserts no other `guards/*.py`
   file imports it. As of ulthar-enforcement-round1 (session-scoping), that is
   no longer the whole story: `dispatch.py` itself also imports `lib.procs`
-  lazily — inside a function, never at its own module level — but ONLY on
-  `PreToolUse` for `Bash`/`PowerShell` tool calls, to snapshot the session's
-  process descendants into a per-session ledger at the one place new ones
-  actually appear (`update_session_ledger`). Every other tool call on
-  `PreToolUse`, and every other event, never touches it. `dev_process_hygiene`
-  itself only ever READS that ledger (targeted per-pid `psutil.Process`/
-  `psutil.pid_exists` probes) — it no longer calls `psutil.process_iter()`
-  over the whole machine on Stop at all.
+  lazily — inside a function, never at its own module level — on `PreToolUse`
+  for `Bash`/`PowerShell` tool calls AND on every `Stop` (the guard is about
+  to READ the ledger there, so it is refreshed one last time first), to
+  snapshot the session's process descendants into a per-session ledger at
+  the places new ones actually appear (`update_session_ledger`). Every OTHER
+  tool call on `PreToolUse`, and every other event, never touches it.
+  `dev_process_hygiene` itself only ever READS that ledger (targeted per-pid
+  `psutil.Process`/`psutil.pid_exists` probes) — it no longer calls
+  `psutil.process_iter()` over the whole machine on Stop at all. The writer's
+  primary path drives descendant discovery and widening from
+  `psutil._psplatform.ppid_map()` (one bulk OS query, zero per-process
+  `Process()` construction); when that private API is unavailable on a given
+  psutil version/platform, a FALLBACK reconstructs the descendant subtree
+  from `psutil.Process(root).children(recursive=True)` instead (each
+  returned `Process` already knows its own `.ppid()`, so no extra
+  construction is needed to rebuild a local parent map) — descendants only,
+  deliberately with NO widening, since there is no cheap way to ask "which
+  live pid's ppid is a ledger pid" without either the bulk map or a
+  `process_iter()`-shaped full scan.
   RESIDUE, stated rather than hidden: a wrapper process that is BOTH spawned
   AND has already exited entirely between two hook dispatches — never
   overlapping a ledger snapshot — is never recorded, so a long-lived worker it
@@ -191,6 +202,37 @@ transcript path indicates a subagent is still classified as a subagent.
   once. Closing the remaining class needs continuous monitoring between hook
   calls (polling or an OS process-creation subscription), which this
   hook-driven design does not attempt.
+  round-5 correction: a widening PARENT must additionally be either dead
+  (no live process holds that pid) or, if a live process does hold it,
+  confirmed the SAME process by `create_time` — otherwise a wrapper's pid
+  reused by an unrelated foreign process would widen that foreign process's
+  own children in as if they were this session's. LOCKING: the read-modify-
+  replace and the sweep's per-file delete decision both take lib/io.py's
+  existing append-lock primitive, whose retry budget is bounded at roughly
+  0.5s (Windows timer granularity rounds it nearer 0.4-0.5s in practice)
+  before this update gives up and lets the next dispatch retry — never an
+  unbounded wait on the hook path. Measured NON-CONTENDED PreToolUse Bash
+  p95 784ms against the 1052ms acceptance budget.
+  round-6 correction: an identity that cannot be read at all (`AccessDenied`)
+  is recorded with `is_root_boundary: None` ("unknown") and is NEVER
+  descended through — treated the same as a confirmed foreign boundary for
+  traversal, since the owner's requirement is absolute isolation and an
+  unconfirmed identity must never default to "assume ours" (this reverses
+  the earlier round-4 choice to keep traversing past it). Symmetrically, a
+  CACHED boundary/unknown/non-boundary verdict for any internal node (one
+  with live children right now) is re-verified by create_time before being
+  trusted at all — a stale confirmed boundary whose pid was later reused by
+  an ordinary process would otherwise keep pruning that now-legitimate
+  subtree forever, the mirror image of trusting a stale non-boundary too
+  far. `AccessDenied` is also no longer collapsed into "dead" for sweep/TTL
+  purposes: an unreadable root or entry is "unknown", preserved exactly like
+  a confirmed-alive one, and never reported as an orphan or killed.
+  RESIDUE (double degradation): when the `_ppid_map()` fallback AND an
+  unreadable node occur in the same session, that node's subtree stays
+  invisible for the rest of the session even after it dies, since the
+  fallback has no widening mechanism to link it back in the way the main
+  path's H-1 widening does — narrow (needs both conditions at once) and
+  accepted rather than closed.
 - **`lib/gitcmd.py`** — git command-line parsing: the global-option prefix
   (`-C|-c|--git-dir|--work-tree|--exec-path`), quote stripping, phase-ordered
   evaluation for git discipline (blanket-staging → destroyers → hook-bypass →

@@ -147,7 +147,11 @@ def main(argv: list[str]) -> int:
 
     pids = [p.pid for p in targets]
     name_by_pid = {p.pid: p.name for p in targets}
-    skips = procs_mod.kill(pids, ctx, cfg)
+    # round-4 item 4: kill() re-verifies (pid, create_time) identity
+    # immediately before each signal -- pass the ledger's own recorded
+    # create_time through, not a bare pid list.
+    kill_targets = [(p.pid, p.create_time) for p in targets]
+    skips = procs_mod.kill(kill_targets, ctx, cfg)
     skip_by_pid = dict(skips)
     for pid in pids:
         if pid in skip_by_pid:

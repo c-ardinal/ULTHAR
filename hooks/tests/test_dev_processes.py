@@ -546,6 +546,30 @@ def _with_pid(pid, proc):
     return proc
 
 
+class _DeniedProc:
+    """round 6: a process that is ALIVE but every attribute read raises
+    AccessDenied -- name()/cmdline()/create_time()/exe() all denied. Used
+    across the round-6 HIGH/MEDIUM-2 tests for "unreadable, not gone"."""
+
+    def __init__(self, pid):
+        self.pid = pid
+
+    def name(self):
+        raise procs_mod.psutil.AccessDenied(self.pid)
+
+    def cmdline(self):
+        raise procs_mod.psutil.AccessDenied(self.pid)
+
+    def create_time(self):
+        raise procs_mod.psutil.AccessDenied(self.pid)
+
+    def exe(self):
+        raise procs_mod.psutil.AccessDenied(self.pid)
+
+    def ppid(self):
+        raise procs_mod.psutil.AccessDenied(self.pid)
+
+
 def test_h1_widening_wrapper_dies_worker_still_captured_and_reported(p: Probe) -> None:
     """H-1 (round 2, real machine finding): a wrapper is captured while alive;
     by the NEXT ledger update it has already exited, and only the worker it
@@ -703,10 +727,11 @@ def test_h2_known_pid_skips_name_cmdline_harvest(p: Probe) -> None:
             procs_mod.psutil.Process = orig_process
 
         p.check(
-            "H-2 setup: the first update harvests a brand-NEW pid (once for the "
-            "M-1 root-boundary check, once for the ledger entry -- both legitimate "
-            "on FIRST discovery)",
-            first_calls == {"name": 2, "cmdline": 2, "create_time": 1},
+            "H-2 setup: the first update harvests a brand-NEW pid (name() once for "
+            "the ledger entry; cmdline() twice -- once for the entry, once for the "
+            "round-4 substring-only M-1 boundary check, which no longer touches "
+            "name() at all -- both legitimate on FIRST discovery)",
+            first_calls == {"name": 1, "cmdline": 2, "create_time": 1},
             str(first_calls),
         )
         p.check(
@@ -1015,6 +1040,1030 @@ def test_ppid_map_fallback_descendants_only_no_widening(p: Probe) -> None:
         sandbox.cleanup()
 
 
+# ------------------------------------------------------------------ round 4 (send-back, Codex third-party review)
+
+
+class _FakeAncestor:
+    """A minimal stand-in for a psutil.Process ancestor, for resolve_session_root
+    tests -- covers .pid, .name(), .cmdline(), .exe(), .parent()."""
+
+    def __init__(self, pid, name, cmdline="", parent_proc=None):
+        self.pid = pid
+        self._name, self._cmdline, self._parent = name, cmdline, parent_proc
+
+    def name(self):
+        return self._name
+
+    def cmdline(self):
+        return self._cmdline.split() if self._cmdline else []
+
+    def exe(self):
+        return ""
+
+    def parent(self):
+        return self._parent
+
+
+def test_root_resolution_exhausts_substrings_before_name_fallback(p: Probe) -> None:
+    """item 1: a GENERIC 'node' process (a Vite dev server, matches no
+    candidate_substrings but DOES match candidate_names by bare name) sits
+    BETWEEN the hook process and the REAL Claude Code host (which matches a
+    substring) in the ancestor chain. The whole chain must be exhausted for a
+    substring match FIRST; only if none exists anywhere does the name
+    fallback apply. root must resolve to the REAL host (300), never the
+    generic node (200) despite it being climbed first."""
+    real_host = _FakeAncestor(300, "node", "node /path/to/claude-code/cli.js")
+    generic_node = _FakeAncestor(200, "node", "node vite --port 5173", parent_proc=real_host)
+    shell = _FakeAncestor(100, "bash", "bash", parent_proc=generic_node)
+    hook_parent = _FakeAncestor(50, "python", "python dispatch.py", parent_proc=shell)
+
+    class _FakeSelf:
+        def parent(self_inner):
+            return hook_parent
+
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(event="Stop")
+        orig_process = procs_mod.psutil.Process
+        procs_mod.psutil.Process = lambda pid: _FakeSelf()
+        try:
+            root_pid, err = procs_mod.resolve_session_root(sandbox.cfg, ctx)
+        finally:
+            procs_mod.psutil.Process = orig_process
+
+        p.check(
+            "root resolution: the REAL host (300, substring match) wins over the "
+            "generic 'node' (200, name-only match) climbed first",
+            root_pid == 300,
+            f"root_pid={root_pid} err={err}",
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_descendant_boundary_is_substring_only_vite_workerd_captured(p: Probe) -> None:
+    """item 1: the DESCENDANT boundary predicate is substring-only -- a bare
+    'node' descendant (Vite) must NEVER be treated as a boundary, or the
+    `workerd` process it spawns underneath would never be reached."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "vitewd"}, event="Stop")
+        fake_procs = {
+            1: _FakeProc("system", "", create_time=0.5),
+            50: _FakeProc("node", "node vite --port 5173", create_time=1.0),
+            60: _FakeProc("workerd", "workerd --config x", create_time=2.0),
+        }
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        try:
+            procs_mod._ppid_map = lambda: {1: 0, 50: 1, 60: 50}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "vitewd")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger = procs_mod.read_session_ledger(sandbox.cfg, ctx, "vitewd")
+        entries = ledger.get("entries", {}) if ledger else {}
+        p.check(
+            "vite (bare 'node' name) is recorded and NOT flagged a boundary",
+            entries.get("50", {}).get("is_root_boundary") is False,
+            str(entries.get("50")),
+        )
+        p.check(
+            "workerd (vite's child) IS captured -- descent was not stopped at 'node'",
+            "60" in entries,
+            str(entries),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_fallback_prunes_at_foreign_boundary(p: Probe) -> None:
+    """item 2: the _ppid_map()-unavailable fallback must prune the same way
+    the main path does -- a foreign boundary reached via
+    children(recursive=True) must stop the reconstruction there; nothing
+    beneath it may be recorded."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "fallback-bnd"}, event="Stop")
+
+        class _FakeChildProc:
+            def __init__(self, pid, ppid, name, cmdline, create_time=1.0):
+                self.pid = pid
+                self._ppid, self._name, self._cmdline, self._create_time = ppid, name, cmdline, create_time
+
+            def ppid(self):
+                return self._ppid
+
+            def name(self):
+                return self._name
+
+            def cmdline(self):
+                return self._cmdline.split()
+
+            def exe(self):
+                return ""
+
+            def create_time(self):
+                return self._create_time
+
+        class _FakeRootProc:
+            def __init__(self, pid, children_list, create_time=0.5):
+                self.pid = pid
+                self._children = children_list
+                self._create_time = create_time
+
+            def create_time(self):
+                return self._create_time
+
+            def children(self, recursive=False):
+                return self._children
+
+        boundary = _FakeChildProc(200, 1, "node", "node claude-code --agent")
+        child_of_boundary = _FakeChildProc(300, 200, "bash", "bash -c work")
+        by_pid = {200: boundary, 300: child_of_boundary}
+
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod._ppid_map = lambda: None  # force the fallback branch
+        procs_mod.psutil.Process = (
+            lambda pid: _FakeRootProc(1, [boundary, child_of_boundary]) if pid == 1 else by_pid[pid]
+        )
+        try:
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "fallback-bnd")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger = procs_mod.read_session_ledger(sandbox.cfg, ctx, "fallback-bnd")
+        entries = ledger.get("entries", {}) if ledger else {}
+        p.check(
+            "fallback: the boundary (200) IS recorded, flagged is_root_boundary",
+            entries.get("200", {}).get("is_root_boundary") is True,
+            str(entries),
+        )
+        p.check(
+            "fallback: the boundary's child (300) is PRUNED, even though "
+            "children(recursive=True) returned it",
+            "300" not in entries,
+            str(entries),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_pid_reuse_same_ppid_by_foreign_root_children_not_ingested(p: Probe) -> None:
+    """item 3: a known, non-boundary pid whose ppid has NOT changed (the
+    cheap round-2/3 signal) can still have been REUSED by an unrelated,
+    foreign process with the SAME ppid. Before descending into its children,
+    create_time must be re-verified; a mismatch triggers re-harvest and
+    re-classification, and if the new identity is itself a boundary, its
+    children must never be ingested."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "reuse"}, event="Stop")
+        fake_procs = {1: _FakeProc("system", "", create_time=0.5), 500: _FakeProc("bash", "bash -c work", create_time=10.0)}
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        try:
+            # update 1: pid 500 is an ordinary, non-boundary descendant.
+            procs_mod._ppid_map = lambda: {1: 0, 500: 1}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "reuse")
+
+            ledger1 = procs_mod.read_session_ledger(sandbox.cfg, ctx, "reuse")
+            p.check(
+                "setup: pid 500 recorded, not a boundary",
+                ledger1["entries"].get("500", {}).get("is_root_boundary") is False,
+                str(ledger1),
+            )
+
+            # update 2: pid 500 REUSED by a foreign root (same ppid=1, a
+            # DIFFERENT create_time and identity that now matches a
+            # candidate substring), with a new child 600.
+            fake_procs[500] = _FakeProc("node", "node claude-code --agent", create_time=99.0)
+            fake_procs[600] = _FakeProc("python3", "python3 worker.py", create_time=50.0)
+            procs_mod._ppid_map = lambda: {1: 0, 500: 1, 600: 500}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "reuse")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger2 = procs_mod.read_session_ledger(sandbox.cfg, ctx, "reuse")
+        entries = ledger2.get("entries", {})
+        p.check(
+            "reused pid 500 is re-harvested and re-classified as a boundary",
+            entries.get("500", {}).get("is_root_boundary") is True,
+            str(entries),
+        )
+        p.check(
+            "the reused root's child (600) is NEVER ingested",
+            "600" not in entries,
+            str(entries),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_kill_reverifies_identity_before_each_signal(p: Probe) -> None:
+    """item 4: kill() takes (pid, create_time) pairs and re-checks identity
+    immediately before EACH signal -- a pid whose actual create_time no
+    longer matches the ledger's recorded value (reused since it was recorded)
+    must be skipped, never signalled."""
+
+    class _FakeKillProc:
+        def __init__(self, pid, create_time):
+            self.pid = pid
+            self._ct = create_time
+            self.terminated = False
+            self.killed = False
+
+        def create_time(self):
+            return self._ct
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    matching = _FakeKillProc(100, 5.0)
+    mismatched = _FakeKillProc(200, 5.0)  # ledger expects 1.0 -- reused since recorded
+    sandbox = SandboxCtx()
+    try:
+        orig_process = procs_mod.psutil.Process
+        orig_wait_procs = procs_mod.psutil.wait_procs
+        procs_mod.psutil.Process = lambda pid: {100: matching, 200: mismatched}[pid]
+        procs_mod.psutil.wait_procs = lambda procs, timeout: ([], procs)
+        try:
+            skips = procs_mod.kill([(100, 5.0), (200, 1.0)], None, sandbox.cfg)
+        finally:
+            procs_mod.psutil.Process = orig_process
+            procs_mod.psutil.wait_procs = orig_wait_procs
+
+        p.check("kill: identity-matching target IS terminated", matching.terminated, "")
+        p.check("kill: identity-MISMATCHED (reused) target is NOT terminated", not mismatched.terminated, "")
+        skip_pids = {pid for pid, _msg in skips}
+        p.check("kill: the reused pid is reported as skipped, the matching one is not",
+                200 in skip_pids and 100 not in skip_pids, str(skips))
+    finally:
+        sandbox.cleanup()
+
+
+def test_session_id_sanitization_is_injective(p: Probe) -> None:
+    """item 5: two different raw session_ids that COLLIDE under plain
+    char-substitution (round 3's fix) must produce DIFFERENT sanitized names
+    -- otherwise two genuinely different sessions would share one ledger
+    file."""
+    a = procs_mod._sanitize_session_id("a/b")
+    b = procs_mod._sanitize_session_id("a_b")
+    p.check(
+        "session ids that collide after char-substitution alone now differ "
+        "(hash suffix of the RAW id)",
+        a != b,
+        f"a={a!r} b={b!r}",
+    )
+
+
+def test_ledger_identity_mismatch_discards_entries(p: Probe) -> None:
+    """item 5: an on-disk ledger whose (root_pid, root_create_time) does not
+    match what THIS dispatch just resolved is DISCARDED (starts empty), never
+    merged onto -- a mismatch means the file describes a different actual
+    process than the one this session_id resolves to right now."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "mismatch"}, event="Stop")
+        path = procs_mod.session_ledger_path(sandbox.cfg, ctx, "mismatch")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({
+                "root_pid": 999, "root_create_time": 1.0,
+                "entries": {"1234": {"pid": 1234, "ppid": 1, "name": "node.exe",
+                                       "cmdline": "npm run dev", "create_time": 1.0, "first_seen": 0.0}},
+            }, fh)
+
+        fake_procs = {1: _FakeProc("system", "", create_time=0.5)}
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)  # resolves to root_pid=1, NOT 999
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        try:
+            procs_mod._ppid_map = lambda: {1: 0}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "mismatch")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger = procs_mod.read_session_ledger(sandbox.cfg, ctx, "mismatch")
+        p.check(
+            "mismatched (root_pid, root_create_time) discards the stale entries "
+            "instead of merging onto them",
+            "1234" not in ledger.get("entries", {}),
+            str(ledger),
+        )
+        p.check(
+            "the ledger's root_pid is updated to the freshly-resolved one",
+            ledger.get("root_pid") == 1,
+            str(ledger),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_lock_contention_skips_update_without_corrupting_ledger(p: Probe) -> None:
+    """item 6 (lost update): when the append lock cannot be acquired, the
+    update is skipped cleanly -- the pre-existing ledger on disk is left
+    completely untouched, never partially overwritten. RED-when-reverted: a
+    version that ignores the lock's contention signal and writes anyway
+    would change this file even though the lock said "busy"."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "lockc"}, event="Stop")
+        path = procs_mod.session_ledger_path(sandbox.cfg, ctx, "lockc")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        original = {"root_pid": 1, "root_create_time": 0.5,
+                    "entries": {"77": {"pid": 77, "ppid": 1, "name": "node", "cmdline": "node x",
+                                         "create_time": 1.0, "first_seen": 0.0}}}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(original, fh)
+
+        fake_procs = {1: _FakeProc("system", "", create_time=0.5)}
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        orig_lock = procs_mod.io_mod._acquire_append_lock
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        procs_mod._ppid_map = lambda: {1: 0, 999: 1}
+        procs_mod.io_mod._acquire_append_lock = lambda lock_path: None  # simulate contention
+        try:
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "lockc")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+            procs_mod.io_mod._acquire_append_lock = orig_lock
+
+        with open(path, "r", encoding="utf-8") as fh:
+            after = json.load(fh)
+        p.check(
+            "lock contention: update skipped cleanly, pre-existing ledger left untouched",
+            after == original,
+            str(after),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_sweep_race_survives_concurrent_write_after_lock_acquired(p: Probe) -> None:
+    """item 6 (sweep race): the sweep re-stats a candidate file AFTER taking
+    its lock and only unlinks if STILL expired. Simulated by having the
+    (stubbed) lock-acquire function itself refresh the file's mtime the
+    moment the lock is won -- exactly as a real concurrent writer finishing
+    its own update right then would. RED-when-reverted: a sweep that unlinks
+    based only on the pre-lock stat would delete the file anyway."""
+    import os
+    import time
+
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(event="Stop")
+        path = procs_mod.session_ledger_path(sandbox.cfg, ctx, "racer")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"root_pid": 99999999, "root_create_time": 1.0, "entries": {}}, fh)
+        old_time = time.time() - 100000
+        os.utime(path, (old_time, old_time))
+
+        orig_lock = procs_mod.io_mod._acquire_append_lock
+
+        def racing_lock(lock_path):
+            fd = orig_lock(lock_path)
+            if fd is not None and lock_path.name.startswith(path.name):
+                os.utime(path, None)  # concurrent writer "just finished" -- fresh mtime
+            return fd
+
+        procs_mod.io_mod._acquire_append_lock = racing_lock
+        try:
+            procs_mod._sweep_stale_ledger_files(sandbox.cfg, ctx, ttl_sec=1.0, now=time.time())
+        finally:
+            procs_mod.io_mod._acquire_append_lock = orig_lock
+
+        p.check(
+            "sweep race: the re-stat under the lock sees the refreshed mtime and backs off",
+            path.exists(),
+            "",
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_sweep_never_deletes_ledger_with_alive_root(p: Probe) -> None:
+    """item 7: a ledger whose recorded ROOT is still alive (pid exists, same
+    create_time) must NEVER be deleted, however old its mtime -- a session
+    that dispatches infrequently must not lose its ledger just because
+    nothing touched it for a while."""
+    import os
+    import time
+
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(event="Stop")
+        path = procs_mod.session_ledger_path(sandbox.cfg, ctx, "alive-root")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"root_pid": 4242, "root_create_time": 7.0, "entries": {}}, fh)
+        old_time = time.time() - 999999
+        os.utime(path, (old_time, old_time))
+
+        fake_root = _FakeProc("node", "node claude-code --agent", create_time=7.0)
+        orig_process = procs_mod.psutil.Process
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_root)
+        try:
+            procs_mod._sweep_stale_ledger_files(sandbox.cfg, ctx, ttl_sec=1.0, now=time.time())
+        finally:
+            procs_mod.psutil.Process = orig_process
+
+        p.check(
+            "sweep: a ledger whose ROOT is still alive is NEVER deleted, however old its mtime",
+            path.exists(),
+            "",
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_max_entries_evicts_dead_before_alive_and_oldest_dead_first(p: Probe) -> None:
+    """item 7: over max_entries, DEAD entries are evicted first (oldest dead
+    first); an ALIVE entry is never evicted. RED-when-reverted: round 3's
+    "newest-first, regardless of alive/dead" policy would instead evict the
+    two NEWEST entries here -- one of which is alive."""
+    entries = {}
+    for pid, first_seen in ((1, 500.0), (2, 600.0), (10, 100.0), (11, 200.0), (12, 300.0)):
+        entries[str(pid)] = {"pid": pid, "ppid": 1, "name": "node", "cmdline": "node x",
+                               "create_time": 1.0, "first_seen": first_seen}
+    alive_pids = {1, 2}
+
+    orig_alive = procs_mod._entry_still_alive
+    procs_mod._entry_still_alive = lambda entry: (entry["pid"] in alive_pids, 1)
+    try:
+        procs_mod._prune_ledger(entries, max_entries=3, ttl_sec=10**9, now=1000.0)
+    finally:
+        procs_mod._entry_still_alive = orig_alive
+
+    p.check(
+        "max_entries: alive entries (1, 2) survive; dead entries evicted OLDEST-first "
+        "(10, then 11), keeping the newest dead (12)",
+        set(entries) == {"1", "2", "12"},
+        str(sorted(entries)),
+    )
+
+
+def test_inaccessible_intermediary_is_recorded_but_never_traversed(p: Probe) -> None:
+    """round-6 send-back HIGH: REVERSES round 4's item 8 decision. A pid
+    whose own identity cannot be read (AccessDenied, still ALIVE) is
+    recorded with `is_root_boundary: None` ("unknown"), and -- unlike round
+    4's "continue traversal regardless" -- its children are NEVER
+    descended through: an identity that cannot be confirmed safe must be
+    treated the SAME as a confirmed foreign boundary. Owner's absolute-
+    isolation requirement means "we don't know" cannot default to "assume
+    ours". Documented residue: an unreadable wrapper's own children are
+    missed until the wrapper itself dies, at which point ordinary H-1
+    widening (dead parent) can still link them in."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "denied"}, event="Stop")
+        fake_procs = {
+            1: _FakeProc("system", "", create_time=0.5),
+            50: _DeniedProc(50),
+            60: _FakeProc("workerd", "workerd --config x", create_time=2.0),
+        }
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        try:
+            procs_mod._ppid_map = lambda: {1: 0, 50: 1, 60: 50}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "denied")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger = procs_mod.read_session_ledger(sandbox.cfg, ctx, "denied")
+        entries = ledger.get("entries", {}) if ledger else {}
+        p.check(
+            "the inaccessible node (pid 50) IS recorded, is_root_boundary is "
+            "None (unknown), not False",
+            "50" in entries and entries["50"].get("name") is None
+            and entries["50"].get("is_root_boundary") is None,
+            str(entries.get("50")),
+        )
+        p.check(
+            "its child (pid 60, workerd) is NEVER traversed/captured while the "
+            "parent's identity is unknown",
+            "60" not in entries,
+            str(entries),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_tmp_file_cleaned_up_on_write_crash(p: Probe) -> None:
+    """LOW #3: a crash between writing the `.tmp` file and the atomic
+    os.replace() must not leave the `.tmp` file behind forever -- cleaned up
+    in `finally`."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "crashy"}, event="Stop")
+        fake_procs = {1: _FakeProc("system", "", create_time=0.5)}
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        orig_dump = procs_mod.json.dump
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        procs_mod._ppid_map = lambda: {1: 0}
+
+        def crashing_dump(*a, **k):
+            raise RuntimeError("simulated crash mid-write")
+
+        procs_mod.json.dump = crashing_dump
+        try:
+            try:
+                procs_mod.update_session_ledger(sandbox.cfg, ctx, "crashy")
+            except RuntimeError:
+                pass
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+            procs_mod.json.dump = orig_dump
+
+        path = procs_mod.session_ledger_path(sandbox.cfg, ctx, "crashy")
+        leftover = list(path.parent.glob(f"{path.name}.*.tmp"))
+        p.check(
+            "a crash mid-write leaves NO .tmp file behind (cleaned up in finally)",
+            not leftover,
+            str(leftover),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+# ------------------------------------------------------------------ round 5 (send-back): widening + reused parent
+
+
+def test_widening_excludes_reused_live_foreign_parent(p: Probe) -> None:
+    """round-5 MEDIUM: a ledger pid recorded as a (now-dead) wrapper must NOT
+    be an eligible widening PARENT any more once the OS reuses that pid for
+    an unrelated, LIVE, foreign process -- a live process's create_time must
+    match the ledger's recorded one to stay eligible; a dead pid stays
+    eligible unconditionally (the ordinary H-1 case). Owner requirement is
+    "never another session's", so this closes the leak in code, not merely
+    documents it. The reused pid is deliberately given a DIFFERENT ppid
+    (9999, not root) so it is unreachable via the BFS descendant walk --
+    the only route its child could take is WIDENING, isolating the fix under
+    test from item 3's separate (BFS-descent) re-verification."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "widen-reuse"}, event="Stop")
+        path = procs_mod.session_ledger_path(sandbox.cfg, ctx, "widen-reuse")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({
+                "root_pid": 1, "root_create_time": 0.5,
+                "entries": {"500": {"pid": 500, "ppid": 1, "name": "bash", "cmdline": "bash -c work",
+                                      "create_time": 10.0, "first_seen": 0.0, "is_root_boundary": False}},
+            }, fh)
+
+        fake_procs = {
+            1: _FakeProc("system", "", create_time=0.5),
+            500: _FakeProc("node", "node unrelated-foreign-app", create_time=99.0),  # REUSED, live, different identity
+            700: _FakeProc("python3", "python3 worker.py", create_time=50.0),
+        }
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        try:
+            # 500 is now LIVE with a DIFFERENT parent (9999, not root) --
+            # unreachable via BFS descent; its child (700) can only be
+            # ingested through widening.
+            procs_mod._ppid_map = lambda: {1: 0, 500: 9999, 700: 500}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "widen-reuse")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger = procs_mod.read_session_ledger(sandbox.cfg, ctx, "widen-reuse")
+        entries = ledger.get("entries", {})
+        p.check(
+            "widening: the reused live foreign parent's child (700) is NEVER ingested",
+            "700" not in entries,
+            str(entries),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+# ------------------------------------------------------------------ round 6 (send-back, Codex delta r2)
+
+
+def test_medium1_stale_true_boundary_after_reuse_unblocks_own_subtree(p: Probe) -> None:
+    """round-6 MEDIUM 1, direction (a): a CACHED confirmed boundary
+    (is_root_boundary=True) whose pid the OS later reuses for an ORDINARY
+    (non-boundary) process must be RE-VERIFIED before its stale True keeps
+    pruning what is now our own legitimate subtree forever. round 4 only
+    re-verified non-boundary cached nodes; a stale True was never
+    re-checked at all."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "m1-a"}, event="Stop")
+        fake_procs = {
+            1: _FakeProc("system", "", create_time=0.5),
+            500: _FakeProc("node", "node claude-code --agent", create_time=10.0),  # a real boundary
+        }
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        try:
+            procs_mod._ppid_map = lambda: {1: 0, 500: 1}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "m1-a")
+
+            ledger1 = procs_mod.read_session_ledger(sandbox.cfg, ctx, "m1-a")
+            p.check(
+                "setup: pid 500 recorded as a confirmed boundary",
+                ledger1["entries"].get("500", {}).get("is_root_boundary") is True,
+                str(ledger1),
+            )
+
+            # pid 500 is REUSED by an ORDINARY process (no substring match),
+            # same ppid=1, now with a legitimate child (600).
+            fake_procs[500] = _FakeProc("bash", "bash -c legit-work", create_time=20.0)
+            fake_procs[600] = _FakeProc("python3", "python3 worker.py", create_time=30.0)
+            procs_mod._ppid_map = lambda: {1: 0, 500: 1, 600: 500}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "m1-a")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger2 = procs_mod.read_session_ledger(sandbox.cfg, ctx, "m1-a")
+        entries = ledger2.get("entries", {})
+        p.check(
+            "pid 500 is re-classified False after reuse by an ordinary process",
+            entries.get("500", {}).get("is_root_boundary") is False,
+            str(entries),
+        )
+        p.check(
+            "its now-legitimate child (600) IS captured -- our own subtree is "
+            "no longer wrongly pruned by the stale True",
+            "600" in entries,
+            str(entries),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_medium1_fallback_stale_true_boundary_after_reuse_unblocks_subtree(p: Probe) -> None:
+    """round-6 MEDIUM 1, direction (a), FALLBACK path: the same
+    stale-True-after-reuse re-verification must also apply when
+    _ppid_map() is unavailable."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "m1-fb"}, event="Stop")
+
+        class _FakeChildProc:
+            def __init__(self, pid, ppid, name, cmdline, create_time=1.0):
+                self.pid = pid
+                self._ppid, self._name, self._cmdline, self._create_time = ppid, name, cmdline, create_time
+
+            def ppid(self):
+                return self._ppid
+
+            def name(self):
+                return self._name
+
+            def cmdline(self):
+                return self._cmdline.split()
+
+            def exe(self):
+                return ""
+
+            def create_time(self):
+                return self._create_time
+
+        class _FakeRootProc:
+            def __init__(self, pid, children_list, create_time=0.5):
+                self.pid = pid
+                self._children = children_list
+                self._create_time = create_time
+
+            def create_time(self):
+                return self._create_time
+
+            def children(self, recursive=False):
+                return self._children
+
+        boundary = _FakeChildProc(500, 1, "node", "node claude-code --agent", create_time=10.0)
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod._ppid_map = lambda: None  # force the fallback branch
+        try:
+            procs_mod.psutil.Process = lambda pid: _FakeRootProc(1, [boundary]) if pid == 1 else boundary
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "m1-fb")
+
+            ledger1 = procs_mod.read_session_ledger(sandbox.cfg, ctx, "m1-fb")
+            p.check(
+                "fallback setup: pid 500 recorded as a confirmed boundary",
+                ledger1["entries"].get("500", {}).get("is_root_boundary") is True,
+                str(ledger1),
+            )
+
+            reused = _FakeChildProc(500, 1, "bash", "bash -c legit-work", create_time=20.0)
+            child = _FakeChildProc(600, 500, "python3", "python3 worker.py", create_time=30.0)
+            procs_mod.psutil.Process = lambda pid: _FakeRootProc(1, [reused, child]) if pid == 1 else {500: reused, 600: child}[pid]
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "m1-fb")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger2 = procs_mod.read_session_ledger(sandbox.cfg, ctx, "m1-fb")
+        entries = ledger2.get("entries", {})
+        p.check(
+            "fallback: pid 500 is re-classified False after reuse",
+            entries.get("500", {}).get("is_root_boundary") is False,
+            str(entries),
+        )
+        p.check(
+            "fallback: its now-legitimate child (600) IS captured",
+            "600" in entries,
+            str(entries),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_medium2_sweep_preserves_unknown_root(p: Probe) -> None:
+    """round-6 MEDIUM 2: a ledger whose root cannot be read (AccessDenied,
+    "unknown") must NEVER be deleted by the sweep -- only a CONFIRMED dead
+    root justifies deletion. Previously AccessDenied collapsed to "dead"."""
+    import os
+    import time
+
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(event="Stop")
+        path = procs_mod.session_ledger_path(sandbox.cfg, ctx, "unknown-root")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"root_pid": 7777, "root_create_time": 5.0, "entries": {}}, fh)
+        old_time = time.time() - 999999
+        os.utime(path, (old_time, old_time))
+
+        orig_process = procs_mod.psutil.Process
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, _DeniedProc(pid))
+        try:
+            procs_mod._sweep_stale_ledger_files(sandbox.cfg, ctx, ttl_sec=1.0, now=time.time())
+        finally:
+            procs_mod.psutil.Process = orig_process
+
+        p.check(
+            "sweep: a ledger whose root identity is UNKNOWN (AccessDenied) is "
+            "never deleted, however old its mtime",
+            path.exists(),
+            "",
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_medium2_prune_preserves_unknown_entries(p: Probe) -> None:
+    """round-6 MEDIUM 2: TTL/max_entries pruning must never evict an entry
+    whose liveness cannot be confirmed (AccessDenied, "unknown") -- the same
+    protection as a confirmed-alive entry."""
+    entries = {
+        "50": {"pid": 50, "ppid": 1, "name": "node", "cmdline": "node x", "create_time": 1.0, "first_seen": 100.0},
+    }
+    orig_process = procs_mod.psutil.Process
+    procs_mod.psutil.Process = lambda pid: _with_pid(pid, _DeniedProc(pid))
+    try:
+        procs_mod._prune_ledger(entries, max_entries=0, ttl_sec=1.0, now=1000000.0)
+    finally:
+        procs_mod.psutil.Process = orig_process
+
+    p.check(
+        "prune: an entry with UNKNOWN liveness survives both the TTL pass and "
+        "max_entries=0 (which would evict everything dead)",
+        "50" in entries,
+        str(entries),
+    )
+
+
+def test_medium2_guard_never_reports_unknown_identity(p: Probe) -> None:
+    """round-6 MEDIUM 2: the guard must never report an entry whose liveness
+    is UNKNOWN as an orphan -- kill() downstream would then act on an
+    unconfirmed identity."""
+    entries = {
+        "50": {"pid": 50, "ppid": 1, "name": "python3", "cmdline": "python3 -m http.server 8000",
+               "create_time": 1.0, "first_seen": 0.0},
+    }
+    orig_process = procs_mod.psutil.Process
+    procs_mod.psutil.Process = lambda pid: _with_pid(pid, _DeniedProc(pid))
+    try:
+        sandbox = SandboxCtx()
+        try:
+            ctx = sandbox.build(event="Stop")
+            result = procs_mod.find_dev_processes_in_ledger(sandbox.cfg, ctx, entries, orphans_only=True)
+        finally:
+            sandbox.cleanup()
+    finally:
+        procs_mod.psutil.Process = orig_process
+
+    p.check(
+        "guard report: an UNKNOWN-liveness entry is never reported as an orphan",
+        result == [],
+        str(result),
+    )
+
+
+def test_medium2_cli_kill_never_signals_unknown_identity(p: Probe) -> None:
+    """round-6 MEDIUM 2: kill() must never signal a target whose live
+    create_time cannot be read (AccessDenied) -- an unconfirmed identity
+    must never be acted on. Pins the existing (already correct) behaviour
+    explicitly under the tri-state framing."""
+    denied = _DeniedProc(200)
+    orig_process = procs_mod.psutil.Process
+    procs_mod.psutil.Process = lambda pid: denied
+    try:
+        skips = procs_mod.kill([(200, 1.0)], None, {"dev_processes": {"stop_orphans": {"terminate_grace_seconds": 0}}})
+    finally:
+        procs_mod.psutil.Process = orig_process
+
+    skip_pids = {pid for pid, _msg in skips}
+    p.check(
+        "CLI kill: a target with an unreadable (AccessDenied) identity is "
+        "skipped, never signalled",
+        200 in skip_pids,
+        str(skips),
+    )
+
+
+# ------------------------------------------------------------------ round 7 (send-back, Codex delta r3)
+
+
+class _ExeDeniedProc:
+    """round 7: cmdline()/name()/create_time() all READABLE, but exe() --
+    the ONLY field that would reveal a substring match for this fake -- is
+    denied. Used to prove a foreign root identifiable solely by its exe()
+    path is not wrongly confirmed 'not a boundary' just because the
+    (unrelated, generic) cmdline text was readable."""
+
+    def __init__(self, name, cmdline, create_time=1.0):
+        self._name, self._cmdline, self._create_time = name, cmdline, create_time
+
+    def name(self):
+        return self._name
+
+    def cmdline(self):
+        return self._cmdline.split()
+
+    def create_time(self):
+        return self._create_time
+
+    def exe(self):
+        raise procs_mod.psutil.AccessDenied(getattr(self, "pid", 0))
+
+
+def test_high_partial_identity_exe_denied_boundary_is_unknown(p: Probe) -> None:
+    """round-7 send-back HIGH: a foreign root whose only identifying field is
+    exe() (its cmdline reveals nothing on its own) and whose exe() raises
+    AccessDenied must be classified `is_root_boundary: None` ("unknown"),
+    NEVER a confirmed `False` just because the READABLE part (cmdline)
+    happened not to match. A confirmed False must only ever come from a
+    COMPLETE identity text."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "partial"}, event="Stop")
+        fake_procs = {
+            1: _FakeProc("system", "", create_time=0.5),
+            200: _ExeDeniedProc("node", "node --harmless-flag", create_time=1.0),
+            300: _FakeProc("python3", "python3 worker.py", create_time=2.0),
+        }
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        try:
+            procs_mod._ppid_map = lambda: {1: 0, 200: 1, 300: 200}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "partial")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger = procs_mod.read_session_ledger(sandbox.cfg, ctx, "partial")
+        entries = ledger.get("entries", {}) if ledger else {}
+        p.check(
+            "pid 200 (exe() denied, cmdline readable but non-matching) is "
+            "is_root_boundary None, NOT a confirmed False",
+            entries.get("200", {}).get("is_root_boundary") is None,
+            str(entries.get("200")),
+        )
+        p.check(
+            "its child (300) is NEVER ingested while the parent's identity is "
+            "only partially known",
+            "300" not in entries,
+            str(entries),
+        )
+    finally:
+        sandbox.cleanup()
+
+
+def test_medium_stale_placeholder_reharvested_and_reclassified(p: Probe) -> None:
+    """round-7 send-back MEDIUM: a cached placeholder (is_root_boundary None,
+    or any of name/cmdline/create_time None) is re-harvested on EVERY
+    update, LEAF entries included -- not only when about to be descended
+    into. Once access is restored it is reclassified: boundary/non-boundary,
+    and if dev-shaped, reportable as an orphan like any other entry."""
+    sandbox = SandboxCtx()
+    try:
+        ctx = sandbox.build(payload={"session_id": "transient"}, event="Stop")
+        fake_procs = {1: _FakeProc("system", "", create_time=0.5), 50: _DeniedProc(50)}
+        orig_resolve = procs_mod.resolve_session_root
+        orig_ppid_map = procs_mod._ppid_map
+        orig_process = procs_mod.psutil.Process
+        procs_mod.resolve_session_root = lambda cfg, ctx_: (1, None)
+        procs_mod.psutil.Process = lambda pid: _with_pid(pid, fake_procs[pid])
+        try:
+            # update 1: pid 50 is a leaf, fully denied -- a placeholder.
+            procs_mod._ppid_map = lambda: {1: 0, 50: 1}
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "transient")
+
+            ledger1 = procs_mod.read_session_ledger(sandbox.cfg, ctx, "transient")
+            p.check(
+                "setup: pid 50 recorded as a placeholder (is_root_boundary None, name None)",
+                ledger1["entries"].get("50", {}).get("is_root_boundary") is None
+                and ledger1["entries"].get("50", {}).get("name") is None,
+                str(ledger1),
+            )
+
+            # update 2: access restored, SAME ppid (unchanged) -- only the
+            # stale-placeholder rule, not the ppid-changed rule, can trigger
+            # the re-harvest here.
+            fake_procs[50] = _FakeProc("python3", "python3 -m http.server 8000", create_time=9.0)
+            procs_mod.update_session_ledger(sandbox.cfg, ctx, "transient")
+        finally:
+            procs_mod.resolve_session_root = orig_resolve
+            procs_mod._ppid_map = orig_ppid_map
+            procs_mod.psutil.Process = orig_process
+
+        ledger2 = procs_mod.read_session_ledger(sandbox.cfg, ctx, "transient")
+        entries = ledger2.get("entries", {})
+        p.check(
+            "pid 50 is reclassified once readable: name filled in, is_root_boundary False",
+            entries.get("50", {}).get("name") == "python3"
+            and entries.get("50", {}).get("is_root_boundary") is False,
+            str(entries),
+        )
+
+        # And once reclassified as a real dev-shaped process with a dead
+        # parent, it is reportable exactly like any other ledger entry.
+        dead_parent_shape = _proc(50, 999999, "python3", "python3 -m http.server 8000")
+        with _StubbedLedgerLookup([dead_parent_shape]):
+            result = procs_mod.find_dev_processes_in_ledger(
+                sandbox.cfg, ctx, {"50": entries["50"]}, orphans_only=True)
+        p.check(
+            "reclassified dev-shaped entry with a dead parent IS reported as an orphan",
+            any(r.pid == 50 for r in result),
+            str(result),
+        )
+    finally:
+        sandbox.cleanup()
+
+
 # ------------------------------------------------------------------ stop_dev_orphans._find_targets composition
 
 
@@ -1265,6 +2314,36 @@ def main() -> int:
     test_h4_boundary_children_never_widened_in_across_three_updates(p)
     test_h2r_cold_update_session_ledger_under_budget(p)
     test_ppid_map_fallback_descendants_only_no_widening(p)
+
+    print("\n== ulthar-enforcement-round1 SEND-BACK round 4 (Codex third-party) ==")
+    test_root_resolution_exhausts_substrings_before_name_fallback(p)
+    test_descendant_boundary_is_substring_only_vite_workerd_captured(p)
+    test_fallback_prunes_at_foreign_boundary(p)
+    test_pid_reuse_same_ppid_by_foreign_root_children_not_ingested(p)
+    test_kill_reverifies_identity_before_each_signal(p)
+    test_session_id_sanitization_is_injective(p)
+    test_ledger_identity_mismatch_discards_entries(p)
+    test_lock_contention_skips_update_without_corrupting_ledger(p)
+    test_sweep_race_survives_concurrent_write_after_lock_acquired(p)
+    test_sweep_never_deletes_ledger_with_alive_root(p)
+    test_max_entries_evicts_dead_before_alive_and_oldest_dead_first(p)
+    test_inaccessible_intermediary_is_recorded_but_never_traversed(p)
+    test_tmp_file_cleaned_up_on_write_crash(p)
+
+    print("\n== ulthar-enforcement-round1 SEND-BACK round 5 ==")
+    test_widening_excludes_reused_live_foreign_parent(p)
+
+    print("\n== ulthar-enforcement-round1 SEND-BACK round 6 (Codex delta r2) ==")
+    test_medium1_stale_true_boundary_after_reuse_unblocks_own_subtree(p)
+    test_medium1_fallback_stale_true_boundary_after_reuse_unblocks_subtree(p)
+    test_medium2_sweep_preserves_unknown_root(p)
+    test_medium2_prune_preserves_unknown_entries(p)
+    test_medium2_guard_never_reports_unknown_identity(p)
+    test_medium2_cli_kill_never_signals_unknown_identity(p)
+
+    print("\n== ulthar-enforcement-round1 SEND-BACK round 7 (Codex delta r3) ==")
+    test_high_partial_identity_exe_denied_boundary_is_unknown(p)
+    test_medium_stale_placeholder_reharvested_and_reclassified(p)
 
     print("\n== stop_dev_orphans._find_targets composition ==")
     test_stop_dev_orphans_default_orphans_only(p)

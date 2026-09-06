@@ -461,6 +461,13 @@ class GuardPurityVisitor(ast.NodeVisitor):
 
 
 def check_guard_purity(p: Probe) -> None:
+    """ulthar-enforcement-round1 send-back round 4, item 9: a guard calling
+    ctx.log_config_error / ctx.log_error is NOT a purity violation -- Ctx-
+    injected logging is the one permitted side channel for a guard (it is
+    how dev_process_hygiene.py, dev_server.py and tool_discipline.py already
+    report a config defect without touching the filesystem directly
+    themselves), distinct from a guard reaching for os/sys/subprocess/print
+    on its own, which this AST scan below still forbids."""
     guards_dir = HOOKS_DIR / "guards"
     guard_files = sorted(f for f in guards_dir.glob("*.py") if f.name != "__init__.py")
     if not guard_files:
