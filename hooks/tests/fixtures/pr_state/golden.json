@@ -1,0 +1,130 @@
+[
+  {
+    "id": "pr-state-non-push",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"x\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "expect_exit": 0,
+    "expect_no_gh_call": true,
+    "parity": true
+  },
+  {
+    "id": "pr-state-branch-delete-push",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin --delete old-topic"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "expect_exit": 0,
+    "expect_no_gh_call": true,
+    "parity": true
+  },
+  {
+    "id": "pr-state-dir-option",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git -C \"${CWD}\" push origin feature/x"}, "cwd": "${CWD}"},
+    "cwd_kind": "my repo",
+    "setup": {"kind": "git_repo"},
+    "_why_setup": "round-4 fix (was a hardcoded, never-seeded 'C:/some repo'). `cwd_kind: \"my repo\"` resolves to a REAL sandboxed directory whose name contains a space -- the space is the whole point of the case: it exercises gitcmd.repo_dir's quoted `-C \"<dir with a space>\"` parsing, which a bare unquoted -S+ prefix regex could never match. `${CWD}` is this case's resolved cwd (parity.py's _placeholder_map), substituted into BOTH the command text's -C value and payload.cwd, so the command's quoted argument and the real seeded directory are byte-identical. `setup: {kind: git_repo}` uses the builder's `at_cwd: true` default, which seeds exactly that resolved cwd (not a separate repos/<name> location) -- so no `name` override is needed to line the two up.",
+    "gh_stub": {"rc": 0, "timeout": false, "response": [{"number": 7, "state": "OPEN", "url": "https://github.com/o/r/pull/7"}]},
+    "expect_gh_cwd": "${CWD}",
+    "expect_gh_argv_contains": ["--head", "feature/x", "--limit", "10"],
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "pr-state-sha-ref",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin abc1234def0"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "expect_exit": 0,
+    "expect_no_gh_call": true,
+    "parity": true
+  },
+  {
+    "id": "pr-state-head-sentinel",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "expect_exit": 0,
+    "expect_no_gh_call": true,
+    "parity": true
+  },
+  {
+    "id": "pr-state-gh-empty",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin feature/empty"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "gh_stub": {"rc": 0, "timeout": false, "response": []},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "pr-state-gh-errors",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin feature/gh-down"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "gh_stub": {"rc": 1, "timeout": false, "response": null},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "pr-state-open-pr-exists",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin feature/has-open"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "gh_stub": {"rc": 0, "timeout": false, "response": [
+      {"number": 3, "state": "MERGED", "url": "https://github.com/o/r/pull/3"},
+      {"number": 9, "state": "OPEN", "url": "https://github.com/o/r/pull/9"}
+    ]},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "pr-state-no-open-pr-blocks",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin feature/merged-out"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "_why_setup": "round-3 item 1 fix. A real repo makes the local half of the guard's work (branch parsing, cwd resolution) genuine; the gh response itself is now answered deterministically by U-0's gh shim (round-4).",
+    "gh_stub": {"rc": 0, "timeout": false, "response": [
+      {"number": 5, "state": "MERGED", "url": "https://github.com/o/r/pull/5"}
+    ]},
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (PR state): branch 'feature/merged-out' has no OPEN pull request",
+    "parity": false,
+    "parity_exception": "PE-16",
+    "_why": "PE-16 (round-4), same root-cause class as PE-14: git_policy.pr_state.message contains a backtick-quoted `gh pr view <n> --json state`. pr-state-guard.ps1 prints it from inside an @\"...\"@ here-string, so PowerShell strips the backticks at parse time -- a master defect. The port's message is correct (backticks intact), so full-stderr equality fails."
+  },
+  {
+    "id": "pr-state-bare-push-fallback-branch-blocks",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature", "branch": "feature/x"},
+    "_why": "A bare `git push` carries no branch token at all, so this is the ONLY fixture that exercises the `git rev-parse --abbrev-ref HEAD` LOCAL-kind fallback in gitcmd.current_branch -- every other fixture parses the branch straight out of the command text. The setup step's `branch` override is REQUIRED here (not merely for realism, like the other pr_state fixtures): _setup_git_repo's default checkout for name:'feature' is 'feature/parity-fixture', which would make the real `git rev-parse` answer a different branch than 'feature/x' and break expect_stderr_contains.",
+    "gh_stub": {"rc": 0, "timeout": false, "response": [
+      {"number": 21, "state": "CLOSED", "url": "https://github.com/o/r/pull/21"}
+    ]},
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (PR state): branch 'feature/x' has no OPEN pull request",
+    "parity": false,
+    "parity_exception": "PE-16",
+    "_why": "PE-16 (round-4) -- see pr-state-no-open-pr-blocks for the full root-cause note."
+  }
+]

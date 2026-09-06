@@ -1,0 +1,21 @@
+{
+  "_note": "EXAMPLE, not a live file. This shows the SHAPE of the settings the pre-round1 config.json shipped as a UNIVERSAL default -- one owner's hosting-provider preview-branch names and one project's package.json script name. Those belong to the OWNER of ~/.claude, not to every stranger who installs ULTHAR, so this was generalised and moved here (the config-generalisation round). To use it: copy this file's content (or the parts you want) to the path named in config.json -> overlays.user_path (default ~/.claude/ulthar-overlay.json) and edit the values for YOUR project/hosting setup. The user layer is fully trusted (CONTRACT.md 'overlays') -- there is no allowlist restriction here, unlike the project-overlay example. Three rules still bind it. The first is a PATH rule and it is short: the SECTIONS in config.json -> overlays.pinned_paths (dispatch, grants, regex, overlays) are refused from this file too, against a rewrite and against a `disable` naming them or anything inside them -- nothing in them is a rule, each decides what a rule can do, and every one was measured as a single-overlay way to switch the whole mechanism off. Change those in config.json, which no overlay can reach; note it costs a legitimate use, since extending regex.named_alternations has to happen there now. The second is a CONTAINER rule: a path where config.json holds a LIST may only be merged with a list, and a section only with a section -- putting a dict or a scalar where a rule list lives replaced the whole list and removed every rule in it. The third is a TYPE rule rather than a path rule: a list declared 'append' in config.json -> overlays.list_merge is homogeneous, so an entry whose type differs from what that list already holds (the string '8080' in dev_processes.ports, which holds ints) is refused with this file's path and the dotted path named -- by install.py at deploy time and by the dispatcher at the next tool call. It used to merge and then silently never match.",
+
+  "git_policy": {
+    "deploy_refs": ["preview-branch-a", "preview-branch-b"]
+  },
+
+  "command_rules": {
+    "dev_server": [
+      {
+        "id": "dev-heavy-requires-heap",
+        "enabled": true,
+        "type": "regex_require",
+        "target": "raw",
+        "pattern": "(?i)npm\\s+run\\s+dev:heavy",
+        "requires": "(?i)max-old-space-size",
+        "message": "BLOCKED (dev-server guard): 'npm run dev:heavy' without an enlarged Node heap can\nOOM-crash a build with a heavy compile step, since Node's default heap is small.\nLaunch it with the heap set in the same command, e.g.:\n  $env:NODE_OPTIONS='--max-old-space-size=4096'; npm run dev:heavy\n"
+      }
+    ]
+  }
+}

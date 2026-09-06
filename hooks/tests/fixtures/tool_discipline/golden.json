@@ -1,0 +1,177 @@
+[
+  {
+    "_note": "The 19 golden cases migrated from ~/.claude/hooks/test-discipline-guard.ps1 (CONTRACT.md #6 'Fixture inventory'). Each gains `tool_name` (misreading #9) -- the original .ps1 sends only {tool_input:{command}} directly to the guard, never through a router.",
+    "id": "golden-01-block-cd-compound-bash",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "cd build && ninja"}},
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (tool discipline): compound command",
+    "parity": true
+  },
+  {
+    "id": "golden-02-block-cd-semicolon-ps",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "PowerShell", "tool_input": {"command": "cd C:\\x; if ($?) { ninja }"}},
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (tool discipline): compound command",
+    "parity": true
+  },
+  {
+    "id": "golden-03-block-pushd-compound",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "pushd src && make"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "golden-04-block-cat-redirect",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "cat > foo.txt"}},
+    "expect_exit": 2,
+    "expect_stderr_contains": "shell file creation",
+    "parity": true
+  },
+  {
+    "id": "golden-05-block-cat-heredoc-file",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "cat <<EOF > out.txt"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "golden-06-block-echo-redirect",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "echo hello > out.md"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "golden-07-block-printf-append",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "printf \"%s\" x >> log2.md"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "golden-08-block-tee",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "make | tee build_out"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "golden-09-block-set-content",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "PowerShell", "tool_input": {"command": "Set-Content -Path x.txt -Value hi"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "golden-10-block-out-file",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "PowerShell", "tool_input": {"command": "\"x\" | Out-File y.txt -Encoding utf8"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "golden-11-pass-ninja-c",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ninja -C build/arm app"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "golden-12-pass-git-c",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git -C C:\\repo status"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "golden-13-pass-commit-heredoc-msg",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git commit -m \"$(cat <<'EOF'\nfix: a->b\nEOF\n)\""}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "golden-14-pass-stderr-devnull",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "stat -c %Y f 2>/dev/null; echo ok"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "golden-15-pass-redirect-psnull",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "PowerShell", "tool_input": {"command": "ping x > $null; echo done"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "golden-16-pass-ps-herestring-commit",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "PowerShell", "tool_input": {"command": "git commit -m @'\nchore: x\n'@"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "golden-17-pass-cd-alone",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "cd C:\\repo"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "golden-18-pass-pipe-grep",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "pdftotext a.pdf - | grep -n RSET"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "golden-19-pass-quoted-exe-path",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "& \"C:\\tools\\example-cli.exe\" --check input.dat"}},
+    "expect_exit": 0,
+    "parity": true
+  }
+]

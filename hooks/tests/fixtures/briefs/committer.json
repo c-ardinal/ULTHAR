@@ -1,0 +1,45 @@
+[
+  {
+    "id": "committer-files-colon-present-allow",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "SendMessage",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "message": "[Committer Brief] round1 commit request. Files: src/a.py, src/b.py. Do not stage anything else, keep docs/scratch.md unstaged for now please and thanks. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "committer-files-paren-variant-allow",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "SendMessage",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "message": "[Committer Brief] round1 commit request. Files (per the plan): src/a.py and src/b.py only, nothing else at all this round please and thank you very much indeed. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "committer-files-list-missing-block",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "SendMessage",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "message": "[Committer Brief] round1 commit request. Please commit everything that looks relevant to you and use your best judgement about what belongs, thanks so much. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (brief gate)",
+    "parity": true
+  }
+]

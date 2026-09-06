@@ -1,0 +1,61 @@
+[
+  {
+    "id": "committer-ja-content-dispatch-allow",
+    "guard": "brief_gate",
+    "payload": {
+      "tool_name": "SendMessage",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "message": "C-160 round51-55 をコミットしてください。\n対象は round51 から round55 までの受入済み成果です。レイアウト調整とパネルの整理、.tsx 側の修正が含まれます。コミットは列挙したファイルのみをステージし、add -A / . / -u は絶対に使わないでください。\nFiles:\n  - src/components/LayoutDock.tsx\n  - src/components/Panel.tsx\n  - src/styles/dock.css\n未ステージのまま残すもの: docs/scratch.md, STATE.md\nコミットメッセージは feat: で始め、round ごとの要約を本文に入れてください。テストは既に通っています。ブランチは improve/token-diet のままで、push はしないでください。以上の内容で作業を進めてください。追加の確認事項があれば作業前に質問してください。\n"
+      }
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "content-classified committer (2026-09-05); brief-gate-guard.ps1 classified committer by header only, so the master would BLOCK this text at gate 2. Deliberate divergence, not a port defect. This is the owner's real dispatch shape and the reason the content route exists at all: it carries all three positive locks -- line-anchored Files:, をコミット, and the staging discipline (「のみをステージし」/「未ステージのまま残すもの」)."
+  },
+  {
+    "id": "committer-ja-content-without-files-list-not-committer-block",
+    "guard": "brief_gate",
+    "payload": {
+      "tool_name": "SendMessage",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "message": "C-160 round51-55 をコミットしてください。\n対象は round51 から round55 までの受入済み成果です。レイアウト調整とパネルの整理、.tsx 側の修正が含まれます。関連しそうなものはあなたの判断でまとめてステージして構いません。\n未ステージのまま残すもの: docs/scratch.md\nコミットメッセージは feat: で始め、round ごとの要約を本文に入れてください。テストは既に通っています。ブランチは improve/token-diet のままで、push はしないでください。以上の内容で作業を進めてください。追加の確認事項があれば作業前に質問してください。列挙リストは今回は省略します。作業ログは done-report にまとめ、実際に実行したコマンドと出力の要約を添えてください。判断に迷う点があれば止めて報告してください。ブランチの切り替えやリベースは行わないでください。作業対象は現在のワークツリーのみです。\n"
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (brief gate)",
+    "parity": false,
+    "parity_exception": "content-classified committer (2026-09-05); sibling of committer-ja-content-dispatch-allow, proving lock 1 (the explicit file list) is load-bearing for the new classification."
+  },
+  {
+    "id": "creator-labelled-no-approval-with-files-and-commit-stays-creator-block",
+    "guard": "brief_gate",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Creator Brief] round7 — ドックのレイアウトとパネルの見た目を作り直してください。\nGoal: DockPanel の情報構造を整理し、チップの状態表示を追加する。\nFiles:\n  - src/components/LayoutDock.tsx\n  - src/components/Panel.tsx\n  Do NOT edit: 共有トークン、ルーター\nSTATE.md §2 の完成の定義 行3/行4 を対象とします。行ごとに証拠付きで報告してください。\nOWNER-CONFIRMED: オーナー決定 — 今回の round はドックのみ、他画面には触れない。\n作業が終わったら変更をコミットしてください。push はしないでください。ブランチは improve/token-diet のままにしてください。\nテストは既存の run_all を使い、実測値を報告してください。\nReport back: files changed, actual test numbers, per-invariant confirmation.\n"
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "names no design skill",
+    "parity": false,
+    "parity_exception": "2026-09-06 HIGH finding — the reviewer's exact reproduction, and the REPLACEMENT for this slot's previous fixture (creator-ui-brief-with-files-header-stays-creator-block). That one carried an APPROVAL: line, so the old third lock ('no approval reference anywhere') excluded it for the wrong reason and it never exercised the dangerous case. This one is an explicitly labelled creator brief with a Files list naming a component file, a Japanese sentence asking for the change to be committed, and NO APPROVAL:/BRIEF: reference: under the old rule it classified committer and returned ALLOW, skipping every creator gate. It now classifies creator by header precedence and blocks at gate 2 (design_cases), the first creator gate it fails."
+  },
+  {
+    "id": "creator-shaped-unlabelled-no-approval-not-committer-block",
+    "guard": "brief_gate",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "C-161 round7 — トークナイザの正規化処理を書き直してください。\nGoal: 全角/半角の正規化を一箇所に集約し、境界条件のテストを追加する。\nFiles:\n  - src/core/tokenizer.py\n  - src/core/normalize.py\n  - tests/test_tokenizer.py\nSTATE.md §2 の完成の定義 行5/行6 を対象とします。行ごとに証拠付きで報告してください。\nOWNER-CONFIRMED: オーナー決定 — 正規化の対象は全角英数と長音記号のみ。辞書は今回触らない。\n作業が終わったら変更をコミットしてください。push はしないでください。ブランチは improve/token-diet のままにしてください。\nテストは既存の run_all を使い、実測値を報告してください。判断に迷う点があれば止めて報告してください。\nReport back: files changed, actual test numbers, per-invariant confirmation.\n"
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "carries no APPROVAL",
+    "parity": false,
+    "parity_exception": "2026-09-06 HIGH finding — unlabelled sibling of the reviewer's reproduction, replacing this slot's previous fixture (creator-ui-brief-mentioning-commit-stays-creator-block, which never carried a Files: header and so never reached the content route at all). It carries lock 1 (line-anchored Files:) and lock 2 (をコミット) and NO approval reference, but no staging-discipline phrase; under the old rule the MISSING approval was itself the third lock, so it classified committer and returned ALLOW. It now falls through to the creator fallback and blocks at gate 6 — the exact gate its missing approval reference exists to enforce. Deliberately free of UI vocabulary so the block is attributable to gate 6 rather than to design_cases."
+  }
+]

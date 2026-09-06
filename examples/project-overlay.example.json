@@ -1,0 +1,32 @@
+{
+  "_note": "EXAMPLE, not a live file. Shows the two things a project-level overlay may do: ADD its own rules, and DISABLE named existing ones -- both at the exact paths listed in config.json -> overlays.project_allowed_paths, using the merge strategy declared for that path in overlays.list_merge. Copy to <repo>/.claude/ulthar-overlay.json (config.json -> overlays.project_path) and edit for THIS repo's own conventions.",
+
+  "_note_precedence": "A project overlay's policy WINS while you work in that repo, including where it removes a rule that was protecting you -- project configuration takes precedence over personal configuration, as it does for .editorconfig or a linter config (config.json -> overlays._note). What it cannot do is weaken anything ACCIDENTALLY: an entry whose shape the consuming guard could not read is refused at merge time instead of crashing that guard into the dispatcher's fail-open, a 'disable' naming no existing rule is a loud ConfigError rather than a silent no-op, and anything disabled here is logged and stated once per session in the operator's context. It also cannot touch ULTHAR's own wiring (paths.python_exe, dispatch.events, logging.*, deploy_guard): that is not policy about this repo, it is the repo rewriting the guards that judge it.",
+
+  "_note_disable": "One entry per rule, \"<dotted config path>/<rule id>\". The path is the same one used in overlays.project_allowed_paths; the id is the entry's 'id' (or, for a plain scalar list like git_policy.protected_branches, the scalar itself). Exactly the named rule stops applying -- its siblings in the same list, and every other rule in the same guard, keep enforcing.",
+  "disable": [
+    "git_policy.destroyers/clean"
+  ],
+
+  "git_policy": {
+    "deploy_refs": ["this-repos-staging-preview"]
+  },
+
+  "command_rules": {
+    "dev_server": [
+      {
+        "id": "this-repo-e2e-requires-flag",
+        "enabled": true,
+        "type": "regex_require",
+        "target": "raw",
+        "pattern": "(?i)npm\\s+run\\s+e2e:server",
+        "requires": "(?i)--record",
+        "message": "BLOCKED (dev-server guard, project overlay): 'npm run e2e:server' in this repo\nmust be launched with --record so a failing run leaves a trace.\n"
+      }
+    ]
+  },
+
+  "dev_processes": {
+    "ports": [4173]
+  }
+}

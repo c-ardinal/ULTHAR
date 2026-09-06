@@ -1,0 +1,45 @@
+[
+  {
+    "id": "forwarder-out-file-present-allow",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Forwarder Brief] round1 dispatch. Redirect the full output to scratchpad/run-42.out and arm a watchdog on that path in this same turn before proceeding further with anything else at all. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "forwarder-out-file-missing-block",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Forwarder Brief] round1 dispatch. Please just run the thing and tell me what happens without redirecting anything anywhere in particular this time around please. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (brief gate)",
+    "parity": true
+  },
+  {
+    "id": "forwarder-codex-exec-variant-allow",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "SendMessage",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "message": "codex exec this round for the delta pass please and make sure the transcript is captured to scratchpad/delta-9.out this time as usual thanks. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": true
+  }
+]

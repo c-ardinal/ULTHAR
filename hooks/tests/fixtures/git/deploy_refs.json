@@ -1,0 +1,41 @@
+[
+  {
+    "id": "git-deploy-ref-bare-push",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin preview-branch-a"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): pushing to the deploy branch 'preview-branch-a' is reserved for the owner.",
+    "parity": true
+  },
+  {
+    "id": "git-deploy-ref-refspec-dst",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin x:preview-branch-a"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): pushing to the deploy branch 'preview-branch-a' is reserved for the owner.",
+    "parity": true
+  },
+  {
+    "id": "git-deploy-ref-head-refs-heads",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD:refs/heads/preview-branch-b"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): pushing to the deploy branch 'preview-branch-b' is reserved for the owner.",
+    "parity": true
+  },
+  {
+    "id": "git-deploy-ref-near-miss-not-blocked",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin preview-branch-a-notes"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 0,
+    "parity": true
+  }
+]

@@ -1,0 +1,42 @@
+[
+  {
+    "_note": "Golden set migrated from ~/.claude/hooks/test-artifact-hygiene-check.ps1 (8 cases). GAP (reported in the done-report, not patched -- tests/parity.py is U-0's file, not this unit's): SETUP_BUILDERS in parity.py (as of this fan-out) has NO builder that creates a file inside a gitignored artifact directory with a controlled age -- only `artifact_hygiene_marker` (seeds the already-fired marker) exists. 3 of the 8 golden cases (FIRE stale artifact / QUIET fresh file / FIRE new session) therefore cannot be represented through parity.py's current mechanism: a case whose 'setup' names an unsupported kind is a HARD parity.py failure (SetupError), and a case with NO setup starts from an empty, freshly-mkdir'd cwd, which is indistinguishable from the QUIET case and would assert the WRONG exit code if marked FIRE. A second, separate gap: run_case() unconditionally cwd.mkdir()s the resolved payload cwd before either side runs, so the golden 'QUIET missing cwd' case (a nonexistent cwd) is also unrepresentable through parity.py as written. All 8 golden cases ARE fully and correctly proven -- including the 4 affected by these two gaps -- by tests/test_artifact_hygiene.py, which builds real temp trees with a frozen ctx.now() and does not depend on parity.py's setup-builder set (14/14 passing; run `python tests/test_artifact_hygiene.py`). The 4 cases below are exactly the ones NOT blocked by either gap.",
+    "id": "ah-quiet-no-artifact-dirs",
+    "guard": "artifact_hygiene",
+    "event": "Stop",
+    "ps1": "artifact-hygiene-check.ps1",
+    "payload": {"tool_name": "", "hook_event_name": "Stop", "session_id": "s1"},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "ah-quiet-empty-dir",
+    "_note": "Semantically identical to ah-quiet-no-artifact-dirs given the missing mkdir-only setup kind (see file-level _note) -- both start from an empty, freshly-created cwd with none of artifact_dirs.dirs present. Kept as a distinct migrated id for the golden-set count; the DISTINCT 'directory exists but is empty' code path is genuinely exercised in tests/test_artifact_hygiene.py::test_quiet_empty_dir.",
+    "guard": "artifact_hygiene",
+    "event": "Stop",
+    "ps1": "artifact-hygiene-check.ps1",
+    "payload": {"tool_name": "", "hook_event_name": "Stop", "session_id": "s2"},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "ah-quiet-2nd-time-marker",
+    "_note": "Uses the artifact_hygiene_marker setup builder to seed an already-fired marker for this session_id directly -- a cleaner, single-run equivalent of the golden FIRE-then-QUIET pair (one_fire_per_session's core assertion: a pre-fired marker alone is sufficient to suppress the scan, independent of whether the cwd is actually dirty). The FIRE half of the golden pair is one of the 3 cases blocked by the missing artifact-file setup kind (see file-level _note); it is proven in tests/test_artifact_hygiene.py::test_quiet_second_time_marker.",
+    "guard": "artifact_hygiene",
+    "event": "Stop",
+    "ps1": "artifact-hygiene-check.ps1",
+    "setup": {"kind": "artifact_hygiene_marker", "session_id": "s4b"},
+    "payload": {"tool_name": "", "hook_event_name": "Stop", "session_id": "s4b"},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "ah-quiet-stop-hook-active",
+    "guard": "artifact_hygiene",
+    "event": "Stop",
+    "ps1": "artifact-hygiene-check.ps1",
+    "payload": {"tool_name": "", "hook_event_name": "Stop", "session_id": "s6", "stop_hook_active": true},
+    "expect_exit": 0,
+    "parity": true
+  }
+]

@@ -1,0 +1,176 @@
+[
+  {
+    "_note": "Rule 3 (delete-outside-disposable) fixtures, CONTRACT.md #6 table (B) -- min 10, including block-outside, allow-per-location, `..` escape, comma-joined -LiteralPath, lower-case remove-item, pm-delete-allow consume-on-use (before/after), and subagent denial. Cases whose command references a dynamically-sandboxed path use the '{{BAD_PATH}}' placeholder -- test_tool_discipline.py substitutes it with a concrete absolute path under the per-test sandbox before invoking the guard (and into pm_allow_seed entries identically, so the two sides compare equal after normalisation).",
+    "id": "r3-01-block-outside-disposable",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf src/important-data.db"}},
+    "expect_exit": 2,
+    "expect_stderr_contains": "deleting files outside disposable locations",
+    "parity": true
+  },
+  {
+    "id": "r3-02-allow-scratchpad",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/session/scratchpad/junk.tmp"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-03-allow-dist",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf dist/bundle.js"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-04-allow-claude-state",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf .claude/state/stale-marker.json"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-05-allow-node-modules",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf node_modules/leftover-pkg"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-06-allow-temp-claude",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf C:/Users/a/AppData/Local/Temp/claude/x/junk.tmp"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-07-allow-playwright-mcp",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf .playwright-mcp/screenshot.png"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-08-allow-test-results",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf test-results/run1/output.log"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-09-allow-playwright-report",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf playwright-report/index.html"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-10-allow-dev-null",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -f /dev/null"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-11-dotdot-escape-outside",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "_note": "M-9b/F-18: '..' resolves against the HOOK PROCESS cwd, not payload.cwd. test_tool_discipline.py os.chdir()s into a fresh temp dir before invoking the guard directly (needs_chdir), then restores cwd in finally. dist/../../ escapes above the chdir base, landing outside every allowed substring.",
+    "needs_chdir": true,
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf dist/../../outside-secret.txt", "cwd": "/this/payload/cwd/must/be/ignored"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "r3-12-comma-joined-literalpath-one-allowed",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "_note": "2026-08-29 fix: a comma-joined -LiteralPath list used to be one token, so one allowed path let the whole list through. Every entry must be independently allowed.",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "PowerShell", "tool_input": {"command": "Remove-Item -LiteralPath \"dist/a.js\",\"src/important.txt\""}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "r3-13-lowercase-remove-item",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "_note": "text-kind case-insensitivity: lower-case 'remove-item' must be caught exactly like 'Remove-Item'.",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "PowerShell", "tool_input": {"command": "remove-item foo/important.txt"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "r3-14-pm-allow-grant-consume",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "_note": "round-3 fix: uses parity.py's REAL setup schema ({kind:'pm_delete_allow', paths:[...]}) instead of the {{BAD_PATH}}/dynamic convention invented in round-1, which parity.py never understood -- the literal '{{BAD_PATH}}' text has no '/' or '.', so it was never even recognised as a path token, Rule 3 never engaged, and both sides trivially agreed on ALLOW for the wrong reason (both unprepared, not both correct). The target here is a RELATIVE path with no '..' segment, so it is compared as-is (never dotdot-resolved) but IS resolved via _full_path()/process cwd for the pm-delete-allow comparison specifically -- and since neither run_old_side() nor run_new_side() pass an explicit subprocess cwd=, BOTH sides inherit parity.py's own process cwd identically, so a plain relative string needs no sandbox-path templating to line up on both sides of the allow-file/command comparison. Main chain (no agent_id/transcript) + the exact relative path pre-authorised -> GRANT, exit 0. The full BEFORE/AFTER file-state proof of consume-on-use (granted once, then blocked on an identical second run against the SAME state) cannot be expressed as one parity fixture -- parity.py reseeds fresh per side and per case, it never chains two runs -- so that proof lives in test_tool_discipline.py's check_consume_on_use_before_after(), which calls the guard directly, twice, against one sandbox it fully controls.",
+    "setup": {"kind": "pm_delete_allow", "paths": ["owner-files/important-data.db"]},
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf owner-files/important-data.db"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "r3-15-pm-allow-consumed-second-run",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "_note": "round-3 fix: id kept for traceability, scope corrected. The original 'run again after r3-14 consumed it' framing does not fit parity.py's per-case fresh-sandbox model (see r3-14's note); reinterpreted as the branch it can actually test honestly: pm-delete-allow EXISTS (unlike r3-01, which has no allow file at all) but lists only an UNRELATED path, so the target is not covered -> still BLOCKED. This exercises 'entry present, target not listed' as its own real, seeded branch, distinct from both r3-01 (no file) and r3-14 (exact match). The genuine before/after consume-on-use proof lives in test_tool_discipline.py's check_consume_on_use_before_after().",
+    "setup": {"kind": "pm_delete_allow", "paths": ["some/unrelated/other-file.txt"]},
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -rf owner-files/important-data.db"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "r3-16-subagent-denied-allowlist",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "_note": "PM allowlist is main-chain only (I-6). round-3 fix: real setup (see r3-14's note on why a plain relative path needs no sandbox templating) -- the allow file genuinely lists the EXACT target path this time, so the block is provably caused by the non-empty agent_id (subagent), not by an unseeded/absent allowlist.",
+    "setup": {"kind": "pm_delete_allow", "paths": ["owner-files/important-data.db"]},
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "agent_id": "subagent-42", "tool_input": {"command": "rm -rf owner-files/important-data.db"}},
+    "expect_exit": 2,
+    "parity": true
+  },
+  {
+    "id": "r3-pe1-agent-empty-subagent-transcript",
+    "guard": "tool_discipline",
+    "ps1": "tool-discipline-guard.ps1",
+    "event": "PreToolUse",
+    "_note": "PE-1: agent_id empty AND transcript_path under /subagents/, path pre-authorised. OLD (agent_id-only check) treats this as main chain and GRANTS (consumes). NEW (two-signal is_main_chain) also checks the transcript path and BLOCKS. Deliberate tightening, never a loosening. round-3 fix: real setup (r3-14's note) so the allow file genuinely lists the target -- the block is provably caused by the two-signal check, not by an unseeded allowlist. transcript_path uses ${SUB_TRANSCRIPT} (parity.py's resolved placeholder, a path containing '/subagents/'); is_main_chain only regex-matches this string, it never touches the filesystem, so the placeholder need not point at a real file.",
+    "setup": {"kind": "pm_delete_allow", "paths": ["owner-files/important-data.db"]},
+    "payload": {
+      "hook_event_name": "PreToolUse",
+      "tool_name": "Bash",
+      "agent_id": "",
+      "transcript_path": "${SUB_TRANSCRIPT}",
+      "tool_input": {"command": "rm -rf owner-files/important-data.db"}
+    },
+    "expect_exit": 2,
+    "parity": false,
+    "parity_exception": "PE-1"
+  }
+]

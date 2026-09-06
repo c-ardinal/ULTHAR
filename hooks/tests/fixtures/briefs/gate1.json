@@ -1,0 +1,17 @@
+[
+  {
+    "id": "creator-gate1-missing-state-block",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Creator Brief] round1. The plan covers backend queue processing and retry semantics only, nothing about screens. OWNER-CONFIRMED: the owner approved this scope explicitly in chat today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "acceptance table",
+    "parity": true
+  }
+]

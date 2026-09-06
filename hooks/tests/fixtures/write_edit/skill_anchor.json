@@ -1,0 +1,265 @@
+[
+  {
+    "id": "skill-anchor-01-silent-without-marker",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {},
+    "payload": { "tool_name": "Agent", "cwd": "${CWD}", "hook_event_name": "PreToolUse" },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": true
+  },
+  {
+    "id": "skill-anchor-02-silent-comments-only",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": { "active_skills": "# comment only\n" },
+    "payload": { "tool_name": "Agent", "cwd": "${CWD}", "hook_event_name": "PreToolUse" },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": true
+  },
+  {
+    "id": "skill-anchor-03-silent-unknown-skill",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": { "active_skills": "no-such-skill\n" },
+    "payload": { "tool_name": "Agent", "cwd": "${CWD}", "hook_event_name": "PreToolUse" },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": true
+  },
+  {
+    "id": "skill-anchor-04-rejects-path-separators",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": { "active_skills": "../../escape\n" },
+    "payload": { "tool_name": "Agent", "cwd": "${CWD}", "hook_event_name": "PreToolUse" },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": true
+  },
+  {
+    "id": "skill-anchor-05-pretooluse-json-envelope",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: \u59d4\u4efb the creator brief protocol." } }
+    },
+    "payload": { "tool_name": "Agent", "cwd": "${CWD}", "hook_event_name": "PreToolUse" },
+    "expect_exit": 0,
+    "expect_stdout_contains": ["\"hookEventName\":\"PreToolUse\"", "briefing-templates", "\u59d4\u4efb"],
+    "parity": true
+  },
+  {
+    "id": "skill-anchor-06-postcompact-not-routed",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PostCompact",
+    "via": "dispatch_route",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: the creator brief protocol." } }
+    },
+    "payload": { "tool_name": "", "cwd": "${CWD}", "hook_event_name": "PostCompact" },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": false,
+    "parity_exception": "PE-20",
+    "_note": "PE-20 (owner-directed, live-harness-forced removal): the Claude Code hooks docs state PostCompact stdout is never shown to the model (injected only for UserPromptSubmit/UserPromptExpansion/SessionStart/PostModelSwitch) and PostCompact carries no output channel of any shape -- there was never anything the JSON envelope this fixture used to pin could have delivered. The anchor is already redelivered after compaction via SessionStart(source=compact), which fires with real stdout injection, so dispatch.events.PostCompact was redundant and is now DELETED from config.json (not repaired). This fixture exercises dispatch() itself (not skill_anchor.run() directly, via \"via\": \"dispatch_route\") to prove PostCompact resolves to zero rules and produces no output -- a re-added registration would fail this case. The retired .ps1 master had this same dead registration (it fired stdout no harness ever surfaced); this is a deliberate divergence away from that, not a port error."
+  },
+  {
+    "id": "skill-anchor-07-sessionstart-plain-text",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "SessionStart",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: the creator brief protocol." } }
+    },
+    "payload": { "tool_name": "", "cwd": "${CWD}", "hook_event_name": "SessionStart" },
+    "expect_exit": 0,
+    "expect_stdout_contains": ["briefing-templates"],
+    "expect_stdout_not_contains": ["hookSpecificOutput"],
+    "parity": true
+  },
+  {
+    "id": "skill-anchor-08-tolerates-whitespace-and-comments",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "  test-skill  \n\n# note\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: the creator brief protocol." } }
+    },
+    "payload": { "tool_name": "Agent", "cwd": "${CWD}", "hook_event_name": "PreToolUse" },
+    "expect_exit": 0,
+    "expect_stdout_contains": ["briefing-templates"],
+    "parity": true
+  },
+  {
+    "id": "skill-anchor-09-japanese-round-trip",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "\u59d4\u4efb the creator brief protocol." } }
+    },
+    "payload": { "tool_name": "Agent", "cwd": "${CWD}", "hook_event_name": "PreToolUse" },
+    "expect_exit": 0,
+    "expect_stdout_contains": ["\u59d4\u4efb"],
+    "expect_stdout_not_contains": ["\ufffd"],
+    "parity": true,
+    "_note": "Japanese round-trip: I-4/acceptance row 5. \u59d4\u4efb ('delegation') must survive as raw UTF-8, never mojibake or a replacement character."
+  },
+  {
+    "id": "skill-anchor-w1-main-chain-deliverable-emits",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: the creator brief protocol." } }
+    },
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${CWD}/src/App.tsx" },
+      "cwd": "${CWD}",
+      "hook_event_name": "PreToolUse",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "expect_stdout_contains": ["briefing-templates"],
+    "parity": true,
+    "_note": "Write/Edit branch, required by CONTRACT.md \u00a76(B): main-chain deliverable path -> anchor IS emitted."
+  },
+  {
+    "id": "skill-anchor-w2-subagent-by-agent-id-no-anchor",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: the creator brief protocol." } }
+    },
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${CWD}/src/App.tsx" },
+      "cwd": "${CWD}",
+      "hook_event_name": "PreToolUse",
+      "agent_id": "agent-123",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": true
+  },
+  {
+    "id": "skill-anchor-w3-pe2-subagent-by-transcript-no-anchor",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: the creator brief protocol." } }
+    },
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${CWD}/src/App.tsx" },
+      "cwd": "${CWD}",
+      "hook_event_name": "PreToolUse",
+      "transcript_path": "${SUB_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": false,
+    "parity_exception": "PE-2",
+    "_note": "old: agent_id-only check sees agent_id empty -> treats as main -> emits anchor. new: lib.ctx.is_main_chain also checks transcript_path for /subagents/ -> no anchor. Both sides always exit 0 -- the divergence is STDOUT CONTENT ONLY, which parity.py's current run_case() does not compare (it only checks returncode and stderr). Flagged in the done-report: parity.py needs a stdout assertion for skill_anchor or this PE (and PE-3 below) cannot actually be caught by the harness."
+  },
+  {
+    "id": "skill-anchor-w4-pe3-outside-cwd-repo-backup",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: the creator brief protocol." } }
+    },
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${CWD}-backup/x.ts" },
+      "cwd": "${CWD}",
+      "hook_event_name": "PreToolUse",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": false,
+    "parity_exception": "PE-3",
+    "_note": "old: file.StartsWith(cwd) treats C:\\repo-backup\\x as inside C:\\repo -> emits anchor. new: paths.is_under() exempts it -> no anchor. Same stdout-only-divergence gap as PE-2 above."
+  },
+  {
+    "id": "skill-anchor-w5-exempt-docs-plans-no-anchor",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: the creator brief protocol." } }
+    },
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${CWD}/docs/plans/contract.md" },
+      "cwd": "${CWD}",
+      "hook_event_name": "PreToolUse",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": false,
+    "parity_exception": "PE-17",
+    "_note": "PE-17 (owner-approved, deliberate loosening): skill-anchor.ps1's exempt-pattern list is the same backslash-only regex set as commander's; this fixture's file path carries a forward-slash tail after the sandboxed cwd, so the master's '\\\\docs\\\\plans\\\\' pattern fails to match and it EMITS an anchor for a path that was always meant to be exempt. The port normalises separators before matching and correctly withholds it. Never a block either way (I-2) -- the divergence is stdout-only, same visibility class as PE-2/PE-3."
+  },
+  {
+    "id": "skill-anchor-w6-blank-file-path-no-anchor",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "test-skill\n",
+      "anchors": { "test-skill": { "text": "briefing-templates: the creator brief protocol." } }
+    },
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": {},
+      "cwd": "${CWD}",
+      "hook_event_name": "PreToolUse",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "expect_stdout": "",
+    "parity": true
+  },
+  {
+    "id": "skill-anchor-maxchars-truncation",
+    "guard": "skill_anchor",
+    "ps1": "skill-anchor.ps1",
+    "event": "PreToolUse",
+    "setup": {
+      "active_skills": "test-skill-big\n",
+      "anchors": { "test-skill-big": { "repeat": "A", "length": 1300 } }
+    },
+    "payload": { "tool_name": "Agent", "cwd": "${CWD}", "hook_event_name": "PreToolUse" },
+    "expect_exit": 0,
+    "expect_stdout_contains": ["... (ANCHOR.md truncated -- keep it short)"],
+    "parity": true,
+    "_note": "The max_chars truncation fixture required by CONTRACT.md \u00a76: no test covered this before the port. Anchor content is 1300 chars (> max_chars 1200); body must be cut to exactly max_chars and the truncation_suffix appended verbatim."
+  }
+]

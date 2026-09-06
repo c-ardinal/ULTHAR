@@ -1,0 +1,30 @@
+[
+  {
+    "id": "detect-too-short-allow",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "Short text that never reaches min_length."
+      }
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "detect-long-no-pattern-allow",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "Just a very long ordinary message with no brief markers at all in it whatsoever. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": true
+  }
+]

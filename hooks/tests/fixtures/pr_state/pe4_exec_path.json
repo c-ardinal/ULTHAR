@@ -1,0 +1,18 @@
+[
+  {
+    "id": "pr-state-pe4-exec-path",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git --exec-path=/x push origin merged-branch"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "gh_stub": {"rc": 0, "timeout": false, "response": [
+      {"number": 11, "state": "CLOSED", "url": "https://github.com/o/r/pull/11"}
+    ]},
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (PR state): branch 'merged-branch' has no OPEN pull request",
+    "parity": false,
+    "parity_exception": "PE-4",
+    "_why": "Old pr-state-guard.ps1's push-detect prefix omitted --exec-path, so `git --exec-path=/x push origin <merged-branch>` never matched $G and the old side ALLOWS -- a real bypass of the PR-state check. The unified global_option_prefix (lib/gitcmd.py) includes --exec-path, so the new side detects the push, resolves the branch, finds no OPEN PR, and BLOCKS. Tightening only (CONTRACT PE-4)."
+  }
+]

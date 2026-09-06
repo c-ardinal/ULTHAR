@@ -1,0 +1,56 @@
+[
+  {
+    "_note": "dev_process_hygiene's behaviour depends on the LIVE process table, which CONTRACT.md #6 'Stubbing external commands' explicitly forbids reproducing between two sequential runs -- 'list_processes cases are parity-exempt (parity: false, exception PE-6) and are covered by unit tests against a stubbed ctx.list_processes instead'. Every case below except dph-quiet-stop-hook-active is therefore parity:false. The real, currently-runnable behavioural proof (orphan found / no orphan / dead-parent detection / PE-12 python3+node.exe/draw.io.exe pairing / max_listed / cmdline_truncate / message placeholders) lives in tests/test_dev_processes.py against a stubbed process table -- see that file's own header for why the stub is applied to lib.procs.list_processes rather than ctx.list_processes (a reported gap in lib/procs.py's find_dev_processes, not fixed here).",
+    "id": "dph-quiet-no-match-on-this-machine",
+    "guard": "dev_process_hygiene",
+    "event": "Stop",
+    "ps1": "dev-process-hygiene-check.ps1",
+    "payload": {"tool_name": "", "hook_event_name": "Stop", "session_id": "d1", "cwd": "."},
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-6"
+  },
+  {
+    "id": "dph-quiet-stop-hook-active",
+    "_note": "The ONE dev_process_hygiene case that IS genuinely parity-safe and needs no process stub: the dispatcher's stop_hook_active short-circuit fires before the guard (or the old .ps1's own top-of-file check) ever touches the process table, so both sides deterministically return 0 regardless of real machine state.",
+    "guard": "dev_process_hygiene",
+    "event": "Stop",
+    "ps1": "dev-process-hygiene-check.ps1",
+    "payload": {"tool_name": "", "hook_event_name": "Stop", "session_id": "d2", "cwd": ".", "stop_hook_active": true},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "dph-pe6-psutil-consolidation",
+    "_note": "PE-6: Get-CimInstance/Stop-Process/netstat (old) -> psutil process_iter/terminate+wait_procs+kill/net_connections (new). One cross-platform path instead of two OS branches. Semantic proof: tests/test_dev_processes.py::test_orphan_found, test_no_orphan, test_dead_parent_detection.",
+    "guard": "dev_process_hygiene",
+    "event": "Stop",
+    "ps1": "dev-process-hygiene-check.ps1",
+    "payload": {"tool_name": "", "hook_event_name": "Stop", "session_id": "d3", "cwd": "."},
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-6"
+  },
+  {
+    "id": "dph-pe12-python3-and-exe-stripping",
+    "_note": "PE-12: name set bash.exe/sh.exe/node.exe/tail.exe/workerd.exe/python.exe/draw.io.exe matched by base name (trailing .exe stripped only) PLUS python3, the one deliberate effective-set addition never in the master's $NAMES. Semantic proof: tests/test_dev_processes.py::test_pe12_and_exe_stripping (python3 orphan flagged; node.exe -> 'node' still matches; draw.io.exe keeps its internal dot).",
+    "guard": "dev_process_hygiene",
+    "event": "Stop",
+    "ps1": "dev-process-hygiene-check.ps1",
+    "payload": {"tool_name": "", "hook_event_name": "Stop", "session_id": "d4", "cwd": "."},
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-12"
+  },
+  {
+    "id": "dph-pe10-message-diff",
+    "_note": "PE-10: the master hardcodes `powershell ... stop-dev-orphans.ps1` and literal ports 8788/5173; the port renders {python_exe} \"{deploy_dir}/stop_dev_orphans.py\" and ports from dev_processes.ports. Semantic proof: tests/test_dev_processes.py::test_message_placeholders_resolved.",
+    "guard": "dev_process_hygiene",
+    "event": "Stop",
+    "ps1": "dev-process-hygiene-check.ps1",
+    "payload": {"tool_name": "", "hook_event_name": "Stop", "session_id": "d5", "cwd": "."},
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-10"
+  }
+]

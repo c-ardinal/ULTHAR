@@ -1,0 +1,62 @@
+[
+  {
+    "id": "git-destroyer-clean",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git clean -fd"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git clean (deletes untracked files) is not allowed.",
+    "parity": true
+  },
+  {
+    "id": "git-destroyer-checkout-dashdash",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git checkout -- src/a.ts"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git checkout -- <path> / git checkout . (discards edits) is not allowed.",
+    "parity": true
+  },
+  {
+    "id": "git-destroyer-checkout-dot",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git checkout ."}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git checkout -- <path> / git checkout . (discards edits) is not allowed.",
+    "parity": true
+  },
+  {
+    "id": "git-destroyer-restore",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git restore src/a.ts"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git restore (discards edits) is not allowed.",
+    "parity": true
+  },
+  {
+    "id": "git-destroyer-reset-hard",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git reset --hard HEAD~1"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git reset --hard is not allowed.",
+    "parity": true
+  },
+  {
+    "id": "git-destroyer-stash-u",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git stash -u"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git stash -u / -a (captures untracked files) is not allowed.",
+    "parity": true
+  }
+]

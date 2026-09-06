@@ -1,0 +1,120 @@
+[
+  {
+    "id": "compact-header-reference-resolves-gates-allow",
+    "guard": "brief_gate",
+    "_note": "PE-19. Body carries none of the four long-form markers -- gates 1/3 are satisfied purely by the content of the file the compact BRIEF: header references (guards/brief_gate.py _resolve_reference_text), gate 6 resolves the same BRIEF: reference and finds it old enough, gate 2 does not fire (no UI trigger words) so the `no-ui` tag is present but unused.",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "BRIEF: compact-ok-round1.md | creator | no-ui\nHandle backend queue retry semantics only, nothing about screens. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-19",
+    "setup": {
+      "kind": "approval_file",
+      "name": "compact-ok-round1.md",
+      "age_sec": 999999,
+      "content": "Presented understanding: targets STATE.md §2 acceptance table rows 3/4. OWNER-CONFIRMED: owner approved this scope in chat today."
+    }
+  },
+  {
+    "id": "compact-header-young-approval-still-blocks",
+    "guard": "brief_gate",
+    "_note": "PE-19. Same body/reference as the ALLOW case above, but the referenced file is only 5s old with no OWNER-OK marker -- gates 1/3 still pass via the file-content fallback, but gate 6 still blocks on age, proving the compact form does not weaken gate 6's own check.",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "BRIEF: compact-young-round1.md | creator | no-ui\nHandle backend queue retry semantics only, nothing about screens. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "approval window not elapsed",
+    "parity": false,
+    "parity_exception": "PE-19",
+    "setup": {
+      "kind": "approval_file",
+      "name": "compact-young-round1.md",
+      "age_sec": 5,
+      "content": "Presented understanding: targets STATE.md §2 acceptance table rows 3/4. OWNER-CONFIRMED: owner approved this scope in chat today."
+    }
+  },
+  {
+    "id": "compact-header-missing-approval-still-blocks",
+    "guard": "brief_gate",
+    "_note": "PE-19. The compact header references a file that was never written (no setup step) -- the fallback resolves nothing, so gate 1 (evaluated before gate 6 in array order) blocks on its own require_pattern exactly as an unlabelled brief would. Still a BLOCK either way; recorded as an ordering paper cut (gate 1's message shows, not gate 6's 'not found'), not a protection gap.",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "BRIEF: compact-missing-round1.md | creator | no-ui\nHandle backend queue retry semantics only, nothing about screens. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "acceptance table",
+    "parity": false,
+    "parity_exception": "PE-19"
+  },
+  {
+    "id": "compact-header-no-ui-tag-satisfies-gate2-allow",
+    "guard": "brief_gate",
+    "_note": "PE-19. Body DOES contain a UI-design-skill trigger word ('layout') -- the header's own `| no-ui` tag satisfies design_cases directly from the brief text (no file fallback involved for gate 2), while gates 1/3/6 resolve via the referenced file exactly as above.",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "BRIEF: compact-ui-round1.md | creator | no-ui\nWe need a fresh layout pass on the settings screen this round. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-19",
+    "setup": {
+      "kind": "approval_file",
+      "name": "compact-ui-round1.md",
+      "age_sec": 999999,
+      "content": "Presented understanding: targets STATE.md §2 acceptance table rows 3/4. OWNER-CONFIRMED: owner approved this scope in chat today."
+    }
+  },
+  {
+    "id": "compact-header-ui-tag-does-not-bypass-gate2-block",
+    "guard": "brief_gate",
+    "_note": "PE-19. Same UI-trigger body, but the header declares `| ui` (not `| no-ui`) and no design skill is named anywhere -- proves a tag OTHER than the literal `no-ui` does not silently bypass gate 2. This is the deliberate non-compaction: gate 2 stays content-triggered and self-declared-honest, not reference-resolved.",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "BRIEF: compact-ui2-round1.md | creator | ui\nWe need a fresh layout pass on the settings screen this round. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "design skill",
+    "parity": false,
+    "parity_exception": "PE-19",
+    "setup": {
+      "kind": "approval_file",
+      "name": "compact-ui2-round1.md",
+      "age_sec": 999999,
+      "content": "Presented understanding: targets STATE.md §2 acceptance table rows 3/4. OWNER-CONFIRMED: owner approved this scope in chat today."
+    }
+  },
+  {
+    "id": "compact-header-forwarder-kind-classifies-block",
+    "guard": "brief_gate",
+    "_note": "PE-19. A compact header naming `| forwarder` classifies via forwarder's new match alternative (not the creator fallback, and not any pre-existing forwarder trigger -- the body deliberately avoids 'codex exec'/'[Forwarder Brief'/'Delta re-review'/'Final delta') -- forwarder's own gate 4 (deterministic .out file) still applies unchanged and blocks because no .out path is present. Proves the kind token is load-bearing for forwarder, not decorative.",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "BRIEF: compact-fwd-round1.md | forwarder | no-ui\nRun the dispatch and report back without redirecting output anywhere in particular this round please. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (brief gate)",
+    "parity": false,
+    "parity_exception": "PE-19"
+  }
+]

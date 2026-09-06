@@ -1,0 +1,16 @@
+[
+  {
+    "id": "reviewer-brief-no-rules-allow",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Reviewer Brief] round1 review pass. Please look over everything and report back on quality with no additional constraints applied at all here today please. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": true
+  }
+]

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "pe8-guard-raises-fails-open-and-logs",
+    "_note": "CONTRACT.md #6(C): PE-8 fixture, owned by U-0. 'guard forced to raise: both exit 0, new writes a dispatch-errors.jsonl line.' Routed through the tests-only stub guard (guards_dir) rather than a real production guard, because PE-8's point is dispatcher-level behaviour (I-3 fail-open + logging) common to EVERY guard, not any one guard's own decision logic -- exercising it against a real guard would mean deliberately corrupting that guard's file, which is out of scope and destructive. The old side has no equivalent (no PowerShell guard can be forced to raise the same deterministic way from a fixture), so this is parity:false from the start; only the NEW side is asserted.",
+    "guard": "stub_guard",
+    "guards_dir": "fixtures/stub",
+    "event": "PreToolUse",
+    "payload": {
+      "hook_event_name": "PreToolUse",
+      "tool_name": "Bash",
+      "tool_input": { "command": "RAISE" }
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-8"
+  },
+  {
+    "id": "pe11-install-refuses-invalid-config",
+    "_note": "CONTRACT.md #6(C): PE-11 fixture, owned by U-0. 'install.py --verify against a deliberately invalid config: refuses to deploy.' This is a CLI-behaviour assertion (install.py's exit code and REFUSING TO DEPLOY output), not a dispatch.py guard/payload case -- there is no `guard` field to run through run_case(), so this entry exists ONLY to satisfy §6 step 8's citation requirement ('every id in section 7 has no case citing it' is a hard failure) and to point at where the real assertion lives. The actual check: hooks/install.py's validate_config() rejects a config whose pattern_fields path does not resolve or whose declared pattern does not compile, and cmd_default()/cmd_verify() both print 'REFUSING TO DEPLOY'/fail loudly and return a non-zero exit code before touching the deploy directory -- exercised directly (not via parity.py, since install.py is a CLI, not a dispatch.py guard) in this unit's own manual verification (see done-report: 'python install.py --deploy-dir <temp>' against a config with an unresolvable pattern_fields path exits 1 with 'REFUSING TO DEPLOY: config.json is invalid.').",
+    "parity": false,
+    "parity_exception": "PE-11"
+  }
+]

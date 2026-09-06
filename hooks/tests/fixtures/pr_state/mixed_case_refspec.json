@@ -1,0 +1,18 @@
+[
+  {
+    "id": "pr-state-mixed-case-refs-heads-strip",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin x:refs/Heads/feat"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "_why": "Round-3 send-back item 3. `git_policy.pr_state.refs_heads_strip_pattern` is declared `kind: \"text\"` (always IGNORECASE per CONTRACT's regex-dialect rules) but lib/gitcmd.py used to compile it with a bare re.compile() -- no flags -- so `^refs/heads/` never matched the capitalised `refs/Heads/feat` destination and the branch stayed UNSTRIPPED. pr-state-guard.ps1's own `-replace '^refs/heads/', ''` is case-INSENSITIVE by PowerShell default, so the MASTER already stripped this correctly -- the bug was a Python-port-only divergence (not a parity exception; parity:true), now fixed by routing gitcmd.py through the shared compile_pattern(). 'feat' and the literal unstripped string 'refs/Heads/feat' are given DIFFERENT PR states so the bug (if it recurred) would flip the exit code, not just the branch name in a message: correctly-stripped 'feat' has an OPEN PR (ALLOW); anything else queried against gh finds only a MERGED PR (BLOCK).",
+    "gh_stub_by_head": {
+      "feat": {"rc": 0, "timeout": false, "response": [{"number": 55, "state": "OPEN", "url": "https://github.com/o/r/pull/55"}]}
+    },
+    "gh_stub": {"rc": 0, "timeout": false, "response": [{"number": 56, "state": "MERGED", "url": "https://github.com/o/r/pull/56"}]},
+    "expect_exit": 0,
+    "expect_gh_argv_contains": ["--head", "feat"],
+    "parity": true
+  }
+]

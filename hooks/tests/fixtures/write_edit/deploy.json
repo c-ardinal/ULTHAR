@@ -1,0 +1,139 @@
+[
+  {
+    "id": "deploy-01-block-ps1-top-level",
+    "guard": "deploy",
+    "ps1": "deploy-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${DEPLOY_DIR}/dispatch.ps1" },
+      "cwd": "${CWD}"
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (deploy guard)",
+    "parity": false,
+    "parity_exception": "PE-10",
+    "_note": "PE-10 (confirmed by U-0): the message text legitimately changed for the single-config architecture -- old points at 'powershell -File <skill>/hooks/install.ps1', new at '{python_exe} .../install.py'. Exit code is unchanged (both block); only the guidance text differs, which is exactly deploy-07's existing PE-10 row extended to this .ps1 top-level case."
+  },
+  {
+    "id": "deploy-02-block-py-top-level-pe5",
+    "guard": "deploy",
+    "ps1": "deploy-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${DEPLOY_DIR}/install.py" },
+      "cwd": "${CWD}"
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (deploy guard)",
+    "parity": false,
+    "parity_exception": "PE-5",
+    "_note": "I-5: deploy-guard.ps1 only ever matched *.ps1, so old ALLOWS a direct Write to a deployed .py file (a hole the port itself opens); new BLOCKS it via guarded_extensions [.ps1, .py]."
+  },
+  {
+    "id": "deploy-03-block-py-nested-guards-pe5",
+    "guard": "deploy",
+    "ps1": "deploy-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${DEPLOY_DIR}/guards/commander.py" },
+      "cwd": "${CWD}"
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (deploy guard)",
+    "parity": false,
+    "parity_exception": "PE-5",
+    "_note": "Table C's named PE-5 case: old ALLOWS ~/.claude/hooks/guards/commander.py (still just a .py to a .ps1-only matcher); new BLOCKS it."
+  },
+  {
+    "id": "deploy-04-block-logs-ps1-recursion-m2",
+    "guard": "deploy",
+    "ps1": "deploy-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${DEPLOY_DIR}/logs/old.ps1" },
+      "cwd": "${CWD}"
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (deploy guard)",
+    "parity": false,
+    "parity_exception": "PE-10",
+    "_note": "M-2/PE-5 table's logs/old.ps1 example: recursion is PRESERVED, not new -- PowerShell's -like '*' already crossed directory separators, so the master ALSO blocks this .ps1 under logs/, proving M-2 rather than PE-5. Both sides still block (exit code matches); cited PE-10 (not PE-5) because the ONLY actual divergence left, now that the exit code agrees, is the same install.ps1-vs-install.py message-text change deploy-01/07 already carry."
+  },
+  {
+    "id": "deploy-05-allow-master-path-not-deployed",
+    "guard": "deploy",
+    "ps1": "deploy-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${SKILL_HOOKS_DIR}/commander-guard.ps1" },
+      "cwd": "${CWD}"
+    },
+    "expect_exit": 0,
+    "parity": true,
+    "_note": "The MASTER (skill source) is not under paths.deploy_dir -- editing it is the correct, encouraged flow, and must never be blocked by this guard."
+  },
+  {
+    "id": "deploy-06-allow-unrelated-path",
+    "guard": "deploy",
+    "ps1": "deploy-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${CWD}/src/App.py" },
+      "cwd": "${CWD}"
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "deploy-07-pe10-message-names-install-py",
+    "guard": "deploy",
+    "ps1": "deploy-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${DEPLOY_DIR}/dispatch.ps1" },
+      "cwd": "${CWD}"
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "install.py",
+    "parity": false,
+    "parity_exception": "PE-10",
+    "_note": "PE-10 deploy row: old text says 'powershell -File <skill>/hooks/install.ps1'; new says '{python_exe} .../install.py'. The .ps1 installer is not the deploy path any more, so pointing at it would tell the model to run a command that no longer deploys the .py runtime."
+  },
+  {
+    "id": "deploy-08-block-config-json-pe13",
+    "guard": "deploy",
+    "ps1": "deploy-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${DEPLOY_DIR}/config.json" },
+      "cwd": "${CWD}"
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (deploy guard)",
+    "parity": false,
+    "parity_exception": "PE-13",
+    "_note": "PE-13 (owner-approved F-7, ruled on after round1): deploy-guard.ps1 checked no NAMES at all, only the .ps1 extension, so old ALLOWS a direct Write to the deployed config.json. new BLOCKS it via guarded_names -- the deployed config.json is a derived artifact now, and editing it directly reproduces the exact master/deploy drift this guard exists to prevent. Deliberate tightening, same class as PE-5."
+  },
+  {
+    "id": "deploy-09-allow-config-json-unrelated-pe13-other-direction",
+    "guard": "deploy",
+    "ps1": "deploy-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {
+      "tool_name": "Write",
+      "tool_input": { "file_path": "${CWD}/config.json" },
+      "cwd": "${CWD}"
+    },
+    "expect_exit": 0,
+    "parity": true,
+    "_note": "The other direction of PE-13's row, so it proves something: guarded_names is scoped to files UNDER deploy_dir, not a blanket ban on the name config.json anywhere. A project's own config.json outside the deployed hooks tree is untouched by this guard, on both old and new sides -- not a divergence, hence parity:true (kept beside the PE-13 case rather than folded into deploy-06 so the pair reads together)."
+  }
+]

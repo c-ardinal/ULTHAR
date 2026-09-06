@@ -1,0 +1,15 @@
+[
+  {
+    "id": "pr-state-pe7-gh-timeout",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin feature/slow-gh"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "gh_stub": {"rc": 0, "timeout": true, "response": null},
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-7",
+    "_why": "The master has no timeout on `gh pr list` at all; a hung `gh` stalls the .ps1 side for tests/parity.py's own OLD_SIDE_TIMEOUT (45s), which parity.py records as the sentinel 'TIMEOUT'. The new side is bounded by thresholds.subprocess_timeout_remote_sec (20s) and fails open (ALLOW) plus logs to dispatch-errors.jsonl -- it never silently skips a slow-but-eventually-successful gh call, it just cannot wait indefinitely. This fixture exercises the new-side timeout path directly via a stubbed ctx.run_cmd that reports timed_out=True; the parity-side TIMEOUT sentinel comparison is tests/parity.py's responsibility once the old side is run for real."
+  }
+]

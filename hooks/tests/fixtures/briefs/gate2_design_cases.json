@@ -1,0 +1,90 @@
+[
+  {
+    "id": "creator-gate2-viewport-triggered-unsatisfied-block",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Creator Brief] round1. This dispatch cites STATE.md §2 acceptance table rows 3 and 4 as the target. This is a responsive redesign for multiple device widths. OWNER-CONFIRMED: the owner approved this scope explicitly in chat today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "viewport",
+    "parity": false,
+    "parity_exception": "PE-10"
+  },
+  {
+    "id": "creator-gate2-viewport-satisfied-allow",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Creator Brief] round1. This dispatch cites STATE.md §2 acceptance table rows 3 and 4 as the target. This is a responsive redesign for multiple device widths, sweeping the viewport-matrix fully at acceptance, citing ui-ux-pro-max for the visual pass. APPROVAL:gate2-viewport.md OWNER-CONFIRMED: the owner approved this scope explicitly in chat today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-10",
+    "setup": {
+      "kind": "approval_file",
+      "name": "gate2-viewport.md",
+      "age_sec": 999999,
+      "content": "presented understanding"
+    }
+  },
+  {
+    "id": "creator-gate2-ui-triggered-unsatisfied-block",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Creator Brief] round1. This dispatch cites STATE.md §2 acceptance table rows 3 and 4 as the target. We need a fresh layout pass on the settings screen this round. OWNER-CONFIRMED: the owner approved this scope explicitly in chat today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "design skill",
+    "parity": true
+  },
+  {
+    "id": "creator-gate2-ui-satisfied-allow",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Creator Brief] round1. This dispatch cites STATE.md §2 acceptance table rows 3 and 4 as the target. We need a fresh layout pass on the settings screen this round, invoking ui-ux-pro-max for the design pass. APPROVAL:gate2-ui.md OWNER-CONFIRMED: the owner approved this scope explicitly in chat today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 0,
+    "parity": true,
+    "setup": {
+      "kind": "approval_file",
+      "name": "gate2-ui.md",
+      "age_sec": 999999,
+      "content": "presented understanding"
+    }
+  },
+  {
+    "id": "creator-gate2-order-viewport-wins-block",
+    "guard": "brief_gate",
+    "ps1": "brief-gate-guard.ps1",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Creator Brief] round1. This dispatch cites STATE.md §2 acceptance table rows 3 and 4 as the target. This is a responsive layout redesign touching viewport widths and the settings screen dock panel. OWNER-CONFIRMED: the owner approved this scope explicitly in chat today. Additional narrative context follows to reach the minimum length threshold for brief detection purposes only and carries no other meaning here today."
+      }
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "viewport",
+    "parity": false,
+    "parity_exception": "PE-10"
+  }
+]

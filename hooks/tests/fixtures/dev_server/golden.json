@@ -1,0 +1,50 @@
+[
+  {
+    "_note": "dev_server had no fixtures at all pre-port (CONTRACT.md #6 table A: min >= 4). Ports dev-server-guard.ps1's single rule -- 'npm run dev:heavy' repeatedly OOM-crashed without an enlarged Node heap.",
+    "id": "dev-server-01-block-no-heap",
+    "guard": "dev_server",
+    "ps1": "dev-server-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "npm run dev:heavy"}},
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (dev-server guard)",
+    "parity": true
+  },
+  {
+    "id": "dev-server-02-allow-with-heap-powershell",
+    "guard": "dev_server",
+    "ps1": "dev-server-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "PowerShell", "tool_input": {"command": "$env:NODE_OPTIONS='--max-old-space-size=4096'; npm run dev:heavy"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "dev-server-03-allow-unrelated-command",
+    "guard": "dev_server",
+    "ps1": "dev-server-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "npm run build"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "dev-server-04-allow-with-heap-bash",
+    "guard": "dev_server",
+    "ps1": "dev-server-guard.ps1",
+    "event": "PreToolUse",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "NODE_OPTIONS=--max-old-space-size=8192 npm run dev:heavy"}},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "dev-server-05-block-case-insensitive",
+    "guard": "dev_server",
+    "ps1": "dev-server-guard.ps1",
+    "event": "PreToolUse",
+    "_note": "text-kind case-insensitivity: an upper-case invocation must still be caught.",
+    "payload": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "NPM RUN DEV:HEAVY"}},
+    "expect_exit": 2,
+    "parity": true
+  }
+]

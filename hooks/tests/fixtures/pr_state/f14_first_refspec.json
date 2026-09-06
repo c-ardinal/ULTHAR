@@ -1,0 +1,20 @@
+[
+  {
+    "id": "pr-state-f14-first-refspec-wins",
+    "guard": "pr_state",
+    "ps1": "pr-state-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin a b"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "_why": "F-14 regression (round-2 send-back item 2). gitcmd.push_target_branch takes tokens[1] -- the FIRST refspec after the remote -- NOT tokens[-1], despite pr-state-guard.ps1's own comment claiming 'last'. Preserved as-coded for parity. 'a' and 'b' are given DIFFERENT PR states so a tokens[1]->tokens[-1] mutation changes the OUTCOME (exit code), not just which branch name is quoted in the message: branch 'a' has only a MERGED PR (must BLOCK), branch 'b' has an OPEN PR (would ALLOW). A mutant reading tokens[-1] resolves 'b', finds the OPEN PR, and ALLOWS -- silently flipping expect_exit from 2 to 0.",
+    "gh_stub_by_head": {
+      "a": {"rc": 0, "timeout": false, "response": [{"number": 40, "state": "MERGED", "url": "https://github.com/o/r/pull/40"}]},
+      "b": {"rc": 0, "timeout": false, "response": [{"number": 41, "state": "OPEN", "url": "https://github.com/o/r/pull/41"}]}
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (PR state): branch 'a' has no OPEN pull request",
+    "expect_gh_argv_contains": ["--head", "a"],
+    "parity": false,
+    "parity_exception": "PE-16"
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "id": "pe9-astral-exactly-min-length-allow",
+    "guard": "brief_gate",
+    "payload": {
+      "tool_name": "Agent",
+      "hook_event_name": "PreToolUse",
+      "tool_input": {
+        "prompt": "[Creator Brief] round1 — This dispatch cites STATE.md §2 acceptance table rows 3 and 4 as the target. APPROVAL:pe9-round1.md OWNER-CONFIRMED: the owner approved this scope explicitly in chat today. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀"
+      }
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-9",
+    "setup": {
+      "kind": "approval_file",
+      "name": "pe9-round1.md",
+      "age_sec": 999999,
+      "content": "presented understanding, no marker"
+    }
+  }
+]
