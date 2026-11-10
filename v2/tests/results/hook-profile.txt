@@ -10,7 +10,8 @@ one fresh appended transcript line per call. Medians of 30-40 fresh processes.
   whole hook call, p95 (30-40 calls)    217.4 ms      164.9 ms
   test_replay AC-9 (200 calls)     p50 199-208 / p95 237-267
      with the config cache (d2dd5bb), 3 runs:  p50 143.5-144.5 / p95 156.3-166.9
-     final, no config cache, 3 runs:           p50 147.8-148.1 / p95 160.0-193.0
+     no config cache (66c1c55), 3 runs:         p50 147.8-148.1 / p95 160.0-193.0
+     final (module-level imports restored):     see replay-runs.jsonl, last 3 lines
 
 What was cut (behaviour unchanged; AC-5 464/464 with the same 442/22 split):
   - dataclasses (pulls in inspect, dis, tokenize, ast): lib/ctx.Ctx, _PartialCtxForExpand and
@@ -18,10 +19,10 @@ What was cut (behaviour unchanged; AC-5 464/464 with the same 442/22 split):
   - typing (+ annotationlib): NamedTuple -> collections.namedtuple subclasses with the same
     fields/defaults (io.Result, ctx.CmdResult, ctx.ProcInfo, hook.Processed); Callable/Literal
     were annotation-only                                                              ~5 ms
-  - subprocess/signal/threading: imported only inside ctx.run_cmd / _kill_process_tree and
-    hook.blob_hash (PostToolUse of a write tool)                                      ~8 ms
-  - importlib / importlib.util: __import__ + sys.modules; importlib.util only on the
-    ULTHAR_GUARDS_DIR test seam                                                       ~3 ms
+  - (lazy imports of subprocess/signal/shutil in lib/ctx.py and of importlib in v1dispatch,
+    ~30 ms, were REMOVED in review round 6: an import failure must surface at guard/runtime
+    load -- fail-closed, AC-4 -- not mid-run, where v1's fail-open rule applies. Those
+    imports are module-level again, exactly as in v1.)
   - (a marshal cache of the parsed config.json, ~6 ms, was tried in d2dd5bb and REMOVED in
     review round 5: a cached policy that skips load_config() validation could be forged or
     stale. config.json is parsed and validated on every call, as in v1.)

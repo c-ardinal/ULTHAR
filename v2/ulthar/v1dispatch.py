@@ -14,7 +14,8 @@ four CORE-06 guards).
 """
 from __future__ import annotations
 
-import sys
+import importlib
+import importlib.util
 import json
 import os
 import time
@@ -108,19 +109,13 @@ def import_guard(guard_id: str):
     try:
         if override_dir:
             mod_path = Path(override_dir) / f"{guard_id}.py"
-            # Bound under its own name: `import importlib.util` here would make the
-            # name `importlib` local to the whole function (v1's UnboundLocalError).
-            from importlib import util as importlib_util  # noqa: PLC0415 -- test seam only
-
-            spec = importlib_util.spec_from_file_location(f"_ulthar_guard_{guard_id}", mod_path)
+            spec = importlib.util.spec_from_file_location(f"_ulthar_guard_{guard_id}", mod_path)
             if spec is None or spec.loader is None:
                 raise ImportError(f"cannot load spec for {mod_path}")
-            mod = importlib_util.module_from_spec(spec)
+            mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
         else:
-            name = f"{__package__}.guards.{guard_id}"
-            __import__(name)  # importlib.import_module without importing importlib
-            mod = sys.modules[name]
+            mod = importlib.import_module(f"{__package__}.guards.{guard_id}")
     except Exception as exc:
         raise GuardLoadError(f"{guard_id}: {type(exc).__name__}: {exc}") from exc
     if not callable(getattr(mod, "run", None)):
@@ -184,15 +179,9 @@ def _attribute_to_project_overlay(guard_id: str, ctx, exc, event: str):
 
 
 def invoke_guard(guard_id: str, mod, payload: dict, cfg: dict, ctx, event: str) -> io_mod.Result:
-    """Calls one loaded guard with v1's exception and result rules -- except that an
-    ImportError raised while the guard runs (a module the runtime imports lazily,
-    e.g. subprocess in ctx.run_cmd) is an infrastructure failure, not a guard bug:
-    it is re-raised, so ulthar.hook records it and blocks a PreToolUse instead of
-    letting the fail-open rule turn it into ALLOW."""
+    """Calls one loaded guard with v1's exception and result rules."""
     try:
         result = mod.run(payload, cfg, ctx)
-    except ImportError:
-        raise
     except ctx_mod.PatternCompileError as exc:
         attributed = _attribute_to_project_overlay(guard_id, ctx, exc, event)
         if attributed is not None:

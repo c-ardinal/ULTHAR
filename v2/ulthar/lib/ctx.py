@@ -13,6 +13,9 @@ from __future__ import annotations
 import copy
 import os
 import re
+import shutil
+import signal
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -1093,12 +1096,8 @@ class Ctx:
             timeout = self.cfg["thresholds"]["subprocess_timeout_remote_sec"]
         else:
             raise ValueError(f"run_cmd: kind must be 'local' or 'remote', got {kind!r}")
-        import subprocess  # noqa: PLC0415 -- v2: lazy, ~8 ms of every hook start-up
-
         resolved_argv = list(argv)
         if resolved_argv:
-            import shutil  # noqa: PLC0415 -- v2: lazy, shutil pulls bz2/lzma/zstd (~20 ms per hook)
-
             resolved = shutil.which(resolved_argv[0])
             if resolved:
                 resolved_argv[0] = resolved
@@ -1176,8 +1175,6 @@ class Ctx:
         belongs to lib/procs.py (Stop-only); this PreToolUse-reachable path goes
         straight to SIGKILL/TerminateProcess, since a deliberately-hung external
         command gets no grace period."""
-        import signal  # noqa: PLC0415 -- v2: lazy, see run_cmd
-        import subprocess  # noqa: PLC0415
         if sys.platform.startswith("win"):
             try:
                 subprocess.run(

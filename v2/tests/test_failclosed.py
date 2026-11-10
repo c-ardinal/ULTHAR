@@ -1,17 +1,17 @@
 """Fail-closed regressions from review round 5:
   * no cross-process config cache: a planted cache file beside the package changes
     nothing, config.json is parsed and validated on every call;
-  * an ImportError raised while a guard runs (lazily imported subprocess/signal in
-    ctx.run_cmd and the process-tree kill) blocks a PreToolUse and is recorded --
-    and warns + records on other events -- instead of failing open;
+  * subprocess/signal are imported at module level, as in v1: when they cannot be
+    imported, the failure surfaces at guard/runtime load and blocks a PreToolUse
+    (AC-4), never mid-run where v1's fail-open rule applies;
   * blob_hash records hash_failed when subprocess cannot be imported.
 """
 from __future__ import annotations
 
-import copy
 import json
 import marshal
 import os
+import subprocess
 import sys
 import zlib
 from pathlib import Path
@@ -24,11 +24,6 @@ PACKAGE = V2_ROOT / "ulthar"
 CONFIG = PACKAGE / "config.json"
 
 STUB_ALLOW = "from ulthar.lib.io import ALLOW\n\ndef run(payload, cfg, ctx):\n    return ALLOW\n"
-STUB_RUN_CMD = ("from ulthar.lib.io import ALLOW\n\ndef run(payload, cfg, ctx):\n"
-                "    ctx.run_cmd(['git', '--version'], 'local')\n    return ALLOW\n")
-STUB_KILL = ("from ulthar.lib.io import ALLOW\n\nclass _Proc:\n    pid = 999999\n"
-             "    def kill(self):\n        pass\n\ndef run(payload, cfg, ctx):\n"
-             "    ctx._kill_process_tree(_Proc())\n    return ALLOW\n")
 BASH = {"session_id": "fc", "tool_name": "Bash", "tool_input": {"command": "ls"}}
 
 
@@ -113,46 +108,41 @@ def check_planted_config_cache_has_no_effect(p: Probe) -> None:
         sb.cleanup()
 
 
-def check_run_cmd_import_failure_blocks(p: Probe) -> None:
+STUB_NEEDS_SUBPROCESS = ("import subprocess", "from ulthar.lib.io import ALLOW", "",
+                         "def run(payload, cfg, ctx):", "    return ALLOW", "")
+FRESH_HOOK = (
+    "import runpy, sys",
+    "sys.modules[sys.argv[1]] = None  # this stdlib module cannot be imported",
+    "main = sys.argv[2]",
+    "sys.argv = [main, 'hook', '--event', sys.argv[3]]",
+    "runpy.run_path(main, run_name='__main__')", "")
+NL = chr(10)
+
+
+
+def check_import_failure_at_guard_load_blocks(p: Probe) -> None:
+    """subprocess/signal are imported at module level (as in v1), so their failure
+    surfaces when the guard (or the package it needs) loads -- the AC-4 fail-closed
+    path -- never mid-run, where v1's fail-open rule would turn it into ALLOW."""
     sb = Sandbox()
     try:
-        with _Env(sb, STUB_RUN_CMD, block="subprocess"):
-            out = hook.process("PreToolUse", dict(BASH, cwd=str(sb.work)))
-        decision, guard_id, detail, _ = _last_event(sb, "fc")
-        err = json.loads(detail).get("pipeline_error", {})
-        p.check("P1: subprocess unimportable inside ctx.run_cmd -> PreToolUse exits 2",
-                out.result.exit_code == 2 and "could not be imported" in out.result.stderr
+        with _Env(sb, NL.join(STUB_NEEDS_SUBPROCESS), block="subprocess"):
+            out = hook.process("PreToolUse", dict(BASH, session_id="fc-load", cwd=str(sb.work)))
+        decision, guard_id, _, _ = _last_event(sb, "fc-load")
+        p.check("AC-4: a guard whose module-level `import subprocess` fails -> PreToolUse exits 2",
+                out.result.exit_code == 2 and "failed to import" in out.result.stderr
                 and "To recover" in out.result.stderr, out.result.stderr[:300])
-        p.check("  ... recorded as deny / dispatcher-error with the ImportError",
-                (decision, guard_id) == ("deny", "dispatcher-error")
-                and _import_error(err.get("type", "")), f"{decision} {guard_id} {err}")
-
-        cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
-        stop_cfg = copy.deepcopy(cfg)
-        stop_cfg["dispatch"]["events"]["Stop"] = [{"tools": "*", "guards": ["tool_discipline"]}]
-        with _Env(sb, STUB_RUN_CMD, block="subprocess", config=stop_cfg):
-            stop = hook.process("Stop", {"session_id": "fc-stop", "cwd": str(sb.work),
-                                         "stop_hook_active": False})
-        decision, guard_id, detail, _ = _last_event(sb, "fc-stop")
-        p.check("P1: the same failure on Stop warns (exit 0) and is recorded, not a silent allow",
-                stop.result.exit_code == 0 and "WARNING" in stop.result.stderr
-                and guard_id == "dispatcher-error"
-                and _import_error(json.loads(detail).get("pipeline_error", {}).get("type", "")),
-                f"rc={stop.result.exit_code} {guard_id}")
-    finally:
-        sb.cleanup()
-
-
-def check_process_tree_kill_import_failure_blocks(p: Probe) -> None:
-    sb = Sandbox()
-    try:
-        with _Env(sb, STUB_KILL, block="signal"):
-            out = hook.process("PreToolUse", dict(BASH, session_id="fc-kill", cwd=str(sb.work)))
-        decision, guard_id, detail, _ = _last_event(sb, "fc-kill")
-        p.check("P1: signal unimportable in the process-tree kill -> PreToolUse exits 2, recorded",
-                out.result.exit_code == 2 and (decision, guard_id) == ("deny", "dispatcher-error")
-                and _import_error(json.loads(detail).get("pipeline_error", {}).get("type", "")),
-                f"rc={out.result.exit_code} {decision} {guard_id}")
+        p.check("  ... and is recorded as a deny", decision == "deny", f"{decision} {guard_id}")
+        payload = json.dumps(dict(BASH, hook_event_name="PreToolUse", cwd=str(sb.work)))
+        for module in ("subprocess", "signal"):
+            proc = subprocess.run(
+                [sys.executable, "-S", "-c", NL.join(FRESH_HOOK), module, str(PACKAGE / "__main__.py"),
+                 "PreToolUse"], input=payload, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", env=sb.env())
+            p.check(f"AC-4: `{module}` unimportable when the runtime loads (fresh process) -> "
+                    f"PreToolUse exits 2 naming the import failure",
+                    proc.returncode == 2 and "could not be imported" in proc.stderr
+                    and module in proc.stderr, f"rc={proc.returncode} {proc.stderr[:300]}")
     finally:
         sb.cleanup()
 
@@ -182,8 +172,7 @@ def check_blob_hash_import_failure_marks_hash_failed(p: Probe) -> None:
 def main() -> int:
     p = Probe()
     check_planted_config_cache_has_no_effect(p)
-    check_run_cmd_import_failure_blocks(p)
-    check_process_tree_kill_import_failure_blocks(p)
+    check_import_failure_at_guard_load_blocks(p)
     check_blob_hash_import_failure_marks_hash_failed(p)
     return p.result()
 

@@ -170,9 +170,8 @@ def _run_guards(event: str, payload: dict, single_guard: str | None, loaded,
         detail["pipeline_error"] = {
             "type": type(exc).__name__, "message": str(exc),
             "traceback": "".join(traceback.format_exception(exc))[-TRACEBACK_CHARS:]}
-        reason = ("a module the guards need could not be imported"
-                  if isinstance(exc, ImportError) else "the ULTHAR guard pipeline failed")
-        msg = v1dispatch.infra_block_message(reason, f"{type(exc).__name__}: {exc}", event)
+        msg = v1dispatch.infra_block_message(
+            "the ULTHAR guard pipeline failed", f"{type(exc).__name__}: {exc}", event)
         if event == "PreToolUse":
             return v1dispatch.Outcome(io_mod.Result(2, "", msg), PIPELINE_ERROR_GUARD_ID)
         warning = "[ulthar] WARNING (not blocking this event): " + msg
