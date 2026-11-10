@@ -133,7 +133,7 @@ def _open_and_catch_up(event: str, payload: dict, db_path: Path, detail: dict):
     database failure; an unreadable transcript is only noted in `detail`."""
     conn = db_mod.connect(db_path)
     try:
-        replayed = journal_mod.replay(conn, db_path, insert_row)
+        replayed = journal_mod.replay(conn, db_path, insert_row, hook=event)
         if replayed:
             detail["journal_replayed"] = replayed
         session_id = str(payload.get("session_id") or "")
@@ -152,14 +152,29 @@ def _open_and_catch_up(event: str, payload: dict, db_path: Path, detail: dict):
     return conn
 
 
-def _run_guards(event: str, payload: dict, single_guard: str | None, loaded):
+PIPELINE_ERROR_GUARD_ID = "dispatcher-error"
+TRACEBACK_CHARS = 2000
+
+
+def _run_guards(event: str, payload: dict, single_guard: str | None, loaded,
+                detail: dict):
+    """An unexpected exception from the guard pipeline is never a silent allow: it is
+    recorded in the event (guard_id "dispatcher-error", detail.pipeline_error), shown
+    on stderr, and blocks a PreToolUse."""
     try:
         return v1dispatch.run(event, payload, single_guard, loaded)
     except Exception as exc:  # noqa: BLE001 -- the pipeline itself must not crash the hook
+        import traceback  # noqa: PLC0415 -- error path only
+
+        detail["pipeline_error"] = {
+            "type": type(exc).__name__, "message": str(exc),
+            "traceback": "".join(traceback.format_exception(exc))[-TRACEBACK_CHARS:]}
         msg = v1dispatch.infra_block_message(
             "the ULTHAR guard pipeline failed", f"{type(exc).__name__}: {exc}", event)
-        code = 2 if event == "PreToolUse" else 0
-        return v1dispatch.Outcome(io_mod.Result(code, "", msg if code else ""), "dispatcher")
+        if event == "PreToolUse":
+            return v1dispatch.Outcome(io_mod.Result(2, "", msg), PIPELINE_ERROR_GUARD_ID)
+        warning = "[ulthar] WARNING (not blocking this event): " + msg
+        return v1dispatch.Outcome(io_mod.Result(0, "", warning), PIPELINE_ERROR_GUARD_ID)
 
 
 def _db_failure(event: str, db_path: Path, exc: BaseException, row: dict,
@@ -198,7 +213,7 @@ def process(event: str, payload: dict, single_guard: str | None = None,
         conn = _open_and_catch_up(event, payload, db_path, detail)
     except Exception as exc:  # noqa: BLE001 -- any database failure is journaled below
         db_error = exc
-    outcome = _run_guards(event, payload, single_guard, loaded)
+    outcome = _run_guards(event, payload, single_guard, loaded, detail)
     detail["guards_run"] = outcome.guards_run
     paths = written_paths(payload)
     post_hashes = ({p: blob_hash(p) for p in paths}

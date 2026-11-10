@@ -132,7 +132,7 @@ def _journal_rows(sb: Sandbox) -> list[dict]:
     """Rows still pending: the journal plus claims a failed replay left behind
     (a call whose db open succeeded but whose writes failed), in time order."""
     files = [sb.db.with_name(sb.db.name + ".pending.jsonl"),
-             *sb.root.glob(sb.db.name + ".pending.jsonl.*.replaying")]
+             *sb.root.glob(sb.db.name + ".pending.jsonl.*.replaying*")]
     rows = [json.loads(ln) for f in files if f.is_file()
             for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()]
     return sorted(rows, key=lambda r: r["ts"])
@@ -179,7 +179,7 @@ def check_db_write_failure_blocks_and_journals(p: Probe) -> None:
         replayed = _journaled_events(sb)
         p.check("B2: the next successful call replays the journal into events, then removes it",
                 ok.returncode == 0 and len(replayed) == 3 and not _journal_rows(sb)
-                and not list(sb.root.glob("*.replaying")), f"rc={ok.returncode} {len(replayed)}")
+                and not list(sb.root.glob("*.replaying*")), f"rc={ok.returncode} {len(replayed)}")
         rpost = next((r for r in replayed if r["hook"] == "PostToolUse"), {})
         p.check("  ... with the PostToolUse post_hashes intact",
                 json.loads(rpost.get("post_hashes") or "{}").get(str(target))
