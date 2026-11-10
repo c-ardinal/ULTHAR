@@ -1,15 +1,18 @@
-"""AC-6 and AC-9 against the owner's real transcript, read in place via
-$ULTHAR_REPLAY_TRANSCRIPT (never copied or modified; skipped with a message when unset).
+"""AC-6 and AC-9 against the owner's real transcript ($ULTHAR_REPLAY_TRANSCRIPT; skipped
+with a message when unset). The real transcript is only ever read in place: copying
+it, even to a private temp dir, is refused by this environment's permission policy.
 
-AC-6  one `ulthar ingest` of the whole transcript yields exactly 10 compact_summary
-      and 570 owner_msg Episodes (the PM's reference count).
-AC-9  full ingest <= 120 s; and with the transcript ingested except for one new line,
-      one hook call (process start included) takes p95 <= 300 ms over 200 calls.
-      "One line appended" is reproduced without touching the file: before each call
-      the session's cursor is moved back to the start of the transcript's last line,
-      so every call finds exactly one unread line -- the same work as a real append.
-      The call is a PreToolUse Bash (the guard-heaviest event) using the production
-      hook form (`python -S .../__main__.py hook`).
+AC-6  one `ulthar ingest` of the whole real transcript yields exactly 10
+      compact_summary and 570 owner_msg Episodes (the PM's reference count).
+AC-9  full ingest of the real transcript <= 120 s. Then, in the same runtime.db and
+      session, a synthetic transcript of the same line count and byte size is
+      ingested (the stand-in for "the ingested transcript", since the real one may
+      not be copied or modified), and 200 times: one fresh, uniquely identified
+      owner-message line is appended (outside the timed interval) and one hook call
+      (process start included) is timed -- p95 <= 300 ms. After every call the new
+      line's owner_msg Episode must exist (the fresh-insert path ran) and the cursor
+      must be at the end of the file. The call is a PreToolUse Bash (the guard-heaviest
+      event) in the production hook form (`python -S .../__main__.py hook`).
 The measured values are written to v2/tests/results/replay-latest.json.
 """
 from __future__ import annotations
@@ -34,7 +37,6 @@ EXPECTED = {"compact_summary": 10, "owner_msg": 570}
 FULL_INGEST_LIMIT_SEC = 120.0
 P95_LIMIT_MS = 300.0
 CALLS = 200
-TAIL_PROBE_BYTES = 8 * 1024 * 1024
 RESULTS = TESTS_DIR / "results" / "replay-latest.json"
 
 
@@ -46,96 +48,106 @@ def sha256_prefix(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-def last_two_lines(path: Path) -> tuple[int, bytes, bytes]:
-    """(start offset of the last line, the line before it, the last line)."""
-    size = path.stat().st_size
-    with open(path, "rb") as fh:
-        start = max(0, size - TAIL_PROBE_BYTES)
-        fh.seek(start)
-        tail = fh.read()
-    lines = tail.splitlines(keepends=True)
-    if len(lines) < 3:
-        raise RuntimeError("tail probe too small for the last two lines")
-    return size - len(lines[-1]), lines[-2], lines[-1]
-
-
 def p95(values: list[float]) -> float:
     ordered = sorted(values)
     return ordered[math.ceil(0.95 * len(ordered)) - 1]
 
 
-def run_replay(p: Probe, transcript: Path) -> dict:
-    from ulthar.ingest import _line_sig  # the cursor's own signature, so the rollback is exact
+def owner_line(uuid: str, text: str) -> bytes:
+    rec = {"type": "user", "uuid": uuid, "isSidechain": False,
+           "timestamp": datetime.now(timezone.utc).isoformat(),
+           "message": {"role": "user", "content": text}}
+    return (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
 
+
+def _full_ingest(p: Probe, sb: Sandbox, session: str, transcript: Path, record: dict) -> int:
+    started = time.perf_counter()
+    proc = sb.cli("ingest", "--session", session, "--transcript", str(transcript))
+    full_sec = time.perf_counter() - started
+    counts = json.loads(proc.stdout) if proc.returncode == 0 else {}
+    record.update(full_ingest_sec=round(full_sec, 2), counts=counts,
+                  transcript_lines=counts.get("lines"))
+    p.check(f"ulthar ingest exit 0 ({counts.get('lines')} lines)", proc.returncode == 0,
+            proc.stderr[-500:])
+    for kind, want in EXPECTED.items():
+        p.check(f"AC-6: {kind} = {counts.get(kind)} (expected exactly {want})",
+                counts.get(kind) == want)
+    p.check(f"AC-9: full ingest {full_sec:.2f} s <= {FULL_INGEST_LIMIT_SEC:.0f} s",
+            full_sec <= FULL_INGEST_LIMIT_SEC)
+    again = sb.cli("ingest", "--session", session, "--transcript", str(transcript))
+    again_counts = json.loads(again.stdout) if again.returncode == 0 else {}
+    p.check("AC-7 on the real transcript: a second ingest adds 0 Episodes",
+            again.returncode == 0 and not any(again_counts.get(k) for k in EXPECTED)
+            and again_counts.get("lines") == 0, again.stdout[-300:])
+    return counts.get("lines", 0)
+
+
+def _timed_appends(p: Probe, sb: Sandbox, session: str, transcript: Path, lines: int,
+                   record: dict) -> None:
+    payload = json.dumps({
+        "hook_event_name": "PreToolUse", "session_id": session,
+        "transcript_path": str(transcript), "cwd": str(sb.work), "tool_name": "Bash",
+        "tool_input": {"command": "ls -la"}})
+    env = sb.env()
+    run_tag = os.urandom(4).hex()
+    times, bad = [], []
+    for i in range(CALLS):
+        uuid = f"ac9-{run_tag}-{i}"
+        with open(transcript, "ab") as fh:
+            fh.write(owner_line(uuid, f"AC-9 timing probe {run_tag} #{i}"))
+        t0 = time.perf_counter()
+        call = subprocess.run(HOOK_ARGV + ["--event", "PreToolUse"], input=payload,
+                              capture_output=True, text=True, encoding="utf-8", env=env)
+        times.append((time.perf_counter() - t0) * 1000)
+        episode = sb.query("SELECT COUNT(*) FROM episodes WHERE session_id=? AND kind='owner_msg'"
+                           " AND dedupe_key=?", (session, f"{uuid}:owner_msg:0"))[0][0]
+        cur = sb.query("SELECT byte_offset, line_no FROM ingest_cursors WHERE session_id=?"
+                       " AND transcript_path=?", (session, str(transcript)))
+        if (call.returncode != 0 or episode != 1
+                or cur != [(transcript.stat().st_size, lines + i + 1)]):
+            bad.append((i, call.returncode, episode, cur, call.stderr[-200:]))
+    owner_total = sb.query("SELECT COUNT(*) FROM episodes WHERE session_id=? AND kind='owner_msg'",
+                           (session,))[0][0]
+    record.update(p50_ms=round(statistics.median(times), 1), p95_ms=round(p95(times), 1),
+                  max_ms=round(max(times), 1), min_ms=round(min(times), 1))
+    p.check(f"each of the {CALLS} calls ingested its one fresh line as a new owner_msg Episode",
+            not bad, str(bad[:3]))
+    p.check(f"owner_msg Episodes = {EXPECTED['owner_msg']} + {CALLS} afterwards",
+            owner_total == EXPECTED["owner_msg"] + CALLS, str(owner_total))
+    p.check(f"AC-9: hook p95 {record['p95_ms']} ms <= {P95_LIMIT_MS:.0f} ms over {CALLS} calls "
+            f"(p50 {record['p50_ms']}, max {record['max_ms']})",
+            record["p95_ms"] <= P95_LIMIT_MS)
+
+
+def synthetic_transcript(path: Path, lines: int, size: int) -> None:
+    """`lines` JSONL records totalling ~`size` bytes: assistant/system/user records in
+    rotation, padded so per-line work and file size match the real transcript."""
+    pad = max(0, size // max(lines, 1) - 200)
+    with open(path, "wb") as fh:
+        for i in range(lines):
+            kind = ("assistant", "system", "user")[i % 3]
+            rec = {"type": kind, "uuid": f"syn-{i}", "isSidechain": False,
+                   "message": {"role": kind, "content": [{"type": "text", "text":
+                               "<system-reminder>" + "x" * pad}]}}
+            fh.write((json.dumps(rec) + "\n").encode("utf-8"))
+
+
+def run_replay(p: Probe, transcript: Path) -> dict:
     sb = Sandbox()
-    record: dict = {"transcript_lines": None, "calls": CALLS}
+    record: dict = {"calls": CALLS}
     try:
         session = transcript.stem
-        started = time.perf_counter()
-        proc = sb.cli("ingest", "--session", session, "--transcript", str(transcript))
-        full_sec = time.perf_counter() - started
-        counts = json.loads(proc.stdout) if proc.returncode == 0 else {}
-        record.update(full_ingest_sec=round(full_sec, 2), counts=counts)
-        record["transcript_lines"] = counts.get("lines")
-        p.check(f"ulthar ingest exit 0 ({counts.get('lines')} lines)", proc.returncode == 0,
-                proc.stderr[-500:])
-        for kind, want in EXPECTED.items():
-            p.check(f"AC-6: {kind} = {counts.get(kind)} (expected exactly {want})",
-                    counts.get(kind) == want)
-        p.check(f"AC-9: full ingest {full_sec:.2f} s <= {FULL_INGEST_LIMIT_SEC:.0f} s",
-                full_sec <= FULL_INGEST_LIMIT_SEC)
-        again = sb.cli("ingest", "--session", session, "--transcript", str(transcript))
-        again_counts = json.loads(again.stdout) if again.returncode == 0 else {}
-        p.check("AC-7 on the real transcript: a second ingest adds 0 Episodes",
-                again.returncode == 0 and not any(again_counts.get(k) for k in EXPECTED)
-                and again_counts.get("lines") == 0, again.stdout[-300:])
-
-        last_start, prev_line, _last = last_two_lines(transcript)
-        line_total = counts.get("lines", 0)
-        payload = json.dumps({
-            "hook_event_name": "PreToolUse", "session_id": session,
-            "transcript_path": str(transcript), "cwd": str(sb.work), "tool_name": "Bash",
-            "tool_input": {"command": "ls -la"}})
-        env = sb.env()
-        episodes_before = sb.query("SELECT COUNT(*) FROM episodes")[0][0]
-        times, bad = [], []
-        for i in range(CALLS):
-            _rollback_cursor(sb, session, transcript, last_start, line_total - 1,
-                             len(prev_line), _line_sig(prev_line))
-            t0 = time.perf_counter()
-            call = subprocess.run(HOOK_ARGV + ["--event", "PreToolUse"], input=payload,
-                                  capture_output=True, text=True, encoding="utf-8", env=env)
-            times.append((time.perf_counter() - t0) * 1000)
-            cur = sb.query("SELECT byte_offset, line_no FROM ingest_cursors WHERE session_id=?",
-                           (session,))
-            if call.returncode != 0 or cur != [(transcript.stat().st_size, line_total)]:
-                bad.append((i, call.returncode, cur, call.stderr[-200:]))
-        episodes_after = sb.query("SELECT COUNT(*) FROM episodes")[0][0]
-        record.update(p50_ms=round(statistics.median(times), 1), p95_ms=round(p95(times), 1),
-                      max_ms=round(max(times), 1), min_ms=round(min(times), 1))
-        p.check(f"each of the {CALLS} calls ingested exactly the one new line and allowed",
-                not bad, str(bad[:3]))
-        p.check("the re-read last line adds no duplicate Episode",
-                episodes_after == episodes_before, f"{episodes_before} -> {episodes_after}")
-        p.check(f"AC-9: hook p95 {record['p95_ms']} ms <= {P95_LIMIT_MS:.0f} ms over {CALLS} calls "
-                f"(p50 {record['p50_ms']}, max {record['max_ms']})",
-                record["p95_ms"] <= P95_LIMIT_MS)
+        lines = _full_ingest(p, sb, session, transcript, record)
+        synthetic = sb.root / "synthetic-transcript.jsonl"
+        synthetic_transcript(synthetic, lines, transcript.stat().st_size)
+        record["synthetic_bytes"] = synthetic.stat().st_size
+        pre = sb.cli("ingest", "--session", session, "--transcript", str(synthetic))
+        p.check("the same-scale synthetic transcript is ingested first",
+                pre.returncode == 0 and json.loads(pre.stdout).get("lines") == lines, pre.stdout)
+        _timed_appends(p, sb, session, synthetic, lines, record)
     finally:
         sb.cleanup()
     return record
-
-
-def _rollback_cursor(sb: Sandbox, session: str, transcript: Path, offset: int, line_no: int,
-                     tail_len: int, tail_sig: str) -> None:
-    from ulthar import db as db_mod  # noqa: PLC0415 -- production settings, see Sandbox.query
-
-    conn = db_mod.connect(sb.db)  # autocommit: the UPDATE is committed on execute
-    try:
-        conn.execute("UPDATE ingest_cursors SET byte_offset=?, line_no=?, tail_len=?, tail_sha=?"
-                     " WHERE session_id=? AND transcript_path=?",
-                     (offset, line_no, tail_len, tail_sig, session, str(transcript)))
-    finally:
-        conn.close()
 
 
 def main() -> int:

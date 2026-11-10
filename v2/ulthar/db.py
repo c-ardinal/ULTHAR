@@ -1,9 +1,10 @@
 """runtime.db -- local SQLite (WAL) state (design §6.2, CORE-03).
 
 The ten §6.2 tables carry exactly the design's column names; list/dict columns
-(paths[], post_hashes{}, bound{}, skill_hashes) are JSON text. Three support
-tables (episodes, ingest_cursors, tool_names) hold the CORE-07 transcript
-ingestion state until the knowledge_root JSONL store lands in R1-b.
+(paths[], post_hashes{}, bound{}, skill_hashes) are JSON text. Four support
+tables (episodes, ingest_cursors, tool_names, journal_replayed) hold the CORE-07 transcript
+ingestion state until the knowledge_root JSONL store lands in R1-b; journal_replayed
+makes the fallback journal's replay idempotent (ulthar.journal).
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 5000
 DB_ENV = "ULTHAR_RUNTIME_DB"
 
@@ -79,6 +80,8 @@ CREATE TABLE IF NOT EXISTS ingest_cursors (
   session_id TEXT NOT NULL, transcript_path TEXT NOT NULL, byte_offset INTEGER NOT NULL,
   line_no INTEGER NOT NULL, tail_len INTEGER NOT NULL, tail_sha TEXT NOT NULL,
   PRIMARY KEY (session_id, transcript_path));
+CREATE TABLE IF NOT EXISTS journal_replayed (
+  jid TEXT PRIMARY KEY, replayed_at TEXT);
 CREATE TABLE IF NOT EXISTS tool_names (
   session_id TEXT NOT NULL, tool_use_id TEXT NOT NULL, name TEXT NOT NULL,
   PRIMARY KEY (session_id, tool_use_id));

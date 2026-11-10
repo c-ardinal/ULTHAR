@@ -261,7 +261,7 @@ def check_bad_grant_blocks_end_to_end(p: Probe) -> None:
         payload = _bash("echo hi", MAIN_PAYLOAD_EXTRA)
         payload["cwd"] = str(sandbox.cwd)
         proc = subprocess.run(
-            [sys.executable, *v1_compat.DISPATCH_ARGV, "--event", "PreToolUse"],
+            [sys.executable, *v1_compat.entry_argv(), "--event", "PreToolUse"],
             input=json.dumps(payload).encode("utf-8"), capture_output=True, timeout=30, env=env,
         )
         err = proc.stderr.decode("utf-8", "replace")
@@ -625,7 +625,7 @@ def check_authority_path_separator_spellings_all_block(p: Probe) -> None:
             "                   text=True, encoding='utf-8', errors='replace')\n"
             "print(r.returncode); print(r.stderr)\n", encoding="utf-8")
         proc = subprocess.run(
-            [sys.executable, str(script), str(v1_compat.PACKAGE_DIR),
+            [sys.executable, str(script), v1_compat.entry_argv()[0],
              str(sandbox.cwd), str(sandbox.home)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             env=dict(os.environ, ULTHAR_CONFIG=str(v1_compat.CONFIG_PATH)))

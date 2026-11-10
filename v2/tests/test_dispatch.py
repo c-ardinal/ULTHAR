@@ -121,26 +121,120 @@ def check_post_hashes(p: Probe) -> None:
         sb.cleanup()
 
 
-def check_db_write_failure_blocks(p: Probe) -> None:
+def _set_db_readonly(sb: Sandbox, readonly: bool) -> None:
+    for name in (sb.db.name, sb.db.name + "-wal", sb.db.name + "-shm"):
+        f = sb.db.parent / name
+        if f.exists():
+            os.chmod(f, stat.S_IREAD if readonly else stat.S_IWRITE | stat.S_IREAD)
+
+
+def _journal_rows(sb: Sandbox) -> list[dict]:
+    """Rows still pending: the journal plus claims a failed replay left behind
+    (a call whose db open succeeded but whose writes failed), in time order."""
+    files = [sb.db.with_name(sb.db.name + ".pending.jsonl"),
+             *sb.root.glob(sb.db.name + ".pending.jsonl.*.replaying")]
+    rows = [json.loads(ln) for f in files if f.is_file()
+            for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return sorted(rows, key=lambda r: r["ts"])
+
+
+def _journaled_events(sb: Sandbox) -> list[dict]:
+    return [r for r in _rows_since(sb, 0) if "journaled" in json.loads(r["detail"] or "{}")]
+
+
+def check_db_write_failure_blocks_and_journals(p: Probe) -> None:
     sb = Sandbox()
     try:
         init = sb.cli("db", "init", "--db", str(sb.db))
-        for name in (sb.db.name, sb.db.name + "-wal", sb.db.name + "-shm"):
-            f = sb.db.parent / name
-            if f.exists():
-                os.chmod(f, stat.S_IREAD)
-        proc = sb.hook("PreToolUse", {"session_id": "fx-fault", "tool_name": "Bash",
-                                      "tool_input": {"command": "ls"}})
+        target = sb.work / "kept.txt"
+        target.write_text("evidence\n", encoding="utf-8")
+        _set_db_readonly(sb, True)
+        pre = sb.hook("PreToolUse", {"session_id": "fx-fault", "tool_name": "Bash",
+                                     "tool_input": {"command": "ls"}})
         p.check("AC-4 fault 1 (runtime.db read-only): PreToolUse exits 2",
-                init.returncode == 0 and proc.returncode == 2, f"rc={proc.returncode}")
-        p.check("  ... names the cause and the recovery steps",
-                "runtime database" in proc.stderr and "To recover" in proc.stderr, proc.stderr[:600])
+                init.returncode == 0 and pre.returncode == 2, f"rc={pre.returncode}")
+        p.check("  ... names the cause, the recovery steps and where the event went",
+                "runtime database" in pre.stderr and "To recover" in pre.stderr
+                and "fallback journal" in pre.stderr, pre.stderr[:700])
+        post = sb.hook("PostToolUse", {"session_id": "fx-fault", "tool_name": "Write",
+                                       "tool_input": {"file_path": str(target)},
+                                       "tool_response": {}})
         stop = sb.hook("Stop", {"session_id": "fx-fault", "stop_hook_active": False})
-        p.check("  ... a Stop with the same fault is reported but not blocked (no Stop loop)",
-                stop.returncode == 0 and "WARNING" in stop.stderr, f"rc={stop.returncode}")
+        p.check("  ... PostToolUse and Stop proceed (exit 0) with a warning naming the journal",
+                post.returncode == 0 and stop.returncode == 0 and "WARNING" in post.stderr
+                and "fallback journal" in stop.stderr, f"rc={post.returncode}/{stop.returncode}")
+        rows = _journal_rows(sb)
+        hooks = [r["hook"] for r in rows]
+        p.check("B2: all three events are in the fallback journal while the db is down",
+                hooks == ["PreToolUse", "PostToolUse", "Stop"], str(hooks))
+        jpost = next((r for r in rows if r["hook"] == "PostToolUse"), {})
+        p.check("  ... the journaled PostToolUse keeps its post-write hash",
+                (jpost.get("post_hashes") or {}).get(str(target)) == _git_hash_object(target),
+                str(jpost.get("post_hashes")))
+        p.check("  ... the journaled PreToolUse is recorded as the deny it was",
+                rows and rows[0]["decision"] == "deny", str(rows[:1]))
+
+        _set_db_readonly(sb, False)
+        ok = sb.hook("SessionStart", {"session_id": "fx-fault"})
+        replayed = _journaled_events(sb)
+        p.check("B2: the next successful call replays the journal into events, then removes it",
+                ok.returncode == 0 and len(replayed) == 3 and not _journal_rows(sb)
+                and not list(sb.root.glob("*.replaying")), f"rc={ok.returncode} {len(replayed)}")
+        rpost = next((r for r in replayed if r["hook"] == "PostToolUse"), {})
+        p.check("  ... with the PostToolUse post_hashes intact",
+                json.loads(rpost.get("post_hashes") or "{}").get(str(target))
+                == _git_hash_object(target), str(rpost))
+        p.check("  ... and the replaying call recorded its own row after them",
+                _rows_since(sb, 0)[-1]["hook"] == "SessionStart")
+        # A crash between COMMIT and removing the claim must not duplicate rows.
+        journal = sb.db.with_name(sb.db.name + ".pending.jsonl")
+        journal.write_text("".join(json.dumps(r) + "\n" for r in rows) + "{torn", encoding="utf-8")
+        again = sb.hook("SessionStart", {"session_id": "fx-fault"})
+        p.check("B2: replaying already-replayed rows (and a torn line) adds no duplicate",
+                again.returncode == 0 and len(_journaled_events(sb)) == 3
+                and not journal.exists(), str(len(_journaled_events(sb))))
     finally:
         for f in sb.root.iterdir():
             os.chmod(f, stat.S_IWRITE | stat.S_IREAD)
+        sb.cleanup()
+
+
+def check_unrecordable_post_tool_use_is_loud(p: Probe) -> None:
+    sb = Sandbox()
+    try:
+        sb.cli("db", "init", "--db", str(sb.db))
+        sb.db.with_name(sb.db.name + ".pending.jsonl").mkdir()  # the journal cannot be opened
+        _set_db_readonly(sb, True)
+        post = sb.hook("PostToolUse", {"session_id": "fx-lost", "tool_name": "Write",
+                                       "tool_input": {"file_path": str(sb.work / "x.txt")},
+                                       "tool_response": {}})
+        p.check("B2: db and journal both unwritable -> PostToolUse exits 2 saying NOT recorded",
+                post.returncode == 2 and "NOT recorded" in post.stderr,
+                f"rc={post.returncode} {post.stderr[:400]}")
+    finally:
+        for f in sb.root.iterdir():
+            os.chmod(f, stat.S_IWRITE | stat.S_IREAD)
+        sb.cleanup()
+
+
+def check_hash_failure_is_marked_not_substituted(p: Probe) -> None:
+    sb = Sandbox()
+    try:
+        target = sb.work / "nogit.txt"
+        target.write_text("content\n", encoding="utf-8")
+        no_git_path = os.pathsep.join(d for d in os.environ.get("PATH", "").split(os.pathsep)
+                                      if d and not (Path(d) / "git.exe").exists()
+                                      and not (Path(d) / "git").exists())
+        proc = sb.hook("PostToolUse", {"session_id": "fx-hash", "tool_name": "Write",
+                                       "tool_input": {"file_path": str(target)},
+                                       "tool_response": {}}, PATH=no_git_path)
+        rows = _rows_since(sb, 0)
+        value = json.loads(rows[-1]["post_hashes"] or "{}").get(str(target)) if rows else None
+        detail = json.loads(rows[-1]["detail"] or "{}") if rows else {}
+        p.check("B2: git hash-object unavailable -> an explicit hash_failed marker, no substitute",
+                proc.returncode == 0 and isinstance(value, dict) and "hash_failed" in value
+                and detail.get("hash_failed") == [str(target)], f"{value} {detail}")
+    finally:
         sb.cleanup()
 
 
@@ -174,8 +268,11 @@ def main() -> int:
     print("\n== AC-3: post-write blob hashes ==")
     check_post_hashes(p)
     print("\n== AC-4: internal failure blocks ==")
-    check_db_write_failure_blocks(p)
+    check_db_write_failure_blocks_and_journals(p)
     check_guard_import_failure_blocks(p)
+    print("\n== B2: no event is lost when runtime.db is down ==")
+    check_unrecordable_post_tool_use_is_loud(p)
+    check_hash_failure_is_marked_not_substituted(p)
     return p.result()
 
 

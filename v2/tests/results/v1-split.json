@@ -1,0 +1,192 @@
+{
+  "totals": {
+    "entry": 442,
+    "unit:no-guard-call": 16,
+    "unit:blocked-before-guard": 5,
+    "unit:not-routed": 1
+  },
+  "functions": [
+    {
+      "module": "test_commander",
+      "function": "run_fixture",
+      "entry": 26
+    },
+    {
+      "module": "test_commander",
+      "function": "test_decision_log_is_bounded_and_keeps_the_newest",
+      "entry": 4
+    },
+    {
+      "module": "test_commander",
+      "function": "test_pe3_call_site_is_commander",
+      "entry": 1
+    },
+    {
+      "module": "test_git_discipline",
+      "function": "run_case",
+      "entry": 54
+    },
+    {
+      "module": "test_grants",
+      "function": "check_authority_path_separator_spellings_all_block",
+      "entry": 33
+    },
+    {
+      "module": "test_grants",
+      "function": "check_bad_grant_blocks_end_to_end",
+      "entry": 2
+    },
+    {
+      "module": "test_grants",
+      "function": "check_config_wiring",
+      "unit:no-guard-call": 5
+    },
+    {
+      "module": "test_grants",
+      "function": "check_consume_primitive_is_exactly_one_winner",
+      "unit:no-guard-call": 2
+    },
+    {
+      "module": "test_grants",
+      "function": "check_grant_continues_the_rule_loop_it_does_not_allow",
+      "entry": 3
+    },
+    {
+      "module": "test_grants",
+      "function": "check_grant_is_one_shot_for_the_commander",
+      "entry": 7
+    },
+    {
+      "module": "test_grants",
+      "function": "check_grant_naming_nothing_fails_loudly",
+      "unit:no-guard-call": 4
+    },
+    {
+      "module": "test_grants",
+      "function": "check_grant_never_applies_to_a_subagent",
+      "entry": 3
+    },
+    {
+      "module": "test_grants",
+      "function": "check_never_exempt_rules_cannot_be_granted",
+      "unit:no-guard-call": 1,
+      "unit:blocked-before-guard": 5
+    },
+    {
+      "module": "test_grants",
+      "function": "check_no_agent_can_write_an_authority_file",
+      "entry": 11
+    },
+    {
+      "module": "test_grants",
+      "function": "check_only_the_named_rule_is_exempted",
+      "entry": 2
+    },
+    {
+      "module": "test_grants",
+      "function": "check_shell_routes_to_authority_files_are_blocked",
+      "entry": 9
+    },
+    {
+      "module": "test_grants",
+      "function": "check_two_racing_calls_never_both_get_one_grant",
+      "unit:no-guard-call": 1
+    },
+    {
+      "module": "test_grants",
+      "function": "check_win32_same_file_spellings_are_the_same_file",
+      "entry": 43
+    },
+    {
+      "module": "test_grants",
+      "function": "check_win32_trailing_dot_components_are_the_same_file",
+      "entry": 29
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_consume_on_use_before_after",
+      "entry": 4
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_dotdot_base_is_consumed",
+      "entry": 2
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_missing_or_invalid_thresholds_use_safe_defaults",
+      "entry": 14
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_nan_retry_attempts_does_not_hang",
+      "entry": 2
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_pm_allowlist_lock_prevents_early_or_lost_consume",
+      "entry": 4
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_reclaim_bounded_when_removal_always_fails",
+      "entry": 4
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_reclaim_is_toctou_safe",
+      "unit:no-guard-call": 1
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_stale_age_zero_still_never_reclaims_live_owner",
+      "entry": 2
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_stale_but_owner_alive_not_reclaimed",
+      "entry": 3
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_stale_lock_reclaimed_when_owner_dead",
+      "entry": 3
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_unknown_rule_type_is_logged",
+      "entry": 1
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_unowned_lock_is_never_stale",
+      "entry": 4
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "check_windows_posix_case_sensitivity",
+      "entry": 4
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "main (inline)",
+      "unit:no-guard-call": 2,
+      "unit:not-routed": 1
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "run_chdir_case",
+      "entry": 1
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "run_generic_case",
+      "entry": 162
+    },
+    {
+      "module": "test_tool_discipline",
+      "function": "run_setup_case",
+      "entry": 5
+    }
+  ]
+}

@@ -13,6 +13,7 @@ and the loop continues. runtime.db and HOME used by the tests live in temp dirs.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import re
 import sys
@@ -25,6 +26,7 @@ from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
 V1_DIR = TESTS_DIR / "v1"
+SPLIT_RESULTS = TESTS_DIR / "results" / "v1-split.json"
 V1_BASELINE = {"test_git_discipline": 54, "test_tool_discipline": 219, "test_commander": 31,
                "test_grants": 160}
 COUNT_PATTERNS = (re.compile(r"RESULT: (\d+) passed, (\d+) failed"),
@@ -47,13 +49,15 @@ class _Tee(StringIO):
         return super().write(s)
 
 
-def run_module(name: str) -> tuple[bool, tuple[int, int] | None]:
+def run_module(name: str, before_main=None) -> tuple[bool, tuple[int, int] | None]:
     print(f"\n--- {name} ---", flush=True)
     buf = _Tee()
     started = time.perf_counter()
     try:
         with redirect_stdout(buf):
             mod = importlib.import_module(name)
+            if before_main is not None:
+                before_main(mod)
             rc = mod.main()
     except Exception as exc:  # noqa: BLE001 -- isolation is the point
         traceback.print_exc()
@@ -63,6 +67,22 @@ def run_module(name: str) -> tuple[bool, tuple[int, int] | None]:
     print(f"{name}: {'PASS' if rc == 0 else f'FAIL (exit {rc})'}"
           f" in {time.perf_counter() - started:.1f}s")
     return rc == 0, counts
+
+
+def _report_split(report: dict, want: int) -> bool:
+    """B3: how many v1 checks were decided through the production entry."""
+    totals = report["totals"]
+    entry = totals.get("entry", 0)
+    unit = sum(v for k, v in totals.items() if k != "entry")
+    print(f"AC-5 split: {entry} checks via the production entry (hook.process) + {unit} "
+          f"unit-only = {entry + unit} (of {want})  {totals}")
+    for fn in report["functions"]:
+        kinds = {k: v for k, v in fn.items() if k not in ("module", "function")}
+        if set(kinds) != {"entry"}:
+            print(f"  unit-level: {fn['module']}.{fn['function']}: {kinds}")
+    SPLIT_RESULTS.parent.mkdir(parents=True, exist_ok=True)
+    SPLIT_RESULTS.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return entry + unit == want
 
 
 def main() -> int:
@@ -76,8 +96,9 @@ def main() -> int:
         ok = ok and passed
     print("\n" + "=" * 70 + "\nV1 GUARD SUITES AGAINST THE V2 DISPATCHER (AC-5)\n" + "=" * 70)
     v1_total = 0
+    import v1_compat  # noqa: PLC0415 -- after sys.path is set; routes v1 names to v2
     for name, baseline in V1_BASELINE.items():
-        passed, counts = run_module(name)
+        passed, counts = run_module(name, v1_compat.instrument)
         n_pass = counts[0] if counts else 0
         v1_total += n_pass
         if n_pass < baseline:
@@ -87,6 +108,7 @@ def main() -> int:
     want = sum(V1_BASELINE.values())
     print(f"\nAC-5: v1 checks passed {v1_total}/{want}")
     ok = ok and v1_total >= want
+    ok = _report_split(v1_compat.split_report(), want) and ok
     print("\n" + "=" * 70 + "\nRUN_ALL: " + ("PASS" if ok else "FAIL") + "\n" + "=" * 70)
     return 0 if ok else 1
 

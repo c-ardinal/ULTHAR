@@ -320,8 +320,12 @@ def dispatch(event: str, payload: dict, cfg: dict, ctx, single_guard: str | None
     return Outcome(io_mod.Result(0, _emit(stdout_acc, False), ""), "dispatcher", ran)
 
 
-def prepare(event: str, payload: dict) -> tuple[dict, object]:
-    """config -> Ctx -> overlays -> grants. Raises InfraBlock (exit 2) on failure."""
+def prepare(event: str, payload: dict, loaded: tuple | None = None) -> tuple[dict, object]:
+    """config -> Ctx -> overlays -> grants. Raises InfraBlock (exit 2) on failure.
+    `loaded` = (cfg, ctx) replaces only the first two steps: the ported v1 suites
+    pass their sandbox config and Ctx (frozen clock, run_cmd stub) through it."""
+    if loaded is not None:
+        return _apply_layers(event, *loaded)
     path = config_path()
     deploy_dir = path.parent
     try:
@@ -336,6 +340,10 @@ def prepare(event: str, payload: dict) -> tuple[dict, object]:
         raise InfraBlock(io_mod.Result(2, "", infra_block_message(
             "the dispatcher context could not be constructed",
             f"{type(exc).__name__}: {exc}", event))) from exc
+    return _apply_layers(event, cfg, ctx)
+
+
+def _apply_layers(event: str, cfg: dict, ctx) -> tuple[dict, object]:
     recoveries = cfg.get("dispatch", {}).get("infra_recovery", {})
     try:
         cfg = ctx_mod.merge_overlays(cfg, ctx)
@@ -356,9 +364,10 @@ def prepare(event: str, payload: dict) -> tuple[dict, object]:
     return cfg, ctx
 
 
-def run(event: str, payload: dict, single_guard: str | None = None) -> Outcome:
+def run(event: str, payload: dict, single_guard: str | None = None,
+        loaded: tuple | None = None) -> Outcome:
     try:
-        cfg, ctx = prepare(event, payload)
+        cfg, ctx = prepare(event, payload, loaded)
     except InfraBlock as block:
         return Outcome(block.result, "dispatcher")
     _log_overlay_disable_once(ctx, payload)
