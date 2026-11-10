@@ -1,0 +1,10 @@
+[
+  {"tool_name": "Write", "file": "written.txt", "content": "written by Write\n",
+   "tool_input": {"file_path": "${DIR}/written.txt", "content": "written by Write\n"}},
+  {"tool_name": "Edit", "file": "edited.txt", "content": "line one\r\nedited line\r\n",
+   "tool_input": {"file_path": "${DIR}/edited.txt", "old_string": "old line", "new_string": "edited line"}},
+  {"tool_name": "MultiEdit", "file": "sub/multi.py", "content": "a = 1\nb = 2\n",
+   "tool_input": {"file_path": "${DIR}/sub/multi.py", "edits": [{"old_string": "a = 0", "new_string": "a = 1"}, {"old_string": "b = 0", "new_string": "b = 2"}]}},
+  {"tool_name": "NotebookEdit", "file": "nb.ipynb", "content": "{\"cells\": [], \"metadata\": {}, \"nbformat\": 4, \"nbformat_minor\": 5}\n",
+   "tool_input": {"notebook_path": "${DIR}/nb.ipynb", "cell_id": "c1", "new_source": "print(1)", "edit_mode": "replace"}}
+]

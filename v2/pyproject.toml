@@ -1,0 +1,15 @@
+[project]
+name = "ulthar"
+version = "2.0.0a1"
+description = "ULTHAR v2 R1-a foundation: runtime.db, single hook dispatcher, transcript ingestion"
+requires-python = ">=3.12"
+dependencies = ["psutil"]
+
+[project.scripts]
+ulthar = "ulthar.cli:main"
+
+[tool.setuptools]
+packages = ["ulthar", "ulthar.lib", "ulthar.guards"]
+
+[tool.setuptools.package-data]
+ulthar = ["config.json"]

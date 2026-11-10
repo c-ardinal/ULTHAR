@@ -1,0 +1,26 @@
+{
+  "calls": 200,
+  "full_ingest_sec": 3.14,
+  "counts": {
+    "owner_msg": 570,
+    "ask": 368,
+    "answer": 368,
+    "compact_summary": 10,
+    "agent_report": 470,
+    "lines": 53947,
+    "gaps": [],
+    "seconds": 1.782
+  },
+  "transcript_lines": 53947,
+  "synthetic_bytes": 216298383,
+  "p50_ms": 179.2,
+  "p95_ms": 229.6,
+  "max_ms": 255.4,
+  "min_ms": 171.0,
+  "measured_at": "2026-11-10T15:17:50+00:00",
+  "sha256_prefix": "48a2d2d5afe28ea0",
+  "python": "3.14.2",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "passed": 10,
+  "failed": 0
+}

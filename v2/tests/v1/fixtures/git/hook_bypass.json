@@ -1,0 +1,81 @@
+[
+  {
+    "id": "git-hook-bypass-no-verify-commit",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"x\" --no-verify"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PE-18 (2026-09-05). New rule: the operating rules said '--no-verify (hook skip): explicit user request only' but nothing enforced it before this. No .ps1 master equivalent -> parity:false.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): --no-verify (skips pre-commit/pre-push hooks) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-hook-bypass-no-verify-push",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push --no-verify origin feature/x"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PE-18. --no-verify also skips the pre-push hook, not just pre-commit; the rule matches on either subcommand.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): --no-verify (skips pre-commit/pre-push hooks) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-hook-bypass-no-gpg-sign",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"x\" --no-gpg-sign"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PE-18. The operating rules: '--no-gpg-sign / signing bypass: explicit user request only'.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): --no-gpg-sign (bypasses commit signing) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-hook-bypass-no-verify-short-flag",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -n -m \"x\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PE-18. `-n` is git commit's documented short alias for --no-verify; the rule must catch it too, not just the long form (on `git push`, -n means --dry-run instead, which this entry is scoped to never match, since it targets commit\\b only).",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): -n (short alias of --no-verify on commit; skips pre-commit/commit-msg hooks) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-hook-bypass-pass-push-dry-run-n-is-not-no-verify",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push -n origin feature/x"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "_why": "Near-miss: on `git push`, -n means --dry-run, not --no-verify. The no-verify-short rule targets commit\\b only and must not fire here.",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-hook-bypass-pass-msg-mentions-no-verify",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"remove the --no-verify escape hatch from CI\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "Near-miss required by the brief: the literal text --no-verify sits INSIDE the quoted commit message, so the quote-stripping probe blanks it before this rule ever sees it -- exactly the same mechanism that already protects git commit -m \"drop the -a flag\" from blanket_staging.",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-hook-bypass-pass-msg-mentions-no-gpg-sign",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"docs: explain why --no-gpg-sign is banned here\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "Same near-miss shape for the signing-bypass rule.",
+    "expect_exit": 0,
+    "parity": true
+  }
+]

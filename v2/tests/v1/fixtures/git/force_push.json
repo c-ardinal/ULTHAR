@@ -1,0 +1,82 @@
+[
+  {
+    "id": "git-force-push-block-plain-force",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push --force origin feature/x"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PE-18 (2026-09-05). New rule: force-pushing a feature branch was never blocked before (only force-push while standing ON a protected branch was, via the unrelated current_branch check). No .ps1 master equivalent -> parity:false.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git push --force / --force-with-lease / -f (rewrites remote history) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-force-push-block-short-flag",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push -f origin feature/x"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PE-18. The short flag -f is equally in scope, not just the long form.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git push --force / --force-with-lease / -f (rewrites remote history) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-force-push-block-with-lease",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push --force-with-lease origin feature/x"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PE-18. Judgement call (see git_policy._note_force_push_lease): --force-with-lease is materially safer than --force but is NOT exempted -- both rewrite published history without the owner's say-so, and this guard has no 'warn but proceed' outcome, only ALLOW/BLOCK.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git push --force / --force-with-lease / -f (rewrites remote history) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-force-push-block-combined-short-flags-uf",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push -uf origin feature/x"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PE-18. `-uf` combines --set-upstream and --force in one short-flag cluster; a bare `-f\\b` match would miss it. Matched as a cluster containing 'f', the same shape blanket_staging's -a entry already uses.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git push --force / --force-with-lease / -f (rewrites remote history) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-force-push-pass-short-u-alone",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push -u origin feature/x"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "_why": "Near-miss: -u (--set-upstream) alone contains no 'f' and must not be mistaken for a force-push.",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-force-push-pass-msg-mentions-force",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"add a --force flag to the CLI parser\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "Near-miss required by the brief: this is a commit, not a push, AND the literal --force text sits inside the quoted message -- doubly harmless. Proves the rule keys off 'push' context, not just the substring 'force'.",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-force-push-pass-branch-name-contains-force",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push -u origin feature/force-refresh-cache"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "_why": "Near-miss: a branch name that merely CONTAINS the word 'force' as part of a path segment (no leading dash, no preceding whitespace-dash token) must not trip the flag-shaped suffix pattern.",
+    "expect_exit": 0,
+    "parity": true
+  }
+]

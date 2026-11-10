@@ -1,0 +1,14 @@
+[
+  {
+    "id": "git-pe4-quoted-c-dir",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git -C \"C:/my repo\" add -A"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): blanket staging via git add -A / --all / .",
+    "parity": false,
+    "parity_exception": "PE-4",
+    "_why": "Old git-discipline-guard.ps1's prefix regex used bare \\S+ for -C's value, which cannot span the space inside a quoted 'C:/my repo' -- the prefix match breaks mid-string and the rule never fires, so the old side ALLOWS this blanket `add -A`. The unified global_option_prefix (lib/gitcmd.py) adds quoted-argument support, so the new side correctly parses the -C value and BLOCKS. Tightening only (CONTRACT PE-4)."
+  }
+]
