@@ -8,7 +8,9 @@ one fresh appended transcript line per call. Medians of 30-40 fresh processes.
   per-call work (hook.process)           32.6 ms       28.4 ms
   whole hook call, p50                  199.6 ms      151.5 ms
   whole hook call, p95 (30-40 calls)    217.4 ms      164.9 ms
-  test_replay AC-9 (200 calls)     p50 199-208 / p95 237-267   p50 ~144 / p95 ~162 (single runs)
+  test_replay AC-9 (200 calls)     p50 199-208 / p95 237-267
+     with the config cache (d2dd5bb), 3 runs:  p50 143.5-144.5 / p95 156.3-166.9
+     final, no config cache, 3 runs:           p50 147.8-148.1 / p95 160.0-193.0
 
 What was cut (behaviour unchanged; AC-5 464/464 with the same 442/22 split):
   - dataclasses (pulls in inspect, dis, tokenize, ast): lib/ctx.Ctx, _PartialCtxForExpand and
@@ -20,9 +22,9 @@ What was cut (behaviour unchanged; AC-5 464/464 with the same 442/22 split):
     hook.blob_hash (PostToolUse of a write tool)                                      ~8 ms
   - importlib / importlib.util: __import__ + sys.modules; importlib.util only on the
     ULTHAR_GUARDS_DIR test seam                                                       ~3 ms
-  - config.json parse + validation (~6.4 ms) replaced by a marshal cache (~0.3 ms) in the
-    package __pycache__, keyed by (path, mtime_ns, size), falling back to the JSON path ~6 ms
-
+  - (a marshal cache of the parsed config.json, ~6 ms, was tried in d2dd5bb and REMOVED in
+    review round 5: a cached policy that skips load_config() validation could be forged or
+    stale. config.json is parsed and validated on every call, as in v1.)
 Where the remaining ~150 ms goes, and why it was not made faster:
   - interpreter start-up, ~38 ms: fixed cost of a fresh `python -S` process.
   - stdlib imports the guards need, ~65 ms measured alone (pathlib -> glob -> re/contextlib/
@@ -32,6 +34,7 @@ Where the remaining ~150 ms goes, and why it was not made faster:
   - antivirus on-access scanning of files modified by the previous process: opening the
     just-appended transcript costs ~6.5 ms (0.3 ms when unmodified), and the first SQLite read
     (db/-wal/-shm) ~8 ms. Every reader pays this; only a long-lived process would avoid it.
+  - config.json parse + validation, ~6 ms per call: kept deliberately (see above).
   - regex compilation, ~7 ms per call (17 config patterns): re's cache is per process.
 Getting p50 well below ~140 ms would need a long-lived warm worker (a thin client forwarding
 each call to a resident dispatcher that keeps modules, compiled regexes, the config and the

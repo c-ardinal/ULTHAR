@@ -184,9 +184,15 @@ def _attribute_to_project_overlay(guard_id: str, ctx, exc, event: str):
 
 
 def invoke_guard(guard_id: str, mod, payload: dict, cfg: dict, ctx, event: str) -> io_mod.Result:
-    """Calls one loaded guard with v1's exception and result rules."""
+    """Calls one loaded guard with v1's exception and result rules -- except that an
+    ImportError raised while the guard runs (a module the runtime imports lazily,
+    e.g. subprocess in ctx.run_cmd) is an infrastructure failure, not a guard bug:
+    it is re-raised, so ulthar.hook records it and blocks a PreToolUse instead of
+    letting the fail-open rule turn it into ALLOW."""
     try:
         result = mod.run(payload, cfg, ctx)
+    except ImportError:
+        raise
     except ctx_mod.PatternCompileError as exc:
         attributed = _attribute_to_project_overlay(guard_id, ctx, exc, event)
         if attributed is not None:
@@ -327,39 +333,6 @@ def dispatch(event: str, payload: dict, cfg: dict, ctx, single_guard: str | None
     return Outcome(io_mod.Result(0, _emit(stdout_acc, False), ""), "dispatcher", ran)
 
 
-CONFIG_CACHE_DIR = PACKAGE_DIR / "__pycache__"
-
-
-def load_config_cached(path: Path) -> dict:
-    """ctx.load_config(path), memoised across processes: the parsed and validated
-    config is kept as a marshal file in the package's __pycache__ (beside the .pyc
-    files it shares trust with), keyed like v1's in-process cache by (path, mtime,
-    size) -- with mtime in ns. JSON parse + validation costs every hook ~6 ms; the
-    marshal load ~0.3 ms. Any cache problem falls back to the JSON path."""
-    import marshal  # noqa: PLC0415 -- builtin, cheap
-    import zlib  # noqa: PLC0415 -- builtin, cheap
-
-    resolved = str(path)
-    st = os.stat(resolved)
-    key = (resolved, st.st_mtime_ns, st.st_size)
-    cache = CONFIG_CACHE_DIR / f"config-{zlib.crc32(resolved.encode('utf-8')):08x}.marshal"
-    try:
-        cached_key, cfg = marshal.loads(cache.read_bytes())
-        if tuple(cached_key) == key and isinstance(cfg, dict):
-            return cfg
-    except (OSError, ValueError, EOFError, TypeError):
-        pass
-    cfg = ctx_mod.load_config(path)
-    try:
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
-        tmp.write_bytes(marshal.dumps((key, cfg)))
-        os.replace(tmp, cache)
-    except (OSError, ValueError):
-        pass  # read-only install: every call parses the JSON, as v1 did
-    return cfg
-
-
 def prepare(event: str, payload: dict, loaded: tuple | None = None) -> tuple[dict, object]:
     """config -> Ctx -> overlays -> grants. Raises InfraBlock (exit 2) on failure.
     `loaded` = (cfg, ctx) replaces only the first two steps: the ported v1 suites
@@ -369,7 +342,7 @@ def prepare(event: str, payload: dict, loaded: tuple | None = None) -> tuple[dic
     path = config_path()
     deploy_dir = path.parent
     try:
-        cfg = load_config_cached(path)
+        cfg = ctx_mod.load_config(path)  # parsed and validated on every call, as in v1
     except Exception as exc:
         raise InfraBlock(io_mod.Result(2, "", infra_block_message(
             f"config.json could not be loaded ({path})", f"{type(exc).__name__}: {exc}",

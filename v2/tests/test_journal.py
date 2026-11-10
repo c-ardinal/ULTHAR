@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -198,6 +199,40 @@ def check_lock_contention_gives_up_at_deadline(p: Probe) -> None:
         sb.cleanup()
 
 
+class _BrokenFcntl(_HeldFcntl):
+    """Stub fcntl whose flock fails with a non-contention error (bad descriptor)."""
+
+    def flock(self, _fd: int, op: int) -> None:
+        self.calls.append(op)
+        if op & self.LOCK_EX:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+
+
+def check_non_contention_lock_error_is_not_retried(p: Probe) -> None:
+    sb = Sandbox()
+    saved_timeout, saved_fcntl = journal_mod.LOCK_TIMEOUT_SEC, sys.modules.get("fcntl")
+    try:
+        journal_mod.LOCK_TIMEOUT_SEC = CONTENTION_TIMEOUT_SEC
+        stub = _BrokenFcntl()
+        sys.modules["fcntl"] = stub
+
+        def acquire() -> None:
+            with journal_mod._locked(sb.db, posix=True):
+                pass
+        raised, elapsed, msg = _gives_up(acquire)
+        p.check(f"lock: a non-contention OSError (EBADF) is raised at once, not retried "
+                f"({elapsed:.3f} s, {len(stub.calls)} attempt)",
+                raised and len(stub.calls) == 1 and elapsed < CONTENTION_TIMEOUT_SEC / 2
+                and "Bad file descriptor" in msg, msg)
+    finally:
+        journal_mod.LOCK_TIMEOUT_SEC = saved_timeout
+        if saved_fcntl is None:
+            sys.modules.pop("fcntl", None)
+        else:
+            sys.modules["fcntl"] = saved_fcntl
+        sb.cleanup()
+
+
 def check_pipeline_exception_is_recorded(p: Probe) -> None:
     sb = Sandbox()
     saved_env, saved_run = os.environ.get("ULTHAR_RUNTIME_DB"), v1dispatch.run
@@ -243,6 +278,7 @@ def main() -> int:
     check_short_writes(p)
     check_torn_rows_are_quarantined(p)
     check_lock_contention_gives_up_at_deadline(p)
+    check_non_contention_lock_error_is_not_retried(p)
     check_pipeline_exception_is_recorded(p)
     print(f"({time.perf_counter() - started:.1f}s)")
     return p.result()

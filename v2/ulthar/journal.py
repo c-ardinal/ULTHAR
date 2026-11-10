@@ -16,6 +16,7 @@ once; a claim left by a crashed replayer is adopted once it is STALE_CLAIM_SEC o
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -33,6 +34,10 @@ STALE_CLAIM_SEC = 60
 JOURNAL_GUARD_ID = "journal"
 LOCK_TIMEOUT_SEC = 30
 LOCK_POLL_SEC = 0.005
+# "Held by someone else": POSIX flock(LOCK_NB) -> EWOULDBLOCK/EAGAIN (EACCES on some
+# systems); Windows msvcrt.locking(LK_NBLCK) -> EACCES (measured), EDEADLOCK for LK_LOCK.
+LOCK_CONTENTION_ERRNOS = frozenset(
+    {errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES, getattr(errno, "EDEADLOCK", errno.EDEADLK)})
 
 
 def path_for(db_path: Path) -> Path:
@@ -83,6 +88,8 @@ def _locked(db_path: Path, posix: bool | None = None):
                 try_lock()
                 break
             except OSError as exc:
+                if exc.errno not in LOCK_CONTENTION_ERRNOS:
+                    raise  # not "someone else holds it": waiting cannot help
                 if time.monotonic() >= deadline:
                     raise OSError(f"journal lock {lock} not acquired within "
                                   f"{LOCK_TIMEOUT_SEC} s: {exc}") from exc

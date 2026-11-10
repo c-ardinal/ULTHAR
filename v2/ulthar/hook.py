@@ -56,12 +56,14 @@ def blob_hash(path: str) -> str | dict | None:
     autocrlf/.gitattributes). None when the file is absent. When git cannot produce
     it, {"hash_failed": reason} -- never a substitute hash, which could disagree with
     the blob git would store and so poison TRUST-04's comparison. Never raises."""
-    import subprocess  # noqa: PLC0415 -- lazy: only PostToolUse of a write tool hashes
-
     p = Path(path)
     try:
         if not p.is_file():
             return None
+        import subprocess  # noqa: PLC0415 -- lazy: only PostToolUse of a write tool hashes
+    except (OSError, ValueError, ImportError) as exc:
+        return {HASH_FAILED: f"{type(exc).__name__}: {exc}"}
+    try:
         proc = subprocess.run(["git", "-C", str(p.parent), "hash-object", "--", p.name],
                               capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -168,8 +170,9 @@ def _run_guards(event: str, payload: dict, single_guard: str | None, loaded,
         detail["pipeline_error"] = {
             "type": type(exc).__name__, "message": str(exc),
             "traceback": "".join(traceback.format_exception(exc))[-TRACEBACK_CHARS:]}
-        msg = v1dispatch.infra_block_message(
-            "the ULTHAR guard pipeline failed", f"{type(exc).__name__}: {exc}", event)
+        reason = ("a module the guards need could not be imported"
+                  if isinstance(exc, ImportError) else "the ULTHAR guard pipeline failed")
+        msg = v1dispatch.infra_block_message(reason, f"{type(exc).__name__}: {exc}", event)
         if event == "PreToolUse":
             return v1dispatch.Outcome(io_mod.Result(2, "", msg), PIPELINE_ERROR_GUARD_ID)
         warning = "[ulthar] WARNING (not blocking this event): " + msg
