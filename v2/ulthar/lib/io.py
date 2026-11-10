@@ -21,15 +21,15 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Callable, NamedTuple
+from collections import namedtuple
 
 
-class Result(NamedTuple):
-    """exit_code: 0 = allow, 2 = block. No other value is ever returned by a guard."""
+class Result(namedtuple("Result", ("exit_code", "stdout", "stderr"), defaults=("", ""))):
+    """exit_code: 0 = allow, 2 = block. No other value is ever returned by a guard.
+    (v2: collections.namedtuple, same fields and defaults as v1's typing.NamedTuple --
+    typing costs every hook ~5 ms of start-up.)"""
 
-    exit_code: int
-    stdout: str = ""
-    stderr: str = ""
+    __slots__ = ()
 
 
 ALLOW = Result(0)

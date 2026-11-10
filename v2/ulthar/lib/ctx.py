@@ -13,30 +13,21 @@ from __future__ import annotations
 import copy
 import os
 import re
-import signal
-import subprocess
 import sys
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Literal, NamedTuple
+from collections import namedtuple
 
 from . import io as io_mod
 from . import paths as paths_mod
 
 
-class CmdResult(NamedTuple):
-    rc: int
-    out: str
-    err: str
-    timed_out: bool
+class CmdResult(namedtuple("CmdResult", ("rc", "out", "err", "timed_out"))):
+    __slots__ = ()
 
 
-class ProcInfo(NamedTuple):
-    pid: int
-    ppid: int
-    name: str
-    cmdline: str
+class ProcInfo(namedtuple("ProcInfo", ("pid", "ppid", "name", "cmdline"))):
+    __slots__ = ()
 
 
 # ---------------------------------------------------------------- is_main_chain
@@ -1029,46 +1020,49 @@ def compile_text_pattern(pattern: str, json_path: str = "") -> re.Pattern | None
 # ---------------------------------------------------------------- Ctx
 
 
-@dataclass
 class Ctx:
-    home: Path
-    state_dir: Path
-    deploy_dir: Path
-    skills_root: Path
-    logs_dir: Path
-    temp_dir: Path
-    cwd: Path
-    is_windows: bool
-    event: str
-    cfg: dict = field(repr=False)
-    # Set by merge_overlays, read only on the guard-exception path.
-    # `project_overlay_path` is the project overlay actually merged into `cfg`
-    # (None = none was), and `project_overlay_ids` holds id() of every dict/list
-    # that overlay contributed to `cfg`. Together they let dispatch.py attribute
-    # a guard's exception to its SOURCE from the single failing execution, with
-    # no second run of the guard -- a second run would observe a different
-    # filesystem/clock and could blame an innocent overlay for an ordinary
-    # live-state change. Empty means "no project content is in this cfg", and
-    # the dispatcher's fail-open behaves exactly as it always has.
-    project_overlay_path: Path | None = field(default=None, repr=False)
-    project_overlay_ids: frozenset = field(default_factory=frozenset, repr=False)
-    # EVERY overlay file merged into this dispatch's cfg, in layer order, as
-    # strings (empty = none, which is the common case). This is what decides
-    # whether a guard's runtime exception may fail open: with an overlay in the
-    # cfg it may not, because "the guard crashed" and "an overlay made the guard
-    # crash" are not distinguishable at crash time and only one of them is safe
-    # to treat as ALLOW. See dispatch.py:_attribute_to_project_overlay, which
-    # kept its name through the round-4 generalisation from "was this overlay's
-    # content on the stack?" to "was any overlay merged at all?".
-    overlay_sources: tuple[str, ...] = field(default=(), repr=False)
-    # The rule identifiers the PROJECT overlay switched off in this dispatch's cfg
-    # (empty = none). Set by merge_overlays, read by dispatch.py to log the fact and
-    # to tell the operator once per session -- a repo's policy applying to their
-    # session is theirs to accept, but never theirs to discover by accident.
-    project_overlay_disabled: tuple = field(default_factory=tuple, repr=False)
-    _now_fn: Callable[[], datetime] = field(default=datetime.now, repr=False)
-    _run_cmd_fn: Callable | None = field(default=None, repr=False)
-    _list_processes_fn: Callable | None = field(default=None, repr=False)
+    """Per-dispatch context. A plain class with the former dataclass's fields, order
+    and defaults (v2: dataclasses pulls in inspect, ~20 ms of every hook start-up).
+
+    `project_overlay_path` / `project_overlay_ids`: set by merge_overlays, read only
+    on the guard-exception path (attribution to the project overlay).
+    `overlay_sources`: EVERY overlay file merged into this dispatch's cfg, in layer
+    order -- with any overlay present a guard crash may not fail open.
+    `project_overlay_disabled`: rule ids the PROJECT overlay switched off."""
+
+    def __init__(self, home: Path, state_dir: Path, deploy_dir: Path, skills_root: Path,
+                 logs_dir: Path, temp_dir: Path, cwd: Path, is_windows: bool, event: str,
+                 cfg: dict, project_overlay_path: Path | None = None,
+                 project_overlay_ids: frozenset | None = None,
+                 overlay_sources: tuple[str, ...] = (),
+                 project_overlay_disabled: tuple | None = None,
+                 _now_fn: Callable[[], datetime] = datetime.now,
+                 _run_cmd_fn: Callable | None = None,
+                 _list_processes_fn: Callable | None = None) -> None:
+        self.home = home
+        self.state_dir = state_dir
+        self.deploy_dir = deploy_dir
+        self.skills_root = skills_root
+        self.logs_dir = logs_dir
+        self.temp_dir = temp_dir
+        self.cwd = cwd
+        self.is_windows = is_windows
+        self.event = event
+        self.cfg = cfg
+        self.project_overlay_path = project_overlay_path
+        self.project_overlay_ids = frozenset() if project_overlay_ids is None else project_overlay_ids
+        self.overlay_sources = overlay_sources
+        self.project_overlay_disabled = (
+            tuple() if project_overlay_disabled is None else project_overlay_disabled)
+        self._now_fn = _now_fn
+        self._run_cmd_fn = _run_cmd_fn
+        self._list_processes_fn = _list_processes_fn
+
+    def __repr__(self) -> str:
+        return (f"Ctx(home={self.home!r}, state_dir={self.state_dir!r}, "
+                f"deploy_dir={self.deploy_dir!r}, skills_root={self.skills_root!r}, "
+                f"logs_dir={self.logs_dir!r}, temp_dir={self.temp_dir!r}, cwd={self.cwd!r}, "
+                f"is_windows={self.is_windows!r}, event={self.event!r})")
 
     def now(self) -> datetime:
         return self._now_fn()
@@ -1099,6 +1093,8 @@ class Ctx:
             timeout = self.cfg["thresholds"]["subprocess_timeout_remote_sec"]
         else:
             raise ValueError(f"run_cmd: kind must be 'local' or 'remote', got {kind!r}")
+        import subprocess  # noqa: PLC0415 -- v2: lazy, ~8 ms of every hook start-up
+
         resolved_argv = list(argv)
         if resolved_argv:
             import shutil  # noqa: PLC0415 -- v2: lazy, shutil pulls bz2/lzma/zstd (~20 ms per hook)
@@ -1180,6 +1176,8 @@ class Ctx:
         belongs to lib/procs.py (Stop-only); this PreToolUse-reachable path goes
         straight to SIGKILL/TerminateProcess, since a deliberately-hung external
         command gets no grace period."""
+        import signal  # noqa: PLC0415 -- v2: lazy, see run_cmd
+        import subprocess  # noqa: PLC0415
         if sys.platform.startswith("win"):
             try:
                 subprocess.run(
@@ -1299,14 +1297,15 @@ def build_ctx(payload: dict, cfg: dict, event: str, deploy_dir: Path) -> Ctx:
     )
 
 
-@dataclass
 class _PartialCtxForExpand:
     """A minimal stand-in exposing only what paths.expand() reads (home, cwd,
     temp_dir, deploy_dir, skills_root), used while build_ctx is still resolving the
     real Ctx's own path fields from config (which themselves need expand())."""
 
-    home: Path
-    deploy_dir: Path
-    cwd: Path
-    temp_dir: Path
-    skills_root: Path
+    def __init__(self, home: Path, deploy_dir: Path, cwd: Path, temp_dir: Path,
+                 skills_root: Path) -> None:
+        self.home = home
+        self.deploy_dir = deploy_dir
+        self.cwd = cwd
+        self.temp_dir = temp_dir
+        self.skills_root = skills_root

@@ -1,0 +1,39 @@
+ULTHAR v2 R1-a -- hook latency profile (AC-9), Windows 11, Python 3.14.2, 2026-11-10
+Hook form measured: python -S v2/ulthar/__main__.py hook --event PreToolUse (Bash "ls -la"),
+one fresh appended transcript line per call. Medians of 30-40 fresh processes.
+
+                                   before (12ffa44)   after
+  bare `python -S -c pass`               39.0 ms       38.4 ms   (interpreter floor, unchanged)
+  imports (ulthar.hook and below)       121.5 ms       80.0 ms
+  per-call work (hook.process)           32.6 ms       28.4 ms
+  whole hook call, p50                  199.6 ms      151.5 ms
+  whole hook call, p95 (30-40 calls)    217.4 ms      164.9 ms
+  test_replay AC-9 (200 calls)     p50 199-208 / p95 237-267   p50 ~144 / p95 ~162 (single runs)
+
+What was cut (behaviour unchanged; AC-5 464/464 with the same 442/22 split):
+  - dataclasses (pulls in inspect, dis, tokenize, ast): lib/ctx.Ctx, _PartialCtxForExpand and
+    v1dispatch.Outcome are plain classes with the same fields, order and defaults   ~20 ms
+  - typing (+ annotationlib): NamedTuple -> collections.namedtuple subclasses with the same
+    fields/defaults (io.Result, ctx.CmdResult, ctx.ProcInfo, hook.Processed); Callable/Literal
+    were annotation-only                                                              ~5 ms
+  - subprocess/signal/threading: imported only inside ctx.run_cmd / _kill_process_tree and
+    hook.blob_hash (PostToolUse of a write tool)                                      ~8 ms
+  - importlib / importlib.util: __import__ + sys.modules; importlib.util only on the
+    ULTHAR_GUARDS_DIR test seam                                                       ~3 ms
+  - config.json parse + validation (~6.4 ms) replaced by a marshal cache (~0.3 ms) in the
+    package __pycache__, keyed by (path, mtime_ns, size), falling back to the JSON path ~6 ms
+
+Where the remaining ~150 ms goes, and why it was not made faster:
+  - interpreter start-up, ~38 ms: fixed cost of a fresh `python -S` process.
+  - stdlib imports the guards need, ~65 ms measured alone (pathlib -> glob -> re/contextlib/
+    fnmatch, sqlite3, json, copy): the ported v1 code is built on pathlib and re; dropping them
+    means rewriting the guards, which AC-5 forbids.
+  - ulthar's own modules, ~16 ms (pyc load of ctx/io/paths/grant/tool_discipline/...).
+  - antivirus on-access scanning of files modified by the previous process: opening the
+    just-appended transcript costs ~6.5 ms (0.3 ms when unmodified), and the first SQLite read
+    (db/-wal/-shm) ~8 ms. Every reader pays this; only a long-lived process would avoid it.
+  - regex compilation, ~7 ms per call (17 config patterns): re's cache is per process.
+Getting p50 well below ~140 ms would need a long-lived warm worker (a thin client forwarding
+each call to a resident dispatcher that keeps modules, compiled regexes, the config and the
+SQLite connection) -- not done in R1-a: it adds lifecycle, staleness and env-isolation risks
+that need their own design and review.

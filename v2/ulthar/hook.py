@@ -18,9 +18,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import subprocess
 from pathlib import Path
-from typing import NamedTuple
+from collections import namedtuple
 
 from . import db as db_mod
 from . import ingest as ingest_mod
@@ -34,9 +33,7 @@ GIT_TIMEOUT_SEC = 10
 HASH_FAILED = "hash_failed"
 
 
-class Processed(NamedTuple):
-    result: io_mod.Result
-    guards_run: list[str]
+Processed = namedtuple("Processed", ("result", "guards_run"))
 
 
 def written_paths(payload: dict) -> list[str]:
@@ -59,6 +56,8 @@ def blob_hash(path: str) -> str | dict | None:
     autocrlf/.gitattributes). None when the file is absent. When git cannot produce
     it, {"hash_failed": reason} -- never a substitute hash, which could disagree with
     the blob git would store and so poison TRUST-04's comparison. Never raises."""
+    import subprocess  # noqa: PLC0415 -- lazy: only PostToolUse of a write tool hashes
+
     p = Path(path)
     try:
         if not p.is_file():

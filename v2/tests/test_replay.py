@@ -13,7 +13,8 @@ AC-9  full ingest of the real transcript <= 120 s. Then, in the same runtime.db 
       line's owner_msg Episode must exist (the fresh-insert path ran) and the cursor
       must be at the end of the file. The call is a PreToolUse Bash (the guard-heaviest
       event) in the production hook form (`python -S .../__main__.py hook`).
-The measured values are written to v2/tests/results/replay-latest.json.
+The measured values are written to v2/tests/results/replay-latest.json and appended
+to replay-runs.jsonl (AC-9 is judged on 3 consecutive full runs).
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ FULL_INGEST_LIMIT_SEC = 120.0
 P95_LIMIT_MS = 300.0
 CALLS = 200
 RESULTS = TESTS_DIR / "results" / "replay-latest.json"
+RUNS = TESTS_DIR / "results" / "replay-runs.jsonl"
 
 
 def sha256_prefix(path: Path) -> str:
@@ -168,6 +170,8 @@ def main() -> int:
                   platform=platform.platform(), passed=p.passed, failed=p.failed)
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
     RESULTS.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    with open(RUNS, "a", encoding="utf-8", newline="\n") as fh:  # AC-9: every run is kept
+        fh.write(json.dumps(record) + "\n")
     print(f"measurements written to {RESULTS}")
     return p.result()
 

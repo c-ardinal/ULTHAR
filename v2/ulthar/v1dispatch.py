@@ -14,14 +14,11 @@ four CORE-06 guards).
 """
 from __future__ import annotations
 
-import importlib
-import importlib.util
+import sys
 import json
 import os
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from .lib import ctx as ctx_mod
 from .lib import grant as grant_mod
@@ -32,11 +29,15 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 GUARDS_DIR_ENV = "ULTHAR_GUARDS_DIR"  # test seam (v1's), used by the AC-4 fault injection
 
 
-@dataclass
 class Outcome:
-    result: io_mod.Result
-    guard_id: str = "dispatcher"
-    guards_run: list[str] = field(default_factory=list)
+    """The pipeline's answer: the Result, the deciding guard id, the guards that ran.
+    (A plain class: dataclasses would import inspect, ~20 ms per hook start-up.)"""
+
+    def __init__(self, result: io_mod.Result, guard_id: str = "dispatcher",
+                 guards_run: list[str] | None = None) -> None:
+        self.result = result
+        self.guard_id = guard_id
+        self.guards_run = [] if guards_run is None else guards_run
 
 
 class InfraBlock(Exception):
@@ -107,13 +108,19 @@ def import_guard(guard_id: str):
     try:
         if override_dir:
             mod_path = Path(override_dir) / f"{guard_id}.py"
-            spec = importlib.util.spec_from_file_location(f"_ulthar_guard_{guard_id}", mod_path)
+            # Bound under its own name: `import importlib.util` here would make the
+            # name `importlib` local to the whole function (v1's UnboundLocalError).
+            from importlib import util as importlib_util  # noqa: PLC0415 -- test seam only
+
+            spec = importlib_util.spec_from_file_location(f"_ulthar_guard_{guard_id}", mod_path)
             if spec is None or spec.loader is None:
                 raise ImportError(f"cannot load spec for {mod_path}")
-            mod = importlib.util.module_from_spec(spec)
+            mod = importlib_util.module_from_spec(spec)
             spec.loader.exec_module(mod)
         else:
-            mod = importlib.import_module(f"{__package__}.guards.{guard_id}")
+            name = f"{__package__}.guards.{guard_id}"
+            __import__(name)  # importlib.import_module without importing importlib
+            mod = sys.modules[name]
     except Exception as exc:
         raise GuardLoadError(f"{guard_id}: {type(exc).__name__}: {exc}") from exc
     if not callable(getattr(mod, "run", None)):
@@ -320,6 +327,39 @@ def dispatch(event: str, payload: dict, cfg: dict, ctx, single_guard: str | None
     return Outcome(io_mod.Result(0, _emit(stdout_acc, False), ""), "dispatcher", ran)
 
 
+CONFIG_CACHE_DIR = PACKAGE_DIR / "__pycache__"
+
+
+def load_config_cached(path: Path) -> dict:
+    """ctx.load_config(path), memoised across processes: the parsed and validated
+    config is kept as a marshal file in the package's __pycache__ (beside the .pyc
+    files it shares trust with), keyed like v1's in-process cache by (path, mtime,
+    size) -- with mtime in ns. JSON parse + validation costs every hook ~6 ms; the
+    marshal load ~0.3 ms. Any cache problem falls back to the JSON path."""
+    import marshal  # noqa: PLC0415 -- builtin, cheap
+    import zlib  # noqa: PLC0415 -- builtin, cheap
+
+    resolved = str(path)
+    st = os.stat(resolved)
+    key = (resolved, st.st_mtime_ns, st.st_size)
+    cache = CONFIG_CACHE_DIR / f"config-{zlib.crc32(resolved.encode('utf-8')):08x}.marshal"
+    try:
+        cached_key, cfg = marshal.loads(cache.read_bytes())
+        if tuple(cached_key) == key and isinstance(cfg, dict):
+            return cfg
+    except (OSError, ValueError, EOFError, TypeError):
+        pass
+    cfg = ctx_mod.load_config(path)
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+        tmp.write_bytes(marshal.dumps((key, cfg)))
+        os.replace(tmp, cache)
+    except (OSError, ValueError):
+        pass  # read-only install: every call parses the JSON, as v1 did
+    return cfg
+
+
 def prepare(event: str, payload: dict, loaded: tuple | None = None) -> tuple[dict, object]:
     """config -> Ctx -> overlays -> grants. Raises InfraBlock (exit 2) on failure.
     `loaded` = (cfg, ctx) replaces only the first two steps: the ported v1 suites
@@ -329,7 +369,7 @@ def prepare(event: str, payload: dict, loaded: tuple | None = None) -> tuple[dic
     path = config_path()
     deploy_dir = path.parent
     try:
-        cfg = ctx_mod.load_config(path)
+        cfg = load_config_cached(path)
     except Exception as exc:
         raise InfraBlock(io_mod.Result(2, "", infra_block_message(
             f"config.json could not be loaded ({path})", f"{type(exc).__name__}: {exc}",
