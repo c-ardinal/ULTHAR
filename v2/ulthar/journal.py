@@ -47,39 +47,50 @@ def new_jid() -> str:
     return os.urandom(12).hex()
 
 
+def _lock_ops(fd: int, posix: bool):
+    """(try_lock, unlock) for this platform; try_lock raises OSError when held."""
+    if posix:
+        import fcntl  # noqa: PLC0415 -- platform-specific stdlib
+
+        return (lambda: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB),
+                lambda: fcntl.flock(fd, fcntl.LOCK_UN))
+    import msvcrt  # noqa: PLC0415 -- platform-specific stdlib
+
+    def try_lock() -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def unlock() -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    return try_lock, unlock
+
+
 @contextmanager
-def _locked(db_path: Path):
-    """Exclusive inter-process lock; raises OSError after LOCK_TIMEOUT_SEC on Windows."""
+def _locked(db_path: Path, posix: bool | None = None):
+    """Exclusive inter-process lock, both platforms non-blocking and polled: a stalled
+    holder makes this raise OSError after LOCK_TIMEOUT_SEC (read per call), which the
+    caller reports as "NOT recorded" -- never an indefinite hang. `posix` overrides
+    the platform choice (tests only)."""
     lock = db_path.with_name(db_path.name + LOCK_SUFFIX)
     lock.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT)
     try:
-        if os.name == "nt":
-            import msvcrt  # noqa: PLC0415 -- platform-specific stdlib
-
-            os.lseek(fd, 0, os.SEEK_SET)
-            deadline = time.monotonic() + LOCK_TIMEOUT_SEC
-            while True:  # LK_LOCK gives up after 10 x 1 s; poll with short sleeps instead
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise
-                    time.sleep(LOCK_POLL_SEC)
+        try_lock, unlock = _lock_ops(fd, os.name != "nt" if posix is None else posix)
+        deadline = time.monotonic() + LOCK_TIMEOUT_SEC
+        while True:
             try:
-                yield
-            finally:
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl  # noqa: PLC0415 -- platform-specific stdlib
-
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                try_lock()
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise OSError(f"journal lock {lock} not acquired within "
+                                  f"{LOCK_TIMEOUT_SEC} s: {exc}") from exc
+                time.sleep(LOCK_POLL_SEC)
+        try:
+            yield
+        finally:
+            unlock()
     finally:
         os.close(fd)
 

@@ -133,6 +133,71 @@ def check_torn_rows_are_quarantined(p: Probe) -> None:
         sb.cleanup()
 
 
+CONTENTION_TIMEOUT_SEC = 1.0
+CONTENTION_SLACK_SEC = 1.5
+
+
+def _gives_up(acquire) -> tuple[bool, float, str]:
+    """Runs `acquire` (expected to raise OSError at the deadline); returns
+    (raised, elapsed seconds, message)."""
+    started = time.monotonic()
+    try:
+        acquire()
+    except OSError as exc:
+        return True, time.monotonic() - started, str(exc)
+    return False, time.monotonic() - started, ""
+
+
+def _in_window(elapsed: float) -> bool:
+    return CONTENTION_TIMEOUT_SEC <= elapsed <= CONTENTION_TIMEOUT_SEC + CONTENTION_SLACK_SEC
+
+
+class _HeldFcntl:
+    """Stub fcntl whose lock is always held by someone else."""
+    LOCK_EX, LOCK_NB, LOCK_UN = 2, 4, 8
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def flock(self, _fd: int, op: int) -> None:
+        self.calls.append(op)
+        if op & self.LOCK_EX:
+            raise BlockingIOError(11, "Resource temporarily unavailable")
+
+
+def check_lock_contention_gives_up_at_deadline(p: Probe) -> None:
+    sb = Sandbox()
+    saved_timeout, saved_fcntl = journal_mod.LOCK_TIMEOUT_SEC, sys.modules.get("fcntl")
+    try:
+        journal_mod.LOCK_TIMEOUT_SEC = CONTENTION_TIMEOUT_SEC
+        branch = "Windows (msvcrt)" if os.name == "nt" else "POSIX (fcntl)"
+        with journal_mod._locked(sb.db):  # this platform's real lock, held
+            raised, elapsed, msg = _gives_up(lambda: journal_mod.append(sb.db, _row("held")))
+        p.check(f"lock: real {branch} branch -- append under a held lock raises OSError at the "
+                f"{CONTENTION_TIMEOUT_SEC:.0f} s deadline ({elapsed:.2f} s)",
+                raised and _in_window(elapsed) and "not acquired" in msg, msg)
+        p.check("  ... and wrote nothing", not journal_mod.path_for(sb.db).exists())
+
+        stub = _HeldFcntl()
+        sys.modules["fcntl"] = stub
+
+        def posix_acquire() -> None:
+            with journal_mod._locked(sb.db, posix=True):
+                pass
+        raised, elapsed, msg = _gives_up(posix_acquire)
+        p.check(f"lock: POSIX branch (stubbed fcntl) polls LOCK_EX|LOCK_NB and gives up at the "
+                f"deadline ({elapsed:.2f} s, {len(stub.calls)} attempts)",
+                raised and _in_window(elapsed) and len(stub.calls) > 1
+                and all(op == stub.LOCK_EX | stub.LOCK_NB for op in stub.calls), msg)
+    finally:
+        journal_mod.LOCK_TIMEOUT_SEC = saved_timeout
+        if saved_fcntl is None:
+            sys.modules.pop("fcntl", None)
+        else:
+            sys.modules["fcntl"] = saved_fcntl
+        sb.cleanup()
+
+
 def check_pipeline_exception_is_recorded(p: Probe) -> None:
     sb = Sandbox()
     saved_env, saved_run = os.environ.get("ULTHAR_RUNTIME_DB"), v1dispatch.run
@@ -177,6 +242,7 @@ def main() -> int:
     check_concurrent_append_during_replay(p)
     check_short_writes(p)
     check_torn_rows_are_quarantined(p)
+    check_lock_contention_gives_up_at_deadline(p)
     check_pipeline_exception_is_recorded(p)
     print(f"({time.perf_counter() - started:.1f}s)")
     return p.result()
