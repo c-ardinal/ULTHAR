@@ -1,0 +1,256 @@
+[
+  {
+    "id": "git-golden-block-add-a",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git add -A"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): blanket staging via git add -A / --all / . is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-14",
+    "_why": "PE-14 (round-4). git_policy.blanket_staging_message contains a backtick-quoted `git status`. In git-discipline-guard.ps1 that text sits inside an @\"...\"@ (double-quoted) here-string, where backticks are still PowerShell escape leaders; `` `g `` is not a recognised escape sequence, so PS strips the backtick at PARSE time and the MASTER's own stderr loses it -- a master defect, confirmed by U-0. The port prints the message text correctly (backticks intact), so full-stderr equality with the master fails on every blanket_staging BLOCK case even though the port is right."
+  },
+  {
+    "id": "git-golden-block-add-all",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git -C C:\\r add --all"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): blanket staging via git add -A / --all / .",
+    "parity": false,
+    "parity_exception": "PE-14",
+    "_why": "PE-14 (round-4) -- see git-golden-block-add-a for the full root-cause note."
+  },
+  {
+    "id": "git-golden-block-add-dot",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git add ."}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): blanket staging via git add -A / --all / .",
+    "parity": false,
+    "parity_exception": "PE-14",
+    "_why": "PE-14 (round-4) -- see git-golden-block-add-a for the full root-cause note."
+  },
+  {
+    "id": "git-golden-block-commit-a",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -a -m \"x\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): blanket staging via git commit -a is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-14",
+    "_why": "PE-14 (round-4) -- see git-golden-block-add-a for the full root-cause note."
+  },
+  {
+    "id": "git-golden-block-commit-am",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -am \"x\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): blanket staging via git commit -a is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-14",
+    "_why": "PE-14 (round-4) -- see git-golden-block-add-a for the full root-cause note."
+  },
+  {
+    "id": "git-golden-block-commit-all",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit --all -m \"x\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): blanket staging via git commit --all is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-14",
+    "_why": "PE-14 (round-4) -- see git-golden-block-add-a for the full root-cause note."
+  },
+  {
+    "id": "git-golden-pass-add-explicit",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git add src/a.ts src/b.ts"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-pass-add-dotfile",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git add .gitignore"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-pass-commit-m-only",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"fix: y\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-pass-msg-mentions-a",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"drop the -a flag\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-pass-commit-amend",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit --amend --no-edit"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-block-push-origin-main",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin main"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): pushing to the protected branch 'main' is not allowed.",
+    "parity": true
+  },
+  {
+    "id": "git-golden-block-push-head-main",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD:main"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): pushing to the protected branch 'main' is not allowed.",
+    "parity": true
+  },
+  {
+    "id": "git-golden-block-commit-on-main",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"x\""}, "cwd": "${MAIN_REPO}"},
+    "cwd_kind": "main",
+    "setup": {"kind": "git_repo", "name": "main"},
+    "_why_setup": "round-3 send-back item 1. Without a real repo checked out on 'main', the guard's `git rev-parse --abbrev-ref HEAD` fails (not a repository) and the guard fails OPEN (ALLOW) -- the new side then silently 'matched' expect_exit:2 for the wrong reason (it never actually blocks; it never even runs).",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): you are on the protected branch 'main'.",
+    "parity": true
+  },
+  {
+    "id": "git-golden-block-push-on-main",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push"}, "cwd": "${MAIN_REPO}"},
+    "cwd_kind": "main",
+    "setup": {"kind": "git_repo", "name": "main"},
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): you are on the protected branch 'main'.",
+    "parity": true
+  },
+  {
+    "id": "git-golden-block-force-on-main",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push --force"}, "cwd": "${MAIN_REPO}"},
+    "cwd_kind": "main",
+    "setup": {"kind": "git_repo", "name": "main"},
+    "_why": "PE-18 (2026-09-05): was blocked only via the protected-branch check (message 'you are on the protected branch main'), because force-push carried no dedicated rule. The new force_push phase now runs BEFORE current_branch is even resolved, so this now blocks on the force-push message instead -- still exit 2, but for the right reason, and no longer parity:true since the .ps1 master has no force_push rule to agree with.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git push --force / --force-with-lease / -f (rewrites remote history) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-golden-pass-push-feature",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push -u origin feature/x"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "_why_setup": "sweep per round-3 item: without a real repo, the guard reaches ALLOW via the same fail-open (not-a-repository) path a genuine feature-branch check would also reach -- both agree on exit 0, but only 'proves' the fail-open path works, not the real branch-not-protected comparison. Seeding a real feature repo exercises the actual comparison.",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-block-force-with-lease-on-feature",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push --force-with-lease"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "_why": "PE-18 (2026-09-05). Renamed from git-golden-pass-force-on-feature: this used to ALLOW (force-push carried no dedicated rule, and feature branches aren't protected-branch-gated), the exact enforcement gap this PE closes. --force-with-lease is deliberately NOT exempted -- see git_policy._note_force_push_lease -- so this now BLOCKS. No longer parity:true; the .ps1 master still allows it.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git push --force / --force-with-lease / -f (rewrites remote history) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-golden-pass-status-on-main",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git status --short"}, "cwd": "${MAIN_REPO}"},
+    "cwd_kind": "main",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-pass-log-on-main",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git log --oneline -5"}, "cwd": "${MAIN_REPO}"},
+    "cwd_kind": "main",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-pass-msg-mentions-main",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"merge main later\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "setup": {"kind": "git_repo", "name": "feature"},
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-pass-not-git",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "npm run build"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-pass-digit-prefix",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "legit add -A"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "git-golden-pass-commit-outside-repo",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -m \"x\""}, "cwd": "${NO_REPO}"},
+    "cwd_kind": "none",
+    "setup": {"kind": "git_repo", "name": "none"},
+    "_why_setup": "explicit for clarity, functionally a no-op today: _setup_git_repo's `name: \"none\"` branch deliberately skips `git init`, which is exactly what an unseeded cwd already is. Declared anyway so the fixture's intent (a real, ordinary, non-repo directory) is not accidental.",
+    "expect_exit": 0,
+    "parity": true
+  }
+]

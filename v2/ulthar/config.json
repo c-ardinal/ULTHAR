@@ -1,0 +1,1227 @@
+{
+  "_note": "ulthar :: THE single config file. Lives at the skill root (<skill>/config.json), is deployed to ~/.claude/hooks/config.json by install.py, and is the ONLY policy source the Python hook runtime loads. dispatch-map.json and references/viewport-matrix.json are absorbed here and deleted. references/viewport-matrix.md survives as the human doc and points here. Comments use _note keys. Every regex is a Python `re` pattern (inline flags at pattern start only).",
+  "version": 2,
+  "generated_from": "PowerShell masters as of 2026-09-04 (hooks/*.ps1, dispatch-map.json, references/viewport-matrix.json)",
+  "regex": {
+    "_note": "The plugin layer for policy. ULTHAR ships the mechanism (this section, plus lib/ctx.py:merge_overlays) and universal rules (everything else in this file); WHOSE rules an individual json path holds comes from OUTSIDE ulthar, via the two files named below. Consumed once per dispatch, in dispatch.py's main(), immediately after load_config() and inside its OWN try/except -- a bad overlay is treated exactly like a bad config.json (BLOCK, exit 2, logged to logging.config_error_log, never a silent per-guard fail-open), but it gets its own recovery text (dispatch.infra_recovery.overlay), because 'redeploy the master' is the wrong instruction for a file that is neither under hooks/ nor in git. THE MODEL (owner decision, 2026-09-06): an overlay may ADD rules at the rule paths listed in `project_allowed_paths` and may DISABLE named ones there explicitly, by id (see `_note_disable`). Project configuration takes precedence over personal configuration -- as it does for .editorconfig, linter configs and CI settings -- so a project that switches a guard's rule off on purpose is stating its own policy, and that is not this tool's business. What an overlay may NOT do is weaken anything by ACCIDENT or INVISIBLY, and that takes TWO steps rather than one: (1) a structurally broken entry is refused at MERGE TIME wherever the merge can derive the shape -- declared lists, sections, and (round 4) an undeclared list the user layer replaces wholesale; (2) whatever step 1 cannot see, the dispatcher catches by its consequence -- while ANY overlay is merged, a guard that RAISES blocks and names the overlay file instead of being turned into ALLOW by the fail-open, which is what used to silently remove EVERY rule that guard enforced. Step 1 alone was incomplete four review rounds running; step 2 is the one that does not depend on having anticipated the shape; a `disable` that matches no rule is refused rather than quietly switching nothing off; and a project overlay that disables anything is logged and stated once per session (dispatch.py:_overlay_disable_notice). An overlay that silently degraded to 'ignored' on error would be exactly the hollowing-out this project exists to remove -- a rule nobody can see is gone.",
+    "kinds": {
+      "text": {
+        "_note": "Matched against command text, brief text, tool names, process command lines, branch names. ALWAYS IGNORECASE — reproduces PowerShell on every platform, and this is platform-independent policy.",
+        "flags": [
+          "IGNORECASE"
+        ]
+      },
+      "path": {
+        "_note": "Matched against FILESYSTEM PATHS. IGNORECASE only when ctx.is_windows. A blanket IGNORECASE here would be a LOOSENING on POSIX: `rm -rf /home/x/Dist` would be treated as the disposable `dist/` and slip past the exact rule that protects untracked owner files. POSIX is a new target platform, so there is no existing behaviour to preserve there.",
+        "flags_windows": [
+          "IGNORECASE"
+        ],
+        "flags_posix": []
+      }
+    },
+    "_note_ascii": "re.ASCII is NOT used and must not be added. .NET regex (PowerShell) treats \\w, \\b and \\s as Unicode-aware by default, and so does Python re on str patterns; adding re.ASCII would DIVERGE from the masters, notably around the Japanese alternatives in the brief-gate patterns.",
+    "compile_scope": "per_guard",
+    "_note_compile_scope": "Patterns are compiled lazily PER GUARD, not once globally: a malformed pattern in design_cases must affect ONLY brief_gate, never take tool_discipline or git_discipline down with it. dispatch.py compiles the pattern set a guard declares immediately before calling it. CORRECTION (2026-09-05): this note used to say the affected guard 'fails open and logs'. It does not, and never did in the Python runtime — a pattern that will not compile is an INFRASTRUCTURE failure, not guard logic, so dispatch.py `_run_guard` catches PatternCompileError separately from a guard's own runtime exception and BLOCKS (exit 2) with an actionable message plus one logging.config_error_log line naming the offending JSON path. Only a guard's runtime exception fails open (I-3). When a PROJECT overlay supplied the pattern the block is attributed to that overlay's file instead of to config.json, because redeploying never touches an overlay (see overlays._note_project_allowed_paths, mechanism 3). The per-guard lazy compilation is unchanged by this correction: one guard's uncompilable pattern is never compiled on another guard's behalf, so it cannot make an unrelated guard raise.",
+    "pattern_fields": [
+      {
+        "path": "dispatch.events.*[].tools",
+        "kind": "text",
+        "sentinel": "*"
+      },
+      {
+        "path": "regex.named_alternations.write_edit_tools",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.redirect_noise_strips[][0]",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.quote_strip_patterns[][0]",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.tool_discipline[].pattern",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.tool_discipline[].patterns[].pattern",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.tool_discipline[].detect_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.tool_discipline[].segment_split_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.tool_discipline[].segment_start_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.tool_discipline[].token_split_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.tool_discipline[].token_reject_patterns[]",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.tool_discipline[].path_token_pattern",
+        "kind": "path"
+      },
+      {
+        "path": "command_rules.tool_discipline[].path_token_exclude_pattern",
+        "kind": "path"
+      },
+      {
+        "path": "command_rules.tool_discipline[].dotdot_pattern",
+        "kind": "path"
+      },
+      {
+        "path": "command_rules.tool_discipline[].allowed_path_pattern",
+        "kind": "path"
+      },
+      {
+        "path": "command_rules.dev_server[].pattern",
+        "kind": "text"
+      },
+      {
+        "path": "command_rules.dev_server[].requires",
+        "kind": "text"
+      },
+      {
+        "path": "paths.exempt_patterns.patterns[]",
+        "kind": "path"
+      },
+      {
+        "path": "git_policy.git_command_detect",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.global_option_prefix",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.blanket_staging[].suffix",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.destroyers[].suffix",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.hook_bypass[].suffix",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.force_push[].suffix",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.write_subcommand_suffix",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.push_target_suffix_template",
+        "kind": "text",
+        "template": true
+      },
+      {
+        "path": "git_policy.protected_push_target_suffix_template",
+        "kind": "text",
+        "template": true
+      },
+      {
+        "path": "git_policy.pr_state.push_detect_suffix",
+        "kind": "text",
+        "composed_with": "git_policy.global_option_prefix"
+      },
+      {
+        "path": "git_policy.pr_state.branch_delete_push",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.pr_state.dir_option",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.pr_state.sha_ref_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.pr_state.push_split_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.pr_state.segment_split_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.pr_state.token_split_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.pr_state.token_reject_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "git_policy.pr_state.refs_heads_strip_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "brief_rules.detect.brief_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "brief_rules.kinds[].match",
+        "kind": "text",
+        "sentinel": "*"
+      },
+      {
+        "path": "brief_rules.kinds[].rules[].requires",
+        "kind": "text"
+      },
+      {
+        "path": "brief_rules.kinds[].rules[].reference_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "design_cases.cases[].triggers[]",
+        "kind": "text"
+      },
+      {
+        "path": "design_cases.cases[].satisfied_by[]",
+        "kind": "text"
+      },
+      {
+        "path": "skill_anchor.name_reject_pattern",
+        "kind": "path"
+      },
+      {
+        "path": "artifact_dirs.session_id_sanitise_pattern",
+        "kind": "text"
+      },
+      {
+        "path": "dev_processes.pattern",
+        "kind": "text"
+      }
+    ],
+    "_note_kind_authority": "R-a. THIS LIST IS THE ONLY AUTHORITY for whether a pattern is path-kind or text-kind. A guard MUST NOT infer the kind from the field's name, its section, or what the value looks like. The names are actively misleading in both directions: `path_token_pattern` is kind 'path' but `push_split_pattern` is 'text'; `dev_processes.pattern` matches command lines (text) while `skill_anchor.name_reject_pattern` matches a path fragment. Inferring would silently give a path pattern IGNORECASE on POSIX — reopening N-1 through a different door.",
+    "_note_sentinel": "R-b. `sentinel` marks a literal value at that path which is NOT a regex and must NEVER be compiled. Two paths carry one, both with sentinel '*': dispatch.events.*[].tools and brief_rules.kinds[].match. '*' means 'match anything' and is checked by identity BEFORE any compile attempt. This matters because re.compile('*') RAISES (nothing to repeat) — and under per-guard fail-open that exception would disable the whole guard: for brief_rules.kinds[].match it would take out the creator-kind classifier, so brief_gate would stop classifying creator briefs entirely and every creator gate would go silent. A sentinel check that is skipped fails loudly in tests and silently in production.",
+    "_note_pattern_fields": "THE authoritative enumeration of every regex location in this file, by JSON path. Nothing else here is compiled as a regex. `sentinel` names a literal value at that path that is NOT a regex and is never compiled ('*' = match anything). `template: true` means the value carries a {ref} placeholder substituted (re.escape'd) before compiling. Classification and opt-out are BY JSON PATH, not by id, because most patterns have no id. tests/test_contract.py asserts this list and the file agree in BOTH directions: every path listed here resolves, and every regex-bearing string in the file is listed here.",
+    "named_alternations": {
+      "_note": "N-4 (found by an internal pre-promotion config probe's substring duplication check, not by review). THE single home for an alternation used by more than one consumer. `Write|Edit|MultiEdit|NotebookEdit` previously appeared THREE times — dispatch.events routing, commander.tools and skill_anchor.write_edit_tools — so adding a fourth edit-style tool meant three separate edits, and missing one would silently leave that tool routed but unguarded (or guarded but unrouted). Consumers reference an entry by name via a `*_named` key and apply their own anchoring: the dispatcher wraps as ^(...)$, and commander/skill_anchor do the same.",
+      "_note_twin_rule": "A `*_named` key and its literal twin must NEVER both be present at the same site (e.g. both `tools` and `tools_named` on one routing rule). This is enforced by tests/test_contract.py, not left to a note — a site carrying both would have two homes again, which is the exact condition N-4 removed, and whichever one the implementation happened to read would be arbitrary.",
+      "_note_dangling_reference": "A `*_named` value that does not resolve to a key of named_alternations is a HARD CONFIG ERROR, never a silent skip. Resolution happens once at config load, before per-guard compilation. Behaviour on a dangling name, stated because the failure is asymmetric and quiet: for a ROUTING rule (dispatch.events[].tools_named) the dispatcher must NOT skip the rule — skipping it silently unroutes deploy, commander and skill_anchor for every Write/Edit call, which is the mirror image of the hole F-21 was about and would leave the main chain able to author deliverables unchecked. Instead the load fails, one logging.config_error_log line names the dangling key, and install.py refuses to deploy (logging.refuse_deploy_on_invalid_config). At runtime, if a deployed config somehow carries one, the affected guard yields ALLOW and logs — but the routing rule itself is treated as a load failure, so the whole config is rejected rather than partially applied.",
+      "write_edit_tools": "Write|Edit|MultiEdit|NotebookEdit"
+    },
+    "non_pattern_fields": [
+      "command_rules.redirect_noise_strips[][1]",
+      "command_rules.quote_strip_patterns[][1]",
+      "git_policy.phase_order[].match_target",
+      "git_policy.pr_state.match_target",
+      "brief_rules.kinds[].rules[].ok_marker_match",
+      "skill_anchor.comment_prefix",
+      "skill_anchor.truncation_suffix",
+      "grants.claim_suffix"
+    ],
+    "_note_non_pattern_fields": "Paths whose key NAME looks regex-ish but whose VALUE is a literal or an enum, never compiled. Declared explicitly so tests/test_contract.py's reverse check ('every regex-bearing string is listed in pattern_fields') is deterministic instead of relying on a name heuristic that would flag these five. redirect_noise_strips/quote_strip_patterns element [0] IS a pattern and is declared; element [1] is the replacement string. ok_marker_match and match_target are enums; comment_prefix ('#'), truncation_suffix and grants.claim_suffix ('.claim', a file-name suffix used with str.endswith and str concatenation, never compiled) are literal text.",
+    "string_compare_casefold": [
+      "git_policy.protected_branches[]",
+      "git_policy.deploy_refs[]",
+      "git_policy.pr_state.open_state",
+      "dev_processes.names[]",
+      "commander.modes.*",
+      "skill_anchor.off_token",
+      "brief_rules.kinds[].rules[].ok_marker"
+    ],
+    "_note_string_compare_casefold": "PowerShell -eq / -contains are case-insensitive, so these ported string compares use str.casefold() on both sides. Path EQUALITY compares (pm-delete-allow) are deliberately excluded: they go through lib/paths.norm_for_compare, which applies os.path.normcase — case-folding on Windows, exact on POSIX."
+  },
+  "single_home_rule": "_note: every value has EXACTLY ONE key in this file. `paths` holds only cross-cutting paths (used by lib/ or by more than one guard); a path used by exactly one guard lives in that guard's section. `thresholds` holds only cross-cutting numbers; every other number lives in its guard's section. Do not re-introduce a mirror key — a duplicated value that one consumer reads and the owner edits the other of is precisely the hollowing-out this refactor removes.",
+  "paths": {
+    "_note": "CROSS-CUTTING paths only (used by lib/ or by more than one guard). Single-guard paths live in that guard's section — see single_home_rule. Variable expansion is performed by lib/paths.py:expand(). Recognised variables ONLY: leading '~' (user home), ${TEMP} (OS temp dir), ${CWD} (payload cwd, falling back to process cwd), ${DEPLOY_DIR}, ${SKILL_DIR}. Values are stored with forward slashes and normalised per-OS at load time. Relative values (no '~', no variable, no leading slash) are resolved against ${CWD}.",
+    "home": "~",
+    "state_dir": "~/.claude/state",
+    "_note_deploy_dir_removed": "PE-19. `paths.deploy_dir` (previously '~/.claude/hooks' here) was a fifth decorative key: dispatch.py derives its deploy dir from its OWN file location (`config_path.parent` in main()), and install.py derives it the same way (or from --deploy-dir) -- neither ever reads cfg['paths']['deploy_dir'], and grep confirms no other guard/test does either. ctx.deploy_dir (an attribute other guards DO read) is a Ctx field built.py passes to build_ctx, unrelated to this config key sharing its name. Deleted rather than wired, per single_home_rule: a value nothing reads is not a cross-cutting path.",
+    "skills_root": "~/.claude/skills",
+    "logs_dir": "~/.claude/hooks/logs",
+    "error_log": "~/.claude/hooks/logs/dispatch-errors.jsonl",
+    "python_exe": "",
+    "_note_normalisation": "S-9. Filed at the `paths` section level because it governs lib/paths.norm_for_compare, which is used for path EQUALITY compares (pm-delete-allow) — NOT for exempt_patterns, which is regex-matched and never passes through it. (Round 2 misfiled this note inside exempt_patterns, where it described a function that key never calls.) M-9(a), PARITY: normalisation is LEXICAL ONLY — os.path.normpath semantics. Do NOT use Path.resolve(): it follows symlinks, junctions and NTFS reparse points, whereas .NET's [System.IO.Path]::GetFullPath (what every master uses) is purely lexical and touches the filesystem not at all. Lexical also means it works on paths that do not exist, which Rule 3 needs when judging a delete target that is about to be removed. Both directions of the junction consequence are recorded in CONTRACT.md F-19.",
+    "_note_python_exe": "Empty means 'resolve from the running interpreter' (lib/paths.resolve_python_exe() falls back to sys.executable) — the correct default for a cloned copy of this skill, which has no reason to know any one machine's interpreter path. Setting this to an absolute path PINS a specific interpreter; that pin is what `install.py --register-settings` writes verbatim into settings.json (and re-verifies matches). A machine-specific pin belongs in the owner's user overlay (paths.python_exe under ~/.claude/ulthar-overlay.json), never in this shipped file -- do not delete this key even when empty; an explicit empty value with this note is discoverable, a missing key is not.",
+    "exempt_patterns": {
+      "_note": "Coordination paths that are never deliverables. ONE list; consumed by guards.commander AND guards.skill_anchor (these two were byte-identical duplicates in commander-guard.ps1 and skill-anchor.ps1). Stored as forward-slash regex fragments. MATCHING: lib/paths.to_posix() only (separator conversion, NO normcase), then re.search with the flags for kind 'path' — IGNORECASE on Windows, NONE on POSIX (see regex.kinds.path). normcase is NOT applied here because it would lowercase the candidate on Windows and stop '/Temp/claude/' and '/HANDOFF' from ever matching; normcase is for EQUALITY compares only (pm-delete-allow). Do NOT add an inline (?i) to any entry in this list — it would override the per-platform flag and reintroduce the POSIX case-insensitivity bug (N-1).",
+      "patterns": [
+        "/Temp/claude/",
+        "/scratchpad/",
+        "/\\.claude/",
+        "/docs/plans/",
+        "/plans/",
+        "/HANDOFF",
+        "/\\.git/"
+      ]
+    }
+  },
+  "thresholds": {
+    "_note": "CROSS-CUTTING numbers only. Every per-guard number lives in that guard's section (skill_anchor.max_chars, brief_rules.detect.min_length, brief_rules gate6.min_age_sec, artifact_dirs.grace_minutes/max_named, dev_processes.max_listed/cmdline_truncate, git_policy.pr_state.limit) — see single_home_rule.",
+    "subprocess_timeout_local_sec": 5,
+    "subprocess_timeout_remote_sec": 20,
+    "_note_subprocess_timeouts": "NEW, and deliberately SPLIT. pr-state-guard.ps1's header claims 'the gh call is bounded to a few seconds' but no timeout exists in the code; same for `git rev-parse`. A single shared budget would be wrong in both directions: LOCAL calls (`git rev-parse --abbrev-ref HEAD`) complete in milliseconds, so a generous shared value lets a wedged local git stall the tool call, while a tight shared value makes a merely-slow NETWORK call (`gh pr list`) time out and silently skip the PR-state check. ctx.run_cmd therefore takes the kind explicitly: local=5s for git plumbing, remote=20s for gh. Both fail open (allow) on timeout. LOGGING OWNERSHIP (contract addendum 2, U-2 finding): the log line is written by Ctx.run_cmd itself (lib/ctx.py), NOT by the calling guard -- guards may perform filesystem side effects ONLY via the three named exceptions in section 1 (tool_discipline's pm-delete-allow consumption, commander's decision log, artifact_hygiene's once-per-session marker), and pr_state / git_discipline are not on that list. Ctx already owns log_error/log_config_error I/O, so routing the timeout log through run_cmd keeps every guard a pure function of (payload, cfg, ctx) while still making a timed-out external call visible in paths.error_log, one line naming the kind, the budget and the argv.",
+    "allowlist_lock_retry_attempts": 20,
+    "allowlist_lock_retry_sleep_sec": 0.01,
+    "allowlist_lock_stale_age_sec": 30,
+    "_note_allowlist_lock_stale_age": "How long the pm-delete-allow lock file must sit before it becomes ELIGIBLE for reclaim. Round-16 correction (second pass, after U-1 landed the fix): an earlier version of this note claimed lowering the value \"cannot let a live holder be robbed\" as if that were a property of the THRESHOLD itself -- the Codex delta review DISPROVED that against the pre-fix code (a lock with no owner record yet, i.e. another process mid-acquisition, used to be treated as stale by age alone, skipping the liveness check entirely, and could hot-spin into an unbounded hang). With U-1's fix, an unowned lock is now NEVER treated as stale, and reclaim requires a CONFIRMED-DEAD recorded owner PID -- so lowering this value now genuinely cannot rob a live holder, but ONLY because reclaim additionally requires that confirmed-dead-PID check, not because of anything this number does on its own. One residual gap the age alone cannot close: if a dead owner's PID is later reused by an unrelated live process, that lock can never be automatically reclaimed regardless of this value -- pm_allowlist.contended_message names the lock file path for that case so a human can remove it by hand."
+  },
+  "dependencies": {
+    "_note": "ADDED SECTION (psutil addendum item 5). The runtime is stdlib-only EXCEPT for psutil, which the owner adopted so process discovery has one implementation instead of two OS branches. The dependency must be LOUD: it is imported and checked on the DEFAULT deploy path AND by --verify, and a missing module FAILS with a clear message naming the module, the expected version and the recorded install location. A missing C extension that silently turned the two Stop guards into no-ops would be precisely the hollowing-out this port exists to remove — the guards would report 'no orphans' forever and nobody would know.",
+    "check_on_deploy": true,
+    "_note_check_on_deploy": "The check runs on the DEFAULT deploy path, not only --verify. Config validation already refuses to deploy an invalid config (logging.refuse_deploy_on_invalid_config); there is no reason for a missing hard dependency to be treated more leniently than a malformed regex. Deploying a runtime whose process guards cannot function is not a partial success.",
+    "_note_residual_risk": "ACCEPTED RESIDUAL RISK, owner-carried. A deploy-time check cannot cover F-20's scenarios BY CONSTRUCTION, because all of them happen AFTER deploy: reinstalling the pinned interpreter, running the hooks as a different user, or a Python minor-version bump each make the user-site psutil disappear without anything re-running install.py. In that state the runtime failure is recorded in dispatch-errors.jsonl — but to the USER it looks identical to a healthy 'no dev orphans', because that is exactly what a Stop guard that cannot enumerate processes reports. There is no in-band signal. Mitigation is procedural, not technical: run install.py --verify after any interpreter change.",
+    "required": [
+      {
+        "module": "psutil",
+        "verified_version": "7.2.2",
+        "imported_by": [
+          "lib/procs.py"
+        ],
+        "used_by": [
+          "guards/dev_process_hygiene.py",
+          "stop_dev_orphans.py"
+        ],
+        "_note_used_by": "artifact_hygiene is the OTHER Stop guard but does NOT use psutil — it scans artifact directories, not processes. Only dev_process_hygiene (Stop) and the stop_dev_orphans CLI reach lib/procs.py.",
+        "_note_confinement": "psutil is imported ONLY by lib/procs.py, which in turn is imported only by the two Stop-path consumers listed in import_confined_to. NOTHING on the PreToolUse path may import psutil, directly or transitively: PreToolUse runs on every single tool call, and acceptance row 9 caps it at one process — paying a C-extension import there would be a latency regression on the hottest path for a capability it never uses. tests/test_contract.py asserts that no guards/*.py other than dev_process_hygiene.py imports psutil.",
+        "install_location": "<user-site-packages>/psutil/",
+        "install_scope": "user_site_packages",
+        "_note_install_scope": "USER site-packages, not machine-wide — a common outcome when the machine (system-wide) site-packages is not writeable without elevated privileges, which install_location's shape reflects. It resolves for whichever user actually runs the hooks, but it is a real fragility: reinstalling the pinned interpreter or running the hooks as a different user makes psutil vanish. See CONTRACT.md F-20."
+      }
+    ]
+  },
+  "logging": {
+    "_note": "ADDED SECTION (justification: acceptance row 8 requires fail-open to stop being silent; the policy must be config, not a literal in dispatch.py). The guard-error destination is paths.error_log (cross-cutting: dispatch.py and lib/ctx.py both write it).",
+    "_note_fail_open_on_guard_error_removed": "A `fail_open_on_guard_error` key lived here and was read by nothing -- dispatch.py's fail-open-on-guard-exception behaviour is not gated by config (see docs/DESIGN.md 'Infrastructure failures block, guard-logic failures fail open'); when any overlay was merged for the dispatch, I-3's BLOCK branch takes precedence. Wiring it would make a guard's runtime error block or allow depending on configuration, i.e. change guard decision logic, which this project deliberately does not offer as a knob. Deleted rather than left dead; do not re-add without also wiring dispatch.py to read it.",
+    "max_error_log_bytes": 2097152,
+    "_note_max_error_log_bytes": "The on-disk ceiling for paths.error_log and logging.config_error_log, enforced by lib/io.py:append_jsonl, which KEEPS THE HEAD AND COUNTS THE REST. An entry is appended only while it plus a fixed-width footer still fit under this many bytes; after that nothing is appended and one trailing footer line records how many entries were dropped, rewritten in place per drop. So the file holds the FIRST entries recorded, which is what an investigator needs: when a guard hot-spins (21,612 lines in 25 seconds, observed) the newest entries only say it is still going, while the first ones say what started it. The previous behaviour was truncate-to-empty-then-append, which kept the newest, destroyed the cause, and bounded nothing -- a single entry larger than this value still landed in full. A capped log is FROZEN until someone deletes it (the footer says so); its mtime is the time of the last drop.",
+    "_note_append_lock_recovery": "WHERE THESE LOGS' OWN RECOVERY MESSAGE LIVES, since a reader looking for one here would otherwise find only pm_allowlist.contended_message, which is about the pm-delete-allow LEDGER lock and a different mechanism entirely. Every write to paths.error_log, logging.config_error_log and commander.decision_log is serialised by a per-log append lock (lib/io.py:_locked_append); a writer that cannot take it in time parks its entry, whole, in a `<log>.pending.*` sibling that the next lock holder folds in, so nothing is ever dropped. A lock nobody can be shown to hold is reclaimed automatically -- confirmed-dead owner, unreadable owner record (an interrupted acquire), or simply held past lib/io.py:_APPEND_LOCK_MAX_HOLD_SEC, which is what covers a dead owner's pid having been reused by an unrelated live process. If reclaim nonetheless fails, io.py writes ONE `<log>.STUCK-LOCK.txt` beside the log naming the lock file to delete and where the parked entries are waiting -- there is no config template for that text because io.py is handed a path and bytes and has no cfg to read; it is read by a human in the log directory, never by the model.",
+    "config_error_log": "~/.claude/hooks/logs/config-errors.jsonl",
+    "_note_config_error_log": "DISTINCT from guard-error fail-open, deliberately. A guard raising at runtime is an operational event; a config that will not load or a pattern that will not compile is a DEPLOYMENT DEFECT affecting every session until someone fixes it, and burying it in the same stream as transient guard errors is how it stays unnoticed. Entries carry {ts, phase: 'config_load'|'pattern_compile', json_path, guard_scope, error}. install.py validates the config on the default deploy path and REFUSES to deploy an invalid one — catching it at deploy time rather than at hook time is the entire point.",
+    "refuse_deploy_on_invalid_config": true
+  },
+  "dispatch": {
+    "_note": "Absorbed from dispatch-map.json. `tools` is a regex over tool_name anchored as ^(...)$ ; '*' means any. `guards` are module ids resolved to hooks/guards/<id>.py and called in order via their run(payload, cfg, ctx) function IN-PROCESS (no subprocess per guard). First Result with exit_code 2 blocks and its stderr is surfaced. Invariant: at most one guard per chain may emit stdout (today only skill_anchor does).",
+    "stop_hook_active_field": "stop_hook_active",
+    "honour_stop_hook_active_for": [
+      "artifact_hygiene",
+      "dev_process_hygiene"
+    ],
+    "stop_hook_active_exempt": [],
+    "_note_stop_hook_active_exempt": "J1. Empty today, and it should stay that way. `honour_stop_hook_active_for` and `events.Stop[].guards` are answers to DIFFERENT questions ('which guards honour the flag' vs 'which guards run on Stop') that happen to coincide right now, so they are kept as separate keys rather than one being derived from the other — collapsing them would be a design change, not a port. But 'happens to coincide' plus 'someone adds a third Stop guard' is exactly how a guard quietly stops honouring the flag and reintroduces the infinite Stop loop. So tests/test_contract.py asserts: every id in dispatch.events.Stop[].guards appears in honour_stop_hook_active_for UNLESS it is listed here with a stated reason. Entries are objects: {guard, reason}. Adding a Stop guard therefore either honours the flag or forces someone to write down why not.",
+    "_note_stop_hook_active": "LOOP GUARD, and for dev_process_hygiene the ONLY one. Both Stop guards read this boolean from the payload FIRST and return ALLOW immediately when it is true (artifact-hygiene-check.ps1 line 21, dev-process-hygiene-check.ps1 lines 16-17). The harness sets it when the model is already continuing BECAUSE of a Stop hook. Without it: exit 2 -> model continues -> Stop fires -> exit 2 -> forever. artifact_hygiene additionally has a once-per-session marker, but dev_process_hygiene has NO marker at all, so dropping this flag there is an infinite-loop bug, not a missing optimisation. Listed here once rather than as a boolean in each guard section, per single_home_rule. Golden fixture 'QUIET stop_hook_active' must keep passing.",
+    "_note_single_guard_mode_removed": "A `single_guard_mode: {enabled, flag}` object lived here and was read by nothing: `--guard` is hardcoded in dispatch.py's argument parser and again in parity.py's invocation, so changing either key would either do nothing or silently desynchronise from that hardcoded call. `dispatch.py --event <E> --guard <id>` still runs EXACTLY ONE guard and returns its Result, skipping the rest of the chain -- required by the parity harness (the old .ps1 side ran one script, so the new side must also run one guard, or a sibling guard in the same chain could decide the result for the wrong reason) and by install.py --verify's smoke check. Deleted rather than left dead; do not re-add without wiring dispatch.py's parser and parity.py to actually read it.",
+    "events": {
+      "PreToolUse": [
+        {
+          "tools": "Bash|PowerShell",
+          "guards": [
+            "tool_discipline",
+            "git_discipline"
+          ]
+        },
+        {
+          "tools_named": "write_edit_tools",
+          "guards": [
+            "grant_files",
+            "commander"
+          ]
+        }
+      ]
+    },
+    "stdout_emitters": [
+      "skill_anchor"
+    ],
+    "_note_stdout_emitters": "Round-2 review: the declared stdout-emitter set (I-9) was a bare Python string literal (\"skill_anchor\") inside dispatch.py -- a policy value in code, the exact class this port exists to eliminate. Now HERE, and consumed via cfg at runtime. A second emitter is added by adding its id to this list; adding it only in code would silently discard its stdout instead.",
+    "infra_recovery": {
+      "grants": "To recover from a BAD OWNER GRANT (this is NOT a config.json/hooks/ deployment defect -- a grant is a file the OWNER creates, it is not in git, and redeploying will not touch it):\n  Delete the grant file named in the detail line above.\n  Grants are OPTIONAL: with that file gone, this block clears on the very next tool\n  call -- no redeploy, no git rollback, no settings.json edit needed. A grant is\n  refused when it names a rule that does not exist (check the spelling against\n  config.json), or when it names a rule listed in grants.never_exempt.\n",
+      "overlay": "To recover from a BAD OVERLAY (this is NOT a config.json/hooks/ deployment defect -- it does not live under hooks/, is not tracked in git, and redeploying will not touch it):\n  Delete or rename the overlay file named in the detail line above -- from an\n  editor or a terminal OUTSIDE this session. Both overlay files are owner-authority\n  files (grants.protected), so every agent route to them is blocked by design: the\n  Write/Edit tools by guards/grant_files.py and the shell by\n  command_rules.tool_discipline/authority-file-in-shell. An agent cannot clear this\n  for you, and that is deliberate.\n  Overlays are OPTIONAL: with the bad file gone, dispatch.py falls back to the\n  base config alone, and this block clears on the very next tool call -- no\n  redeploy, no git rollback, no settings.json edit needed.\n"
+    },
+    "_note_infra_recovery": "2026-09-05 (NOT a §7 parity exception -- overlays have no old .ps1 master to diverge from, this changes no exit code, and no golden fixture pins it; see hooks/tests/parity.py's PE-<n>-in-source cross-check, which exists precisely so a citation like the one this note used to wrongly carry cannot ship undeclared). dispatch.py's _infra_block_message() has ONE generic recovery block (fix-the-master-and-redeploy / git-rollback-and-redeploy / disable-the-event) that is correct for config.json, an unimportable guard module, or a Ctx-construction failure -- all three live under hooks/ or config.json, both tracked in git and restored by install.py. It is WRONG for a bad user/project overlay (~/.claude/ulthar-overlay.json or <cwd>/.claude/ulthar-overlay.json): neither lives under hooks/, neither is in git, and redeploying never reads either. This key holds the overlay-specific override text, following the same message-template-lives-in-config convention as every other guard-facing string in this file (blanket_staging_message, destroyers_message, tool_discipline messages, etc.) rather than hardcoding cause-specific English prose into dispatch.py. Only 'overlay' exists here (not one entry per infra cause) because it is the only cause whose fix genuinely differs from the generic block -- see dispatch.py's _infra_block_message docstring.",
+    "_note_v2_routing": "ULTHAR v2 R1-a: generated from the v1 config.json at 971632f with dispatch.events limited to the four ported safety guards (CORE-06). Every other key is unchanged."
+  },
+  "command_rules": {
+    "_note": "Policy for shell-command guards (PreToolUse Bash/PowerShell). `target` selects which form of the command the pattern is tested against: 'raw' = verbatim, 'probe_redirect' = harmless redirects stripped, 'probe_quotes' = quoted strings blanked.",
+    "redirect_noise_strips": [
+      [
+        "2>&1",
+        ""
+      ],
+      [
+        "(?i)[12]?>>?\\s*\\$null",
+        ""
+      ],
+      [
+        "[12]?>>?\\s*/dev/null",
+        ""
+      ],
+      [
+        "(?i)[12]?>>?\\s*NUL\\b",
+        ""
+      ]
+    ],
+    "quote_strip_patterns": [
+      [
+        "\"[^\"]*\"",
+        "\"\""
+      ],
+      [
+        "'[^']*'",
+        "''"
+      ]
+    ],
+    "tool_discipline": [
+      {
+        "id": "cd-compound",
+        "enabled": true,
+        "type": "regex_block",
+        "target": "raw",
+        "pattern": "(?im)^\\s*(cd|Set-Location|pushd)\\b[^\\r\\n&;|]*(&&|;)",
+        "message": "BLOCKED (tool discipline): compound command after 'cd' is not allowed and cannot be safely allowlisted.\nRun a SINGLE command from the repo root instead, passing the directory as an argument:\n  ninja -C build/arm | cmake -S . -B build | git -C <dir> ... | <tool> <absolute\\path>\n"
+      },
+      {
+        "id": "shell-file-creation",
+        "enabled": true,
+        "type": "regex_block_any",
+        "target": "probe_redirect",
+        "_note": "ONE rule with N (pattern, why) alternatives and ONE shared message — the shape tool-discipline-guard.ps1 already had ($fileWritePatterns, lines 33-49). {why} is substituted from the alternative that matched. Adding or removing a shell-file-creation form is one object in this rule's 'patterns' array — no code change.",
+        "patterns": [
+          {
+            "id": "file-write-cat-redirect",
+            "enabled": true,
+            "pattern": "(?i)\\bcat\\b[^|\\r\\n]*>>?\\s*\\S",
+            "why": "cat with file redirect"
+          },
+          {
+            "id": "file-write-echo-printf",
+            "enabled": true,
+            "pattern": "(?i)\\b(echo|printf)\\b[^|\\r\\n]*>>?\\s*\\S",
+            "why": "echo/printf with file redirect"
+          },
+          {
+            "id": "file-write-tee",
+            "enabled": true,
+            "pattern": "(?i)(^|[|;&\\s])tee\\b",
+            "why": "tee"
+          },
+          {
+            "id": "file-write-ps-cmdlets",
+            "enabled": true,
+            "pattern": "(?i)\\b(Set-Content|Add-Content|Out-File)\\b",
+            "why": "Set-Content/Add-Content/Out-File"
+          },
+          {
+            "id": "file-write-heredoc",
+            "enabled": true,
+            "pattern": "(?i)<<\\s*.{0,40}>>?\\s*\\S",
+            "why": "heredoc redirected to a file"
+          }
+        ],
+        "message": "BLOCKED (tool discipline): shell file creation via {why} is not allowed.\nUse the built-in Write tool to create files and the Edit tool to modify them.\n(Reading files: use the Read/Grep/Glob built-in tools, not cat/head/grep.)\n"
+      },
+      {
+        "id": "delete-outside-disposable",
+        "enabled": true,
+        "type": "delete_allowlist",
+        "target": "raw",
+        "detect_pattern": "(?im)((^|[\\s;|&(\"'])[\"']?(?:[^\\s;|&()\"']*[\\\\/])?(rm|rmdir|del|erase|rd|Remove-Item|ri)(\\.exe)?[\"']?\\s|(^|[\\s;|&(\"'])(python[0-9._]*|py|node|deno|bun|perl|ruby|php)(\\.exe)?\\b[\\s\\S]{0,600}?\\b(rmtree|removedirs|unlink|rmdir|remove|rm)(sync)?\\s*\\(|(^|[\\s;|&(\"'])find\\b[^;|&]{0,300}?(\\s-delete\\b|\\s-exec\\s+(?:[^\\s;|&()\"']*[\\\\/])?(rm|rmdir|del|erase|rd|Remove-Item|ri)(\\.exe)?\\s))",
+        "segment_split_pattern": "(\\r?\\n|;|&&|\\|\\||\\|)",
+        "segment_start_pattern": "(^\\s*(\\(|\\{)?\\s*[\"']?(?:[^\\s;|&()\"']*[\\\\/])?(rm|rmdir|del|erase|rd|Remove-Item|ri)(\\.exe)?[\"']?\\s|\\b(rmtree|removedirs|unlink|rmdir|remove|rm)(sync)?\\s*\\(|^\\s*(bash|sh|zsh|dash|powershell|pwsh|cmd|sudo|env|exec|xargs|command|nice|nohup|timeout|eval|time|doas|busybox)\\b(?:\\s+(?:[-/][^\\s\"']*(?:\\s+[^\\s\"'/-][^\\s\"']*)?|\\d+(?:\\.\\d+)?[smhd]?|[A-Za-z_][A-Za-z0-9_]*=[^\\s\"']*))*\\s*[\"']?\\s*(?:(?:sudo|env|exec|command|nice|nohup|time|doas)\\s+)*(?:[^\\s;|&()\"']*[\\\\/])?(rm|rmdir|del|erase|rd|Remove-Item|ri)(\\.exe)?[\"']?\\s|^\\s*find\\b[^;|&]{0,300}?(\\s-delete\\b|\\s-exec\\s+(?:[^\\s;|&()\"']*[\\\\/])?(rm|rmdir|del|erase|rd|Remove-Item|ri)(\\.exe)?\\s))",
+        "_note_interpreter_delete": "2026-09-06. THE SAME HOLE THE authority-file-in-shell RULE CLOSED FOR THE GRANT FILES, closed here for the general case. Both `detect_pattern` and `segment_start_pattern` were written in terms of SHELL deletion verbs, and an interpreter invoked FROM the shell is a deletion verb neither recognised: an agent blocked on `rm -rf` ran `python -c \"import shutil; shutil.rmtree(...)\"` and it went through (self-disclosed). The addition is deliberately NOT a ban on interpreters -- the project's own suite runs `python .../run_all.py` constantly and must stay unaffected. THE LINE DRAWN: `detect_pattern` fires only when an interpreter word AND a deletion-API call `name(` appear within 600 characters of each other in the SAME command text; `segment_start_pattern` then requires the delete call in the segment; and the path tokens it yields go through the SAME allowlist, the SAME `..` resolution and the SAME owner pm-delete-allow grant as a shell `rm`. So `shutil.rmtree('C:/owner/x')` blocks, `shutil.rmtree('dist/x')` and `rmtree(.../__pycache__)` do not, and any interpreter command with no deletion call in it is untouched. WHAT FALLS OUTSIDE, stated rather than hidden: (a) `python somescript.py` / `python -m mod`, where the deletion lives in a file and never appears in the command string -- no regex over a command line can see it; (b) a path built from a variable, `os.environ`, `sys.argv` or an encoded literal -- the token check needs a literal path token, so `shutil.rmtree(target)` yields nothing to judge; (c) shelling back out -- `subprocess.run(['rm','-rf',p])` / `os.system('rm -rf ...')` inside a one-liner, which is a generic re-entry past EVERY shell rule (git included), not a delete-specific gap, and wants its own decision rather than being folded in here; (d) a delete call with no parenthesis (`perl -e \"unlink $f\"`); (e) PIPED deletion -- `find ... | xargs rm -rf`, `echo p | xargs rm` -- where the path is a literal in one segment and the delete verb is in a DIFFERENT one, so no single segment ever holds both and the token check has nothing to judge. (e) is out of reach of a segment-based rule by construction ONLY WHEN THE PATH IS UPSTREAM OF THE PIPE -- corrected 2026-09-06 round 2, because the earlier wording was read as covering `xargs` as such. `xargs` IS in the wrapper list now: when the literal path is an argument in the SAME segment the verb and the path do meet, and both of those spellings block. What remains out of reach is the case where the path is produced upstream, where no single segment holds both. QUOTED SHELL WRAPPERS, 2026-09-06: `bash -c \"rm -rf ...\"`, `sh -c '...'`, `powershell -Command \"Remove-Item -Recurse -Force ...\"` and `cmd /c \"del ...\"` were all ALLOWED -- `detect_pattern`'s first branch had no quote character in its lookbehind class and `segment_start_pattern` required the verb at SEGMENT START, which a wrapper invocation never is. That mattered most for `powershell -Command \"Remove-Item ...\"`, the native Windows spelling, which the block message names as covered. Closed cheaply, WITHOUT touching segment extraction: `\"'` added to the detect class, and a third `segment_start_pattern` alternative requiring a WRAPPER WORD AT SEGMENT START, followed by the verb. The wrapper list is now 19 words (bash|sh|zsh|dash|powershell|pwsh|cmd|sudo|env|exec|xargs|command|nice|nohup|timeout|eval|time|doas|busybox), and what sits between the wrapper and the verb is no longer 'up to 120 non-quote characters' -- that swallowed intervening COMMANDS, so `timeout 10 git rm --cached x` became a false block while the unwrapped form was allowed (round 4). It is an explicit OPTION RUN instead: flags (`-x`, `--long`, `/c`), a flag's single non-flag argument (`sudo -u root`, `xargs -a list.txt`), a bare number (`timeout 5`, `nice -n 10`), and `VAR=value` (`env VAR=1`) -- then an optional quote, an optional run of prefix words, an optional path prefix, and the verb. So the verb must be the FIRST word after the options, which is what keeps `timeout 10 git rm` and `env FOO=1 npm rm` allowed while `timeout 5 rm -rf <path>` and `env VAR=1 rm -rf <path>` block. Both halves of that are false-positive control, and both were reached by trying the looser thing first: a bare quoted verb turned `git commit -m \"rm docs/old.md\"` and `git commit -m \"del old/files\"` into blocks, and an UNANCHORED wrapper word turned `git commit -m \"sh broke, rm tests/x\"` into one -- `bash`, `sh` and `cmd` are ordinary English in a commit message. A rule that blocks routine work gets switched off, and then protects nobody. Anchoring costs nothing real: `x && bash -c \"rm ...\"` still splits on `&&` into a segment that starts with the wrapper. NOTE a PRE-EXISTING false positive of the same family, not introduced here and not changed here: the FIRST alternative has always matched a segment that starts with a delete verb, so `git commit -m \"x; rm docs/old.md\"` blocks because `;` is a segment separator. That is the segment-splitter's, and wants the same segment-extraction rework alternative (e) does. Paths inside the wrapper's quotes reach the token check because token_strip_chars already strips `\"'`. The goal is to stop the NATURAL spelling of the bypass -- the one an agent reaches for the moment it is blocked -- not to prove evasion impossible; see docs/DESIGN.md 'What owner grants do not guarantee', which says the same thing about the authority-file rule. PREFIXED VERBS, WRAPPER PREFIX WORDS AND `find`, 2026-09-06 (final review, the round after the wrappers above): a fixture sweep found the residue list was reading as exhaustive when it named only the piped case, and seven more spellings measured ALLOWED through the dispatcher -- `sudo rm -rf <path>`, `env rm -rf <path>`, `/usr/bin/rm -rf <path>`, the same three INSIDE a wrapper (`bash -c \"sudo rm ...\"`, `bash -c \"exec rm ...\"`, `bash -c \"/bin/rm ...\"`), and `find <dir> -name x -delete` / `find . -name '*.db' -exec rm {} \\;`. By this rule's OWN standard -- a spelling a writer would naturally produce is the rule not working, not residue -- those are defects: they are exactly what an agent reaches for the moment `rm -rf` is refused. THREE ADDITIONS, all of them narrow: (1) an OPTIONAL PATH PREFIX `(?:[^\\s;|&()\"']*[\\\\/])?` immediately before the verb, in `detect_pattern`'s first branch and in both verb positions of `segment_start_pattern`, so `/usr/bin/rm` and `/bin/rm` are the verb they are. It cannot widen into a bare word: the prefix must END in a separator, so `git rm docs/old.md` and `cp a/rm b` still do not start a segment with a delete verb (both re-measured). (2) `sudo|env|exec` added to the WRAPPER WORD list, plus `(?:(?:sudo|env|exec|command|nice|nohup|time|doas)\\s+)*` (the actual 8-word run in the pattern) after the optional quote, which is what reaches the wrapper form `bash -c \"sudo rm ...\"` -- the wrapper-word list alone does not, because the verb must follow the quote. `git` is deliberately NOT a prefix word and must never become one: `git rm` is ordinary tracked-file work that git itself records. Anchoring at segment start still does the false-positive control, and the case that proves it (`git commit -m \"sudo broke, rm tests/x\"`) is pinned beside the three older ones. (3) A `find` BRANCH in both patterns, matching `find ... -delete` and `find ... -exec <verb>` within 300 non-separator characters; `-exec git rm {} \\;` does not match it, for the same reason as (1). WHAT (3) COSTS, accepted knowingly and pinned as a fixture: `find . -name '*.pyc' -delete` now BLOCKS, because `.` is a path token outside the allowlist -- the same verdict `rm -rf .` has always had, and the safe direction, but it is a recursive delete rooted at cwd rather than at a disposable directory, so the routine bytecode path stays `rm -rf <dir>/__pycache__`, which is allowed. The SECOND cost of (3) is more common and is disclosed with it: `find`'s `-name` argument is a path-shaped token like any other, so `find dist/ -name '*.map' -delete` blocks on `*.map` even though `dist/` is allowlisted -- measured. Rejecting `*`-leading tokens was considered and dropped: it would allow `rm -rf *.db`, trading a false block for a real hole. The escape hatch is the shell glob, `rm -rf dist/*.map`, which is allowed because the token carries its directory. A DEFECT, NOT NOISE -- this said the opposite until round 4 and was wrong. The prefixed verb (`/usr/bin/rm`) and Windows switches (`/s`, `/q`) are path-shaped tokens, so they were judged as paths: `/usr/bin/rm -rf dist/x` and `cmd /c rd /s /q dist` BLOCKED while the identical delete spelled `rm -rf dist/x` was ALLOWED. That is not a cosmetic message, it is the rule refusing work its own allowlist permits, which is the failure mode this whole rule is organised against. Both are rejected as tokens now: a delete verb with or without a directory prefix, and a single-letter `/x` switch. THE PRICE, which is why it was declined the first time and is accepted now that the cost of not paying it is known: a file whose basename IS a delete verb (`rm -rf tools/rm`) is no longer judged, and neither is a one-character absolute path (`/s`). Both are in the same family as the pre-existing `foo.rm` residue -- a separator-less name that looks like an API call -- and all three are the price of judging paths by their spelling. `find`'s `\\;` terminator is still listed as a bad path and that one IS cosmetic. THE WRAPPER SET IS AN ENUMERATION and cannot be completed: any prefix command not on the list passes (`setsid`, `stdbuf -o0`, `watch -n1`, `ionice` all measured rc=0 and are pinned as residue by an ALLOW fixture). Three were added in round 3 (time|doas|busybox) because they are what an agent reaches for next; the next one is always unlisted, and saying so is the point. ALSO ENUMERATED, in the other direction: the VERB set contains two-letter words that are whole commands elsewhere -- `ri` is Ruby's documentation browser and `rd` a directory-removal builtin, so `ri lib/foo.rb` reads a file and is blocked as if it deleted one. Dropping them would open the cmd and PowerShell spellings the set exists for, so it is named rather than fixed. STILL OUT OF REACH after all three, and now stated in docs/DESIGN.md's residue list rather than implied by its absence: the piped case (e) above; a bare name with no separator and no dot (`rm -rf owner-files`), which yields no path-shaped token at all and is PRE-EXISTING, not introduced here -- `find owner-files -delete` inherits it exactly; and quote nesting, which this rule has no notion of -- a delete verb inside a quoted STRING that a wrapper word precedes at segment start is judged as a delete, which is the safe direction and the reason `git commit -m \"x; rm docs/old.md\"` blocks.",
+        "token_split_pattern": "[\\s,()]+",
+        "token_strip_chars": "\"'",
+        "token_reject_patterns": [
+          "^-",
+          "(?i)^(\\(|\\{)$",
+          "(?i)^([^\\s]*[\\\\/])?(rm|rmdir|del|erase|rd|Remove-Item|ri)(\\.exe)?$",
+          "^/[A-Za-z]$",
+          "(?i)^([a-z_]\\w*)?\\.(rmtree|removedirs|unlink|rmdir|remove|rm)(sync)?$"
+        ],
+        "_note_token_reject_api_names": "2026-09-06, and it is the price of splitting tokens on parentheses. `token_split_pattern` gained `()` so `shutil.rmtree('C:/owner/x')` yields the PATH as its own token instead of one unusable blob; that also yields the CALL as a token (`shutil.rmtree`, `.rmSync`, `.unlink`), which contains a dot and would otherwise be reported as a bad path. The third reject entry drops those. It is written with a GENERIC qualifier (`[a-z_]\\w*`), not a known-module list, on purpose: `python -c \"a=[1,2]; a.remove(1)\"` is ordinary work and a module allowlist would block it. PRECISELY WHAT THIS DOES AND DOES NOT BUY, corrected 2026-09-06 round 3 because the earlier wording overclaimed: the reject drops the CALL token, never the ARGUMENT. So a list/set `.remove()` whose argument happens to look like a path -- `python -c \"seen.remove('src/x.py')\"` -- still yields `src/x.py` as a path token and still BLOCKS. That is the over-block direction and it is left alone: narrowing it would mean knowing which receivers are filesystem objects, which a regex over a command string cannot -- a rule ordinary Python work trips gets switched off, and then protects nobody. RESIDUAL, accepted knowingly: a bare basename that looks like one of these calls -- `rm -rf foo.rm`, `rm -rf foo.remove` -- is now rejected as a token and so no longer blocked. It has to have NO directory separator (`dir/foo.rm` keeps its slash, does not match `^[a-z_]\\w*\\.`, and still blocks). Deleting a separator-less file whose extension is literally `.rm` is the whole of what was given up to keep every `.remove(` in ordinary Python from becoming a false block.",
+        "path_token_pattern": "[\\\\/.]",
+        "path_token_exclude_pattern": "^(\\d+>)",
+        "dotdot_pattern": "(^|[\\\\/])\\.\\.([\\\\/]|$)",
+        "dotdot_base": "process_cwd",
+        "_note_dotdot_base": "M-9(b), PARITY. tool-discipline-guard.ps1 line 75 resolves a token containing '..' with [System.IO.Path]::GetFullPath($_), which resolves RELATIVE PATHS against the PROCESS's current directory (Environment.CurrentDirectory) — NOT against the payload's `cwd` field, which the guard never consults for this. An earlier draft of CONTRACT.md said ${CWD}; that was wrong. Preserved as process_cwd. NOTE this makes the rule's verdict on a relative '..' path depend on where the hook process happens to be started, which is a latent inconsistency in the master — recorded as F-18, not fixed.",
+        "allowed_path_pattern": "(/Temp/claude/|scratchpad|\\.playwright-mcp/|(^|[/\\s])dist([/\\s]|$)|test-results/|playwright-report/|\\.claude/state/|node_modules/|/dev/null|(^|[/\\s])__pycache__([/\\s]|$)|\\.pyc([\\s]|$))",
+        "_note_allowed_path_pattern_pycache": "2026-09-06. `__pycache__` and `*.pyc` are ADDED, because the incident that exposed the interpreter hole was an agent whose underlying need was legitimate -- removing regenerable bytecode -- and the only reason it reached for `python -c \"shutil.rmtree(...)\"` at all was that `rm -rf hooks/__pycache__` was refused. A rule that blocks routine, harmless work manufactures the incentive to route around it, and the routing-around is the actual danger. Bytecode is reproduced by the next import, so it fails the rule's own premise: it is not an owner working file and it is not unrecoverable. WIDENING IS IMPOSSIBLE BY A MERE SUBSTRING: both alternatives are BOUNDED at each end -- `__pycache__` must be a whole path COMPONENT (start-of-string or `/` before, `/` or whitespace or end after), so `src/__pycache__` and `src/__pycache__/x.pyc` match while `src/my__pycache__stuff` and `__pycache__evil/secrets` do not; `.pyc` must END the token (whitespace or end-of-string after), so `x.pyc` matches and `x.pyc.bak` / `notes.pyches` do not. This is a kind:'path' pattern -- N-1 applies, no inline flag, case sensitivity comes from regex.kinds.path.",
+        "_note_allowed_path_pattern_case": "N-1. The leading (?i) was REMOVED here and must never be re-added. This is a kind:'path' pattern, so its case-sensitivity comes from regex.kinds.path (IGNORECASE on Windows, NONE on POSIX). An inline (?i) OVERRIDES the compile flag, which silently made this pattern case-insensitive on POSIX too — meaning `rm -rf /home/x/Dist` matched the disposable `dist/` alternative and was allowed. That is precisely the hole the path/text split exists to close, and it looked correct on review because the inline flag was legally placed. Windows behaviour is unchanged (the compile flag supplies IGNORECASE there). tests/test_contract.py asserts that NO kind:'path' pattern contains an inline flag group.",
+        "_note_allowed_path_pattern": "Converted from the PowerShell form '(\\\\Temp\\\\claude\\\\|/Temp/claude/|scratchpad|\\.playwright-mcp[\\\\/]|(^|[\\\\/\\s])dist([\\\\/\\s]|$)|test-results[\\\\/]|playwright-report[\\\\/]|\\.claude[\\\\/]state[\\\\/]|node_modules[\\\\/]|/dev/null)'. The dual backslash/forward-slash alternatives collapse to forward slash only because lib/paths.py:to_posix() normalises separators BEFORE matching. Effective value is identical on Windows and correct (not case-folded by accident) on POSIX.",
+        "pm_allowlist": {
+          "enabled": true,
+          "file": "~/.claude/state/pm-delete-allow",
+          "main_chain_only": true,
+          "consume_on_use": true,
+          "_note_protected": "UNCHANGED by the owner-grants round, on purpose: this ledger is path-scoped (the owner lists the exact paths), which is strictly finer than a whole-rule grant, so `grants.never_exempt` refuses the coarse form and this mechanism stays the way to authorise a delete. One thing DID change around it, without touching this code or this file's format: the ledger is now listed in grants.protected, so no agent can write it any more -- which is what it always assumed and never enforced (it lives under ~/.claude/state, which paths.exempt_patterns exempts, so the commander could write its own authorisation and consume it in the same turn). An existing pm-delete-allow file keeps working exactly as before; only the author has to be the owner now.",
+          "notice": "tool-discipline: PM allowlist consumed for: {bad_paths}",
+          "contended_message": "\n(This specific attempt could not complete: the pm-delete-allow ledger was locked by another process and the lock did not clear in time. Your pre-authorisation was NOT consumed -- simply retry the same command. If this persists, the lock file is {lock_path} -- a dead owner whose PID has since been reused by a live process can never be automatically reclaimed, so remove that file by hand if retrying does not resolve it.)\n"
+        },
+        "message": "BLOCKED (tool discipline): deleting files outside disposable locations is not allowed:\n  {bad_paths}\nAgents may delete only what they created, and only under the session scratchpad,\n.playwright-mcp/, dist/, test-results/, playwright-report/, .claude/state/ or any\n__pycache__/ directory (bytecode is regenerable, so it is disposable by definition).\nThis applies to deletion through an INTERPRETER too -- `python -c \"shutil.rmtree(...)\"`,\n`node -e \"fs.rmSync(...)\"`, `Path(...).unlink()` -- not only to `rm`/`Remove-Item`.\nReaching for one of those after `rm` was refused is routing around the rule, not\ncomplying with it: report the exact paths instead.\nThe OWNER may pre-authorise exact paths, one per line, in\n  ~/.claude/state/pm-delete-allow   (entries are consumed on use, main chain only).\nThat file has to be written by the owner themselves, from an editor or a terminal\noutside this session -- no agent, the commander included, may write it. Say which\nexact paths you need and why, and let them add the lines.\nUntracked files elsewhere are the owner's working files and cannot be recovered from git.\n"
+      },
+      {
+        "id": "authority-file-in-shell",
+        "enabled": true,
+        "type": "regex_block",
+        "target": "raw",
+        "pattern": "(?i)(?<![\\w.])\\.claude[. ]*[\\\\/]+(?:\\.[\\\\/]+)*(state[. ]*[\\\\/]+(?:\\.[\\\\/]+)*(ulthar-grants|pm-delete-allow)|ulthar-overlay\\.json)",
+        "_note": "SELF-GRANT CLOSURE, shell half (guards/grant_files.py is the Write/Edit half; the two together are the whole of it). `grants.protected` names the files that carry the OWNER's permission -- the grant directory, the pm-delete-allow ledger and both overlay files -- and an agent that can write its own permission is not being permitted by anyone. grant_files blocks the Write/Edit tools; this rule blocks the shell, which would otherwise reach the same files through `python -c \"open(...)\"`, `sed -i`, `cp`, or a redirect, none of which the shell-file-creation rule covers. Matched as a PATH-SHAPED token (a `.claude` directory component followed by the specific name), never as a bare basename: `grep -rn pm-delete-allow hooks/` and `git log -S ulthar-grants` are ordinary work on ULTHAR itself and must not block, while `python -c \"open(r'C:\\Users\\me\\.claude\\state\\ulthar-grants\\x','w')\"` must. The leading `(?<![\\w.])` is a LOOKBEHIND, not a separator class, and that is load-bearing: requiring a `/` or `\\` before `.claude` (the first version of this pattern) missed the RELATIVE spelling of the project overlay -- `printf '' > .claude/ulthar-overlay.json`, run in the repo that overlay governs, which is one command for a STANDING disable of any rule and is exactly the obvious next tool call this rule exists to stop. The lookbehind matches at the start of a token or after a separator while still refusing `foo.claude/...`. SEPARATOR RUNS, 2026-09-06: each separator is `[\\\\/]+` and not `[\\\\/]`, plus an optional run of `.` segments (`(?:\\.[\\\\/]+)*`). The single-character class matched exactly one separator, so `.claude\\\\state\\\\ulthar-grants\\\\x` -- which is the NATURAL spelling inside a non-raw Python string, i.e. exactly how an agent writes a Windows path in a `python -c` one-liner -- went straight through, as did `.claude//state//ulthar-grants` and `.claude/./state/ulthar-grants`. Measured end-to-end through the dispatcher before and after; tests/test_grants.py::check_authority_path_separator_spellings_all_block builds every spelling from the config values rather than from literals (a literal in a probe would be blocked by this very rule). RESIDUAL, stated rather than hidden. (0) ONE SEPARATOR-FAMILY SPELLING IS STILL OPEN ON THIS HALF, named here rather than left to be found: a `..` segment (`.claude/state/../state/<grants dir>/x`). Win32 resolves it to the same file as the plain spelling; this pattern does not. It stays open because normalising a path INSIDE A COMMAND STRING is a different operation from matching one -- the string need not even be a path on the machine that runs it, and `..` resolution would have to pick a base directory the command may never use. The exposure is narrow: guards/grant_files.py (the Write/Edit half of the same protection) normalises `..` away before comparing, so only a shell command reaches it. The TRAILING-DOT and TRAILING-SPACE components that used to be listed here are NO LONGER OPEN on either half (2026-09-06 round 2): this pattern tolerates a `[. ]*` run before each separator, and lib/paths.py:norm_for_compare strips the same padding, so both spellings are rc=2. (a) a command that assembles the path from pieces or from a variable ($HOME + '/.claude/state/...') is not matched by any regex over the command text, and no amount of widening this pattern changes that; (b) a command that names only the DESTINATION DIRECTORY carries no authority path at all -- `cp tmp/ulthar-overlay.json .claude/`, `tar -xf x.tar -C ~/.claude`, `git apply`, `git checkout <ref>`, `git stash pop`, `git clone` -- so this rule cannot see it. What (b) can still reach is bounded by grants.never_exempt, which is now enforced against overlay `disable` as well as against grant files: a materialised overlay may weaken ordinary rules, and may not switch off the two rules that protect the authority mechanism itself. A materialised GRANT file for an ordinary rule remains reachable that way and is accepted knowingly -- ~/.claude/state is deliberately disposable, so traffic to it cannot be blocked without breaking the state directory's purpose. See docs/DESIGN.md 'What owner grants do not guarantee'. This rule is in grants.never_exempt: a grant that could switch it off would be a grant that authorises writing grants.",
+        "message": "BLOCKED (tool discipline): shell access to ULTHAR's owner-authority files is not allowed.\n  ~/.claude/state/ulthar-grants/   (owner grants -- one-shot rule exemptions)\n  ~/.claude/state/pm-delete-allow  (owner pre-authorised delete paths)\n  ~/.claude/ulthar-overlay.json, <repo>/.claude/ulthar-overlay.json (rule overrides)\nThese files are how the OWNER permits something a guard blocks, so no agent -- the\ncommander included -- may create or change them: an agent that writes its own\npermission is not being permitted by anyone. Ask the owner to write the file\nthemselves, from an editor or a terminal outside this session, and say exactly which\nfile and which one line.\n(Reading ULTHAR's own source that merely MENTIONS these names is unaffected -- this\nrule matches a .claude path, not the bare word.)\n"
+      }
+    ],
+    "dev_server": [],
+    "_note_dev_server_empty": "The config-generalisation round. This shipped a rule requiring a Node heap flag on one specific package.json script name -- that script only exists in one project's package.json; a stranger's repo has no matching script at all, so the rule was permanently dead weight for them (and would misfire the moment THEY happened to name a script that too). Moved to examples/user-overlay.example.json as a generalised example of the same shape. Shipping this list empty is the mechanism-visible-but-inert instance: guards/dev_server.py, its regex_require rule TYPE and its message-formatting stay fully implemented and exercised by tests/fixtures/dev_server (which now inject the example rule via cfg override -- see test_dev_server.py); only the ONE concrete rule instance moved out. This path is overlay-appendable (overlays.project_allowed_paths), so restoring it, or adding an equivalent rule for a different script name, is a one-file edit outside this skill."
+  },
+  "git_policy": {
+    "_note": "Consumed by guards.git_discipline and guards.pr_state. `global_option_prefix` is the ONE authoritative `-C|-c|--git-dir|--work-tree|--exec-path` prefix regex (lib/gitcmd.py); it is the UNION of the two divergent copies in git-discipline-guard.ps1 (had --exec-path, no quoted-arg support) and pr-state-guard.ps1 (had quoted-arg support, no --exec-path). See CONTRACT.md 'Parity exceptions'.",
+    "git_command_detect": "(?i)(^|[\\s;|&(])git(\\.exe)?\\s",
+    "global_option_prefix": "(?i)\\bgit(\\.exe)?\\s+((-C|-c|--git-dir|--work-tree|--exec-path)[=\\s]+(\"[^\"]*\"|\\S+)\\s+)*",
+    "protected_branches": [
+      "main",
+      "master"
+    ],
+    "deploy_refs": [],
+    "_note_deploy_refs_empty": "The config-generalisation round. This shipped preview-branch names as universal defaults -- they were ONE owner's convention for their own hosting provider's preview branches, and the deploy_ref_message named that same provider's build specifically. Neither is a fact about git or about ULTHAR; they are this owner's convention. Moved to examples/user-overlay.example.json (see overlays.project_allowed_paths -- this path is overlay-appendable, so a user or project restores or extends it without editing this shipped config). Shipping it empty is the mechanism-visible-but-inert instance the round asked for: the guard, the message template and the phase-order slot all still exist and still fire the moment an overlay populates this list.",
+    "phase_order": [
+      {
+        "phase": "git_command_detect",
+        "match_target": "raw"
+      },
+      {
+        "phase": "blanket_staging",
+        "match_target": "probe_quotes"
+      },
+      {
+        "phase": "destroyers",
+        "match_target": "probe_quotes"
+      },
+      {
+        "phase": "hook_bypass",
+        "match_target": "probe_quotes"
+      },
+      {
+        "phase": "is_write_subcommand",
+        "match_target": "probe_quotes"
+      },
+      {
+        "phase": "force_push",
+        "match_target": "probe_quotes"
+      },
+      {
+        "phase": "deploy_refs",
+        "match_target": "probe_quotes"
+      },
+      {
+        "phase": "protected_push",
+        "match_target": "probe_quotes"
+      },
+      {
+        "phase": "current_branch",
+        "match_target": null
+      }
+    ],
+    "_note_phase_order_pe18": "PE-18 (2026-09-05). Two phases added, neither ported from any .ps1 master -- the operating rules said not to bypass hooks/signing and treated force-push as dangerous, but they lived only in prose files nothing ever loaded, so none of it was enforced (confirmed dead before AND after the cutover). `hook_bypass` sits right after `destroyers`, still ahead of `is_write_subcommand`: like blanket_staging/destroyers it is an operation-TYPE check (does this command carry a bypass flag at all) that must not depend on the write-subcommand gate having already matched, even though in practice --no-verify/--no-gpg-sign only ever appear on commit/push (which the gate would pass anyway) -- the placement keeps the same 'operation-type before destination-specific' precedent destroyers already set, rather than a coincidence of which subcommands happen to carry the flag today. `force_push` sits right after `is_write_subcommand` (it needs 'push' context, unlike hook_bypass, so it cannot run before the gate) but BEFORE `deploy_refs`/`protected_push` -- deliberately, so 'you are force-pushing at all' (an operation-type fact) is reported before 'to this specific destination' (deploy ref / protected branch), the same precedence destroyers already has over the branch-specific checks below it. Concretely this changes the message (never the exit code) for `git push --force` while standing on main (golden fixture git-golden-block-force-on-main: was 'you are on the protected branch', now the force-push message) and flips `git push --force-with-lease` on a feature branch from ALLOW to BLOCK (golden fixture git-golden-pass-force-on-feature, renamed to git-golden-block-force-with-lease-on-feature) -- both now parity:false citing PE-18, since the .ps1 masters have no such rule and cannot agree.",
+    "_note_phase_match_target_null": "R-c. `match_target: null` on the current_branch phase means 'this phase matches NOTHING — it shells out to git rev-parse'. It does NOT mean 'unspecified, use the default'. Do not write `phase.get('match_target') or 'probe_quotes'`: that would hand a probe string to a phase that has no pattern to match, and the null is the signal that this phase leaves regex-land entirely. null and 'probe_quotes' are different states, not a value and its fallback.",
+    "_note_phase_match_target": "S-7. match_target is DATA on each phase, not prose. git_command_detect is the sole raw-matching phase (it runs before $probe is built at git-discipline-guard.ps1 line 28); current_branch matches nothing (it shells out to git rev-parse). Encoding it per phase removes the standing risk that a creator applies the section-level default uniformly and quietly makes `git commit -m \"drop the -a flag\"` start blocking, or makes the detect phase miss a command whose quoted text was blanked.",
+    "_note_phase_order": "EXPLICIT evaluation order for git_discipline, ported top-to-bottom from git-discipline-guard.ps1 (detect line 23, G1 lines 34-53, G3 lines 55-77, isWrite line 80, G4 lines 83-100, G2 lines 102-113, rev-parse lines 115-132) -- PLUS two 2026-09-05 additions with no .ps1 line to cite, `hook_bypass` and `force_push`; see `_note_phase_order_pe18` for where each sits and why. The order is load-bearing: `git clean` while standing on main must yield the DESTROYER message, not the protected-branch message, because destroyers are checked before the branch is ever resolved. `is_write_subcommand` is an early ALLOW gate — a command that is not commit/push/merge/rebase returns 0 without git being run at all, which is why read-only git commands cost nothing.",
+    "_note_match_target": "Per-phase match_target now lives on each phase_order element (S-7). Summary: git_command_detect matches RAW (line 23, before $probe exists); every other matching phase uses the QUOTE-STRIPPED probe built once at git-discipline-guard.ps1 line 28 — which is exactly what keeps `git commit -m \"drop the -a flag\"` and `git commit -m \"merge main later\"` passing (both golden fixtures). See git_policy.pr_state.match_target for that guard's separate, all-raw behaviour.",
+    "blanket_staging": [
+      {
+        "id": "add-all",
+        "enabled": true,
+        "suffix": "add\\s+(-A\\b|--all\\b|\\.(\\s|$))",
+        "why": "git add -A / --all / ."
+      },
+      {
+        "id": "commit-all-long",
+        "enabled": true,
+        "suffix": "commit\\b[^\\r\\n]*?\\s--all\\b",
+        "why": "git commit --all"
+      },
+      {
+        "id": "commit-a-short",
+        "enabled": true,
+        "suffix": "commit\\b[^\\r\\n]*?\\s-(?!-)[A-Za-z]*a[A-Za-z]*(\\s|$)",
+        "why": "git commit -a"
+      }
+    ],
+    "blanket_staging_message": "BLOCKED (git discipline): blanket staging via {why} is not allowed.\nStage an EXPLICIT file list instead, so an unexpected file cannot ride along:\n  git -C <repo> add path/to/file1 path/to/file2\n  git -C <repo> commit -m \"<why this change was needed>\"\nIf a file you did not expect shows up in `git status`, stop and report it rather than\nstaging everything.\n",
+    "destroyers": [
+      {
+        "id": "clean",
+        "enabled": true,
+        "suffix": "clean\\b",
+        "why": "git clean (deletes untracked files)"
+      },
+      {
+        "id": "checkout-path",
+        "enabled": true,
+        "suffix": "checkout\\b[^\\r\\n]*\\s(--\\s|\\.(\\s|$))",
+        "why": "git checkout -- <path> / git checkout . (discards edits)"
+      },
+      {
+        "id": "restore",
+        "enabled": true,
+        "suffix": "restore\\b",
+        "why": "git restore (discards edits)"
+      },
+      {
+        "id": "reset-hard",
+        "enabled": true,
+        "suffix": "reset\\b[^\\r\\n]*\\s--hard\\b",
+        "why": "git reset --hard"
+      },
+      {
+        "id": "stash-untracked",
+        "enabled": true,
+        "suffix": "stash\\b[^\\r\\n]*\\s(-u|--include-untracked|-a|--all)\\b",
+        "why": "git stash -u / -a (captures untracked files)"
+      }
+    ],
+    "destroyers_message": "BLOCKED (git discipline): {why} is not allowed.\nUntracked and modified files in the working tree belong to the owner and may be\nunrecoverable. If a deliberate reset/restore is required, report it and let the owner\nrun it. (Read-only git commands are unaffected.)\n",
+    "hook_bypass": [
+      {
+        "id": "no-verify",
+        "enabled": true,
+        "suffix": "(commit|push)\\b[^\\r\\n]*\\s--no-verify\\b",
+        "why": "--no-verify (skips pre-commit/pre-push hooks)"
+      },
+      {
+        "id": "no-gpg-sign",
+        "enabled": true,
+        "suffix": "commit\\b[^\\r\\n]*\\s--no-gpg-sign\\b",
+        "why": "--no-gpg-sign (bypasses commit signing)"
+      },
+      {
+        "id": "no-verify-short",
+        "enabled": true,
+        "suffix": "commit\\b[^\\r\\n]*?\\s-(?!-)[A-Za-z]*n[A-Za-z]*(\\s|$)",
+        "why": "-n (short alias of --no-verify on commit; skips pre-commit/commit-msg hooks)"
+      }
+    ],
+    "_note_hook_bypass_short_n": "PE-18. `-n` is `git commit`'s documented short alias for `--no-verify` (on `git push`, `-n` means `--dry-run` instead, an unrelated and harmless flag -- this entry deliberately targets `commit\\b` only, never `push`). Matched as a combined-short-flag CLUSTER (`-(?!-)[A-Za-z]*n[A-Za-z]*`), the same shape `blanket_staging`'s `commit-a-short` entry already uses for `-a` -- so `git commit -na`, `git commit -an`, and `git commit -n` are all caught, consistent with that existing precedent (accepted there for `-am` already). A rule whose one-letter alias walks straight through it is the exact class of gap this task exists to close.",
+    "_note_hook_bypass_no_signoff": "PE-18. `--no-signoff` was considered and deliberately left OUT: it omits a DCO trailer, not a hook run or a cryptographic signature -- a different risk class from the two principles files' and the harness's own standing rule, neither of which ever names it. Folding it into the same list under the same message ('hooks and signing exist to catch problems') would misdescribe what it actually does. Adding it needs its own message, which nothing here asked for.",
+    "_note_hook_bypass_gpgsign_config": "PE-18. `-c commit.gpgsign=false` (an equivalent signing bypass) is deliberately OUT OF SCOPE here, for a structural reason, not an oversight: `-c KEY=VALUE` is consumed by `global_option_prefix` BEFORE any suffix ever sees the command text (it strips `-c commit.gpgsign=false` as a leading global option, exactly the way it strips `-c user.name=x`), so a `hook_bypass` suffix entry for it would never fire -- catching it needs a RAW-target check ahead of the prefix, the same class of change `git_command_detect` required. That is a real, separately-scoped gap; flagged for the owner rather than folded in silently.",
+    "hook_bypass_message": "BLOCKED (git discipline): {why} is not allowed.\nHooks and commit signing exist to catch problems before they leave the working tree;\nskipping them is a per-instance human decision, never a default an agent reaches for\nitself. If a hook is genuinely broken, fix the hook -- or report it and let the owner\ndecide to bypass it themselves. (Read-only git commands are unaffected.)\n",
+    "force_push": [
+      {
+        "id": "push-force",
+        "enabled": true,
+        "suffix": "push\\b[^\\r\\n]*?\\s(--force(-with-lease)?\\b|-(?!-)[A-Za-z]*f[A-Za-z]*(\\s|$))",
+        "why": "git push --force / --force-with-lease / -f (rewrites remote history)"
+      }
+    ],
+    "_note_force_push_short_f_cluster": "PE-18. `-f` is matched as a combined-short-flag CLUSTER (`-(?!-)[A-Za-z]*f[A-Za-z]*`), not just a bare `-f` token -- `git push -uf` / `-fu` / `-vf` are all valid git invocations that still force-push, and no other `git push` short option uses the letter `f` for anything else, so widening from an exact `-f` match to the cluster shape (the same precedent `blanket_staging`'s `-a` entry already sets) closes a one-letter combining bypass instead of leaving it as an unexamined gap.",
+    "_note_force_push_lease": "PE-18. `--force-with-lease` is materially safer than `--force` (it refuses if the remote ref moved since your last fetch, so it cannot silently clobber a collaborator's unseen push) but it is NOT split into a separate, unblocked rule here -- danger.md itself listed `git push --force` / `--force-with-lease` side by side as needing per-instance owner approval, and this guard has only two outcomes, ALLOW or BLOCK (no third 'warn but proceed' primitive exists in a PreToolUse hook) -- there is no way to 'warn' short of blocking. The actual harm being guarded against is an agent unilaterally rewriting PUBLISHED history at all, not just the clobber-someone-else's-commit case --force-with-lease narrows; that harm is identical for both flags. The message says so and names --force-with-lease as the flag to request when the owner does authorize a force-push.",
+    "force_push_message": "BLOCKED (git discipline): {why} is not allowed.\nForce-pushing rewrites history that other people or CI may already be building on.\n--force-with-lease is safer than --force (it refuses if the remote moved since your\nlast fetch) but still overwrites the remote ref without the owner's say-so. If a\nforce-push is genuinely required, report it and let the owner run it themselves,\npreferring the lease-checked form:\n  ! git push --force-with-lease origin <branch>\n(Read-only git commands are unaffected.)\n",
+    "write_subcommand_suffix": "(commit|push|merge|rebase)\\b",
+    "push_target_suffix_template": "push\\b[^\\r\\n]*(\\s|:|refs/heads/){ref}(\\s|$)",
+    "protected_push_target_suffix_template": "push\\b[^\\r\\n]*(\\s|:|refs/heads/){ref}(\\s|$|:)",
+    "deploy_ref_message": "BLOCKED (git discipline): pushing to the deploy branch '{ref}' is reserved for the owner.\nEach push triggers a production deployment; agents never decide that.\nReport the branch/commit that is ready and let the owner run:\n  ! git push origin <branch>:{ref}\n",
+    "protected_push_message": "BLOCKED (git discipline): pushing to the protected branch '{ref}' is not allowed.\nWork on a feature branch and open a PR:\n  git -C <repo> switch -c feature/<name>\n  git -C <repo> push -u origin feature/<name>\n",
+    "protected_branch_message": "BLOCKED (git discipline): you are on the protected branch '{branch}'.\nNever commit, push, merge or rebase directly on it -- branch first, then PR:\n  git -C <repo> switch -c feature/<name>\nThen re-run this command. (Read-only git commands are unaffected.)\n",
+    "pr_state": {
+      "enabled": true,
+      "match_target": "raw",
+      "_note_match_target": "S-7. pr_state matches the RAW command in EVERY phase — pr-state-guard.ps1 never builds a quote-stripped probe. This is a real asymmetry with git_discipline (which probes from line 28 onward); it is preserved, not harmonised, and stated as data so a creator cannot infer git_discipline's default applies here. Consequence to be aware of: a commit message containing the word 'push' can influence pr_state's parsing in a way it cannot influence git_discipline's.",
+      "push_detect_suffix": "push\\b",
+      "_note_push_detect_suffix": "N-2. This is a SUFFIX, composed by the guard as git_policy.global_option_prefix + suffix — exactly the way blanket_staging[].suffix and destroyers[].suffix are composed. It previously held the full prefix alternation inline, which duplicated global_option_prefix byte for byte: a mirror value, the thing section 3.2's single-home rule calls a review blocker. The concrete risk was not theoretical — adding a new global option such as --bare to global_option_prefix would have left this copy untouched and silently reopened the very bypass PE-4 closed. There is now exactly ONE place where the git global-option alternation is defined.",
+      "branch_delete_push": "(?i)push\\b[^\\r\\n;|&]*(--delete|\\s-d\\s|\\s:refs/heads/|\\s:[A-Za-z])",
+      "dir_option": "(?i)\\bgit(\\.exe)?\\s+-C\\s+(\"([^\"]+)\"|(\\S+))",
+      "sha_ref_pattern": "^[0-9a-f]{7,40}$",
+      "push_split_pattern": "(?i)\\bpush\\b",
+      "segment_split_pattern": "[;|&]",
+      "token_split_pattern": "\\s+",
+      "token_reject_pattern": "^-",
+      "refs_heads_strip_pattern": "^refs/heads/",
+      "refspec_token_index": 1,
+      "_note_tokenisation": "Ported from pr-state-guard.ps1 lines 33-40, with the parsing patterns moved out of the guard and into config. Algorithm: split the raw command on push_split_pattern and keep part[1]; cut it at the first segment_split_pattern delimiter; split on token_split_pattern; drop empties and tokens matching token_reject_pattern (flags); then take tokens[refspec_token_index]. NOTE: index 1 is the FIRST refspec after the remote name, NOT the last one — the master's own comment says 'last <remote> <src>[:<dst>] pair', and that comment is WRONG about its own code. Preserved as-is for parity; recorded as a Finding (F-14) rather than fixed. If that token contains ':', keep the part after it (the destination); then strip refs_heads_strip_pattern.",
+      "limit": 10,
+      "gh_argv": [
+        "gh",
+        "pr",
+        "list",
+        "--head",
+        "{branch}",
+        "--state",
+        "all",
+        "--limit",
+        "{limit}",
+        "--json",
+        "number,state,url"
+      ],
+      "open_state": "OPEN",
+      "message": "BLOCKED (PR state): branch '{branch}' has no OPEN pull request -- every PR on it is already merged or closed:\n{pr_list}\n\nA push here is silently lost (nothing will merge it). Instead:\n  1. git fetch origin && cut a NEW integration branch from origin/main\n  2. merge the pending branches into it, push, and open a NEW PR (one PR per batch)\nRule: check `gh pr view <n> --json state` BEFORE pushing to any branch that had a PR.\n",
+      "pr_line_format": "  #{number} {state} {url}"
+    }
+  },
+  "brief_rules": {
+    "_note": "Consumed by guards.brief_gate (PreToolUse Agent/SendMessage). Evaluation: detect -> classify kind (first matching `match`, else the kind whose match is '*') -> run that kind's rules IN ARRAY ORDER; the FIRST failing rule blocks. Array order IS evaluation order, matching brief-gate-guard.ps1's top-to-bottom flow (gate 4/5 first because forwarder/committer kinds return early; then gate 1, 2b, 2, 6, 3 for creator briefs).",
+    "_note_compact_header": "PE-19 (2026-09-05). A creator dispatch previously had to carry FOUR separate hand-written markers to pass gates 1/2/3/6 (an APPROVAL:<file>.md reference, a STATE/acceptance-table mention, an OWNER-CONFIRMED: block, and -- when UI-shaped -- a design-skill/no-ui declaration). The compact header `BRIEF: <file>.md | <kind> | no-ui` (kind and the no-ui tag both optional) replaces that, WITHOUT weakening any gate: (1) detect.brief_pattern gained a line-anchored alternative recognising the header shape itself as brief-shaped text; (2) each of forwarder/committer/reviewer's `match` gained a `| <kind>` alternative so the header alone classifies the brief (creator has no alternative to add -- it is the '*' fallback, so a header naming any other recognised kind classifies as that kind, and everything else, including `| creator` or no kind token at all, falls through to creator exactly as before); (3) gate6's `reference_pattern` now accepts `BRIEF:` as well as `APPROVAL:`, so the SAME file resolution gate6 already performed (existence + age-or-OWNER-OK) also resolves the compact form -- no new file format, no new trust boundary; (4) gate1 and gate3 (both `require_pattern`) may now ALSO be satisfied by the content of THAT SAME resolved file (see guards/brief_gate.py `_resolve_reference_text`) -- so the acceptance-table and owner-decision detail can live in the approval file (which the creator already had to write and the owner already had to read, per gate 6's own protocol) instead of being restated inline; (5) design_cases' ui-design-skill case gained one satisfied_by alternative, `\\|\\s*no-ui\\b`, so the header's own `| no-ui` tag can stand in for naming a design skill -- but ONLY that literal tag; it is evaluated by design_cases exactly as before (content-triggered, no file fallback), so a brief that actually contains UI-trigger words still blocks unless it either names a real design skill or carries `| no-ui` -- claiming `| ui` (or any other tag) does not bypass it. The long form (separate APPROVAL:/STATE mention/OWNER-CONFIRMED:/design-skill markers) keeps working unchanged; nothing was removed, only alternatives were added. See references/briefing-templates.md -> compact header for the worked example, and STATE.md for the acceptance evidence.",
+    "detect": {
+      "text_fields": [
+        "prompt",
+        "message"
+      ],
+      "brief_pattern": "(?i)\\[([A-Z]+-\\d+\\s+)?round[\\s-]?\\d+|\\[(Creator|Investigator|Forwarder|Committer|Reviewer|Fallback Reviewer|Auditor)\\s+Brief|round\\d+[a-z]?\\s*[—-]|codex exec|Delta re-review|Final delta|(?m:^\\s*BRIEF\\s*:\\s*[\\w.\\-]+\\.md\\s*\\|)",
+      "_note_brief_pattern_compact": "The final alternative recognises the compact header ITSELF as brief-shaped text, line-anchored (scoped `(?m:...)`) and requiring the full `BRIEF: <name>.md |` shape -- not a bare `BRIEF\\s*:` -- specifically so an ordinary long dispatch that happens to contain the prose 'in brief: ...' cannot be misrouted into creator-gate enforcement (M-11 already warns that widening this pattern affects EVERY gate).",
+      "min_length": 400
+    },
+    "kinds": [
+      {
+        "id": "forwarder",
+        "enabled": true,
+        "match": "(?i)\\[Forwarder Brief|BRIEF\\s*:\\s*[\\w.\\-]+\\.md\\s*\\|\\s*forwarder\\b|\\A(?![\\s\\S]*(?:\\[(?:Creator|Investigator|Forwarder|Committer|Reviewer|Fallback Reviewer|Auditor)\\s+Brief|(?:APPROVAL|BRIEF)\\s*:\\s*[\\w.\\-]+\\.md))(?=[\\s\\S]*(?:codex exec|Delta re-review|Final delta))",
+        "_note_content_match": "PRECEDENCE (2026-09-06). Alternatives 1-2 are HEADER forms; alternative 3 classifies BY CONTENT (`codex exec` / `Delta re-review` / `Final delta` -- tokens a forwarder dispatch deliberately carries). The leading negative lookahead is NOT a classification lock: it encodes the precedence rule *a brief that labels its own kind is that kind*, so the content route only ever applies to UNLABELLED text. It excludes every bracket kind header AND any `APPROVAL:<f>.md` / `BRIEF:<f>.md` reference (gate 6 lives only on `creator`, so such a reference is a creator marker -- its PRESENCE is creator precedence, never forwarder/committer evidence). Without it, array position beat the label: `[Creator Brief] ... Final delta ...` classified forwarder, whose only rule is gate 4, skipping creator gates 1/2/3/6. Regression: test_brief_gate.py::test_kind_precedence_over_content_signals, case creator-label-beats-forwarder-content-route (inline rather than in fixtures/briefs/ because tests/parity.py pins the total fixture-file case count and that file was outside the scope of this change).",
+        "rules": [
+          {
+            "id": "gate4-deterministic-out-file",
+            "enabled": true,
+            "type": "require_pattern",
+            "requires": "(?i)\\.out\\b",
+            "message": "BLOCKED (brief gate): this forwarder/codex dispatch names no deterministic output\nfile. Require the full output redirected to a scratchpad <name>.out path at launch,\nand arm a PM-side watchdog on that path in the same turn.\n"
+          }
+        ]
+      },
+      {
+        "id": "committer",
+        "enabled": true,
+        "match": "(?i)\\[Committer Brief|BRIEF\\s*:\\s*[\\w.\\-]+\\.md\\s*\\|\\s*committer\\b|\\A(?![\\s\\S]*(?:\\[(?:Creator|Investigator|Forwarder|Committer|Reviewer|Fallback Reviewer|Auditor)\\s+Brief|(?:APPROVAL|BRIEF)\\s*:\\s*[\\w.\\-]+\\.md))(?=[\\s\\S]*(?m:^\\s*Files\\s*:))(?=[\\s\\S]*(?:をコミット|コミット依頼))(?=[\\s\\S]*(?:Stage\\s+exactly\\s+these\\s+files|をステージ|未ステージ))",
+        "_note_content_match": "2026-09-05 owner-reported false positive; 2026-09-06 REWRITTEN after a HIGH review finding. Alternatives 1-2 are HEADER-ONLY (bracket form, compact header). A Japanese commit dispatch -- the owner writes briefs in Japanese -- carries neither, so it fell through to the '*' creator fallback and design_cases' ui-design-skill case fired on its UI vocabulary, demanding a design skill from a dispatch that by nature invokes none. Alternative 3 classifies BY CONTENT and is a conjunction of three POSITIVE locks plus one precedence lookahead. The asymmetry runs one way: a committer misread as creator only annoys, while a creator misread as committer SKIPS gates 1/2/3/6 -- so every lock must be something the author of a COMMIT dispatch deliberately writes, never something a creator brief merely lacks. LOCK 1, a LINE-ANCHORED `Files:` header -- stricter than gate5's own `Files\\s*:|Files \\(`, on purpose: gate5 is a contract check AFTER classification and may be permissive, the classifier is the trust-relevant step; prose like 'edit these files (see plan)' must not qualify. LOCK 2, a commit-AS-THE-TASK phrase: `をコミット` (the object particle, i.e. 'commit <this>') or `コミット依頼` -- never a bare verb, since a creator brief routinely says 'commit when the tests pass'. `Commit\\s+Brief` was REMOVED from this lock on 2026-09-06: references/briefing-templates.md:498 puts the words 'Commit Brief' inside the CREATOR round template (コミットは PM の指示後に Commit Brief で haiku へ), so a template-following creator brief satisfied it for free while a template-following commit dispatch never says it. LOCK 3, the STAGING DISCIPLINE the Commit Brief protocol mandates and gate5's own message spells out ('staged from an enumerated per-file list only; state what must remain unstaged'): `Stage exactly these files` (references/briefing-templates.md:424, the template's own line), `をステージ` ('stage <these>'), or `未ステージ` ('unstaged'). This REPLACES the previous third lock, 'no APPROVAL:/BRIEF: reference anywhere', which was a HIGH finding: it identified a committer dispatch by the ABSENCE of a creator requirement, so a creator brief that FORGOT its mandatory approval -- exactly what the gates exist to catch -- classified committer and returned ALLOW. Absence of a requirement is never positive identification. `ステージ` appears NOWHERE in the creator/STATE templates, and lock 3 deliberately avoids any `add -A` signal: the creator template's own 禁止 list (briefing-templates.md:506) contains `git add -A`, so an add-based signal would be boilerplate-matched. PRECEDENCE (the leading negative lookahead) is NOT a fourth lock: it encodes the rule *a brief that labels its own kind is that kind*, so the content route applies only to UNLABELLED text. It excludes every bracket kind header and any `APPROVAL:<f>.md` / `BRIEF:<f>.md` reference -- gate 6 lives only on `creator`, so such a reference is a creator marker and its PRESENCE is creator precedence (the one thing the old rule got right, kept, reframed). It does not depend on kinds[] array order, which is why it also protects `[Reviewer Brief]`/`[Auditor Brief]`: the reviewer kind sits AFTER committer in the array, so before this lookahead a labelled reviewer brief carrying the locks would have classified committer. MECHANICS: `[\\s\\S]*` not `.*` (kind 'text' is IGNORECASE only, never DOTALL); `\\A` so search evaluates the lookaheads once rather than at every offset; no `\\b` beside kana (kana are \\w, so the boundary would not be where it looks). Alternatives 1-2 are unaffected by the exclusion: a bracket or compact header anywhere in the text is matched by them at that offset, while alternative 3 only ever runs at offset 0. RESIDUAL, stated rather than hidden: an UNLABELLED brief carrying a line-anchored `Files:` header AND `をコミット` AND a staging-discipline phrase is classified committer even if it was meant as creator work. The creator template uses `File scope:`/`Do NOT edit:`, never `Files:`, never any staging instruction, and commits are routed through a separate dispatch. Gate 5 (explicit file list) is UNCHANGED and still runs for every committer brief -- lock 1 makes it harder to REACH this kind, never optional once here.",
+        "rules": [
+          {
+            "id": "gate5-explicit-file-list",
+            "enabled": true,
+            "type": "require_pattern",
+            "requires": "(?i)Files\\s*:|Files \\(",
+            "message": "BLOCKED (brief gate): this committer brief has no explicit 'Files:' list. Commits\nare staged from an enumerated per-file list only (never add -A/./-u); list every\npath and state what must remain unstaged.\n"
+          }
+        ]
+      },
+      {
+        "id": "reviewer",
+        "enabled": true,
+        "match": "(?i)\\[(Reviewer|Fallback Reviewer|Auditor)\\s+Brief|BRIEF\\s*:\\s*[\\w.\\-]+\\.md\\s*\\|\\s*(reviewer|fallback reviewer|auditor)\\b",
+        "rules": []
+      },
+      {
+        "id": "creator",
+        "enabled": true,
+        "match": "*",
+        "_note_creator_compact_header_token": "PE-19. Unlike forwarder/committer/reviewer, creator has no `match` alternative to add -- it IS the '*' fallback. A compact header naming any OTHER recognised kind (`| forwarder`, `| committer`, `| reviewer`/`fallback reviewer`/`auditor`) classifies as that kind via the alternatives above; a header naming `| creator`, naming nothing recognised, or naming no kind at all, all fall through to creator by array position, exactly as an unlabelled brief always has. So `creator` in the worked example is honest documentation of the fallback, not a matched token -- do not add a `creator` alternative here purely to make the label load-bearing; `*` already covers it.",
+        "rules": [
+          {
+            "id": "gate1-acceptance-table",
+            "enabled": true,
+            "type": "require_pattern",
+            "requires": "(?i)\\bSTATE\\b|完成の定義|良品条件|acceptance table",
+            "message": "BLOCKED (brief gate): this creator/round brief references no acceptance table.\nEvery creator dispatch must name the issue's STATE.md §2 rows (完成の定義/良品条件 -- 'definition of done' / 'acceptance conditions')\nit targets, and require the done-report to answer per row with evidence.\nIf the issue has no STATE.md yet, create it FIRST (briefing-templates.md → STATE\ntemplate), confirm §2 with the owner, then dispatch.\n(This may be satisfied by the brief text itself, or by the content of the file\nreferenced via BRIEF:<file>.md / APPROVAL:<file>.md -- see briefing-templates.md →\ncompact header.)\n"
+          },
+          {
+            "id": "gate2-design-cases",
+            "enabled": true,
+            "type": "design_cases",
+            "_note": "Runs every enabled entry of the top-level `design_cases` list whose applies_to includes this kind, in list order. Adding/removing a design-enforcement case is a pure edit of that list — no code change here and none in the guard."
+          },
+          {
+            "id": "gate6-approval-handshake",
+            "enabled": true,
+            "type": "approval_handshake",
+            "reference_pattern": "(?i)(?:APPROVAL|BRIEF)\\s*:\\s*([\\w.\\-]+\\.md)",
+            "_note_reference_pattern_compact": "PE-19. Widened to accept the compact header's `BRIEF:<file>.md` alongside the long form's `APPROVAL:<file>.md` -- same capture group, same downstream resolution (existence + age-or-OWNER-OK unchanged). This is also the pattern require_pattern rules in this kind fall back to reading through (see guards/brief_gate.py `_resolve_reference_text`), so widening it here widens both the reference AND the fallback in one place.",
+            "dir": "~/.claude/state/brief-approvals",
+            "min_age_sec": 180,
+            "ok_marker": "OWNER-OK",
+            "ok_marker_match": "raw_substring",
+            "_note_ok_marker_match": "PARITY. brief-gate-guard.ps1 line 115 is `(Get-Content $apFile -Raw) -match 'OWNER-OK'` — a RAW SUBSTRING search over the WHOLE FILE, not a line match and not an anchored one. 'OWNER-OKAY', 'NOT-OWNER-OK' and an occurrence inside a quoted paragraph all satisfy it today. Do not 'improve' this to a line-anchored match during the port: that would make previously-accepted approval files start blocking. Recorded as F-15.",
+            "message_missing_reference": "BLOCKED (brief gate): this creator/round brief carries no APPROVAL:<file>.md\n(or compact BRIEF:<file>.md) reference. Protocol: present understanding +\nacceptance-criteria deltas to the owner, write the SAME text to\n{approval_dir}/<issue>-<round>.md, then dispatch citing APPROVAL:<file>.md or the\ncompact header BRIEF:<file>.md | <kind> | no-ui (see briefing-templates.md →\ncompact header). The file must be >=3 minutes old or contain an OWNER-OK line\n(explicit approval).\n",
+            "placeholder_resolution": {
+              "_note": "B-1. THE authority for how each gate-6 placeholder is substituted. They are NOT uniform, and assuming they are produces messages that differ from the master on day one — which now fails parity, because normalised stderr equality is the DEFAULT assertion. Each row was measured against brief-gate-guard.ps1. Substitution is plain str.replace of the token, never str.format.",
+              "approval_dir": {
+                "form": "raw_config_value",
+                "source": "this rule's `dir`",
+                "renders_as": "<the raw value of this rule's `dir`, verbatim>",
+                "master_ref": "brief-gate-guard.ps1:121-127 heredoc literal",
+                "why": "The master hard-coded the TILDE form inside the message text. Expanding it would print one machine's absolute path into guidance and break byte-equality."
+              },
+              "approval_path": {
+                "form": "expanded_absolute_native_separators",
+                "source": "expand(dir) / <matched file name>",
+                "renders_as": "<home>\\.claude\\state\\brief-approvals\\<name>.md",
+                "master_ref": "brief-gate-guard.ps1:108 ($apFile = Join-Path $env:USERPROFILE ...), printed at :110",
+                "why": "$apFile is the RESOLVED path the guard actually tested with Test-Path, printed so the reader can go straight to it. Native separators, because Join-Path produced them. Using the raw tilde form here would diverge from the master immediately."
+              },
+              "approval_name": {
+                "form": "basename_only",
+                "source": "the matched file name",
+                "renders_as": "<name>.md",
+                "master_ref": "brief-gate-guard.ps1:117 ($($ap.Name))",
+                "why": "Get-Item(...).Name is the leaf name, not a path. Printing a full path here would diverge."
+              }
+            },
+            "message_file_not_found": "BLOCKED (brief gate): APPROVAL file not found: {approval_path}. Write the presented understanding+criteria there when you present them to the owner, then dispatch.",
+            "message_window_not_elapsed": "BLOCKED (brief gate): approval window not elapsed ({age_sec}s < {min_age_sec}s) and no {ok_marker} line in {approval_name}. Wait out the 3-minute window or record the owner's explicit approval (add a line: OWNER-OK <quote/summary>) before dispatching."
+          },
+          {
+            "id": "gate3-owner-confirmed",
+            "enabled": true,
+            "type": "require_pattern",
+            "requires": "(?i)OWNER-CONFIRMED\\s*:|owner (decision|confirmations?)\\b|オーナー決定|オーナー確定",
+            "message": "BLOCKED (brief gate): this creator/round brief carries no OWNER-CONFIRMED decision\nlist. Enumerate every product/scope decision the brief relies on and its\nconfirmation source (AskUserQuestion result or an unambiguous owner instruction —\ntentative wording like 「〜かも」 ('maybe') is NOT confirmation). If any decision is\nunconfirmed, ask the owner FIRST, then dispatch.\n(This may be satisfied by the brief text itself, or by the content of the file\nreferenced via BRIEF:<file>.md / APPROVAL:<file>.md -- see briefing-templates.md →\ncompact header.)\n"
+          }
+        ]
+      }
+    ]
+  },
+  "design_cases": {
+    "_note_preconditions": "TWO GATES SIT UPSTREAM OF THIS LIST — read before adding a case. (1) M-10: a case is evaluated only if the classified brief kind's rules[] contains a row with type 'design_cases'. TODAY ONLY 'creator' HAS ONE. A case written with applies_to ['committer'] is accepted and then SILENTLY NEVER FIRES — applies_to narrows, it cannot extend. To apply design cases to another kind you must ALSO add a {id, type: 'design_cases'} row to that kind's rules[] (still config-only, but it is a SECOND edit). (2) M-11: the text must first pass brief_rules.detect — it must match brief_pattern AND be at least min_length (400) characters. A case about non-brief-shaped text never gets the chance to fire; widening brief_rules.detect affects EVERY gate and is not a local change.",
+    "_note": "THE design-enforcement case list. Owner hard requirement: adding or removing a case is a PURE CONFIG EDIT — one object added to or removed from `cases`, with NO code change anywhere (subject to the two preconditions above). Semantics of one case: if ANY pattern in `triggers` matches the brief text AND NO pattern in `satisfied_by` matches it, the brief is blocked with `message`. `applies_to` lists the brief_rules kind ids the case applies to (omit = all kinds). `cases` order IS evaluation order; the first failing case blocks. Today's Gate 2b (responsive brief must cite viewport-matrix) and Gate 2 (UI brief must name a design skill) are the two rows below, in the same order brief-gate-guard.ps1 evaluated them.",
+    "cases": [
+      {
+        "id": "responsive-viewport-matrix",
+        "enabled": true,
+        "applies_to": [
+          "creator"
+        ],
+        "triggers": [
+          "(?i)responsive|breakpoint|マルチデバイス|viewport.{0,20}(sweep|matrix|組合せ|掃引)|ビューポート.{0,20}(組合せ|掃引)"
+        ],
+        "satisfied_by": [
+          "(?i)viewport-matrix"
+        ],
+        "message": "BLOCKED (brief gate): this responsive/multi-device brief does not reference the\nstandard viewport matrix. Cite 'viewport-matrix' (references/viewport-matrix.md,\nmachine-readable lattice in config.json → viewport_matrix) and require the sweep\n(full at acceptance; representative points mid-round).\n"
+      },
+      {
+        "id": "ui-design-skill",
+        "enabled": true,
+        "applies_to": [
+          "creator"
+        ],
+        "triggers": [
+          "(?i)レイアウト|デザイン|UI/?UX|css|\\.tsx|パネル|ビューポート|viewport|layout|design pass|チップ|ボタン|responsive|dock"
+        ],
+        "satisfied_by": [
+          "(?i)ui-ux-pro-max|emil-design-eng|frontend-design|Design directives|\\|\\s*no-ui\\b"
+        ],
+        "_note_satisfied_by_no_ui": "PE-19. The compact header's own `| no-ui` tag (BRIEF:<file>.md | <kind> | no-ui) is one MORE way to satisfy this case -- it is evaluated exactly like every other satisfied_by alternative, against the brief text, content-triggered, with no file fallback. So it does not weaken the case: it is a literal, explicit declaration the creator must actually write, and it does nothing if the brief's own triggers still fire and no design skill (nor this tag) appears. A header carrying `| ui` (or any tag other than `no-ui`) does NOT match this alternative and still requires naming a real design skill.",
+        "message": "BLOCKED (brief gate): this brief touches UI work but names no design skill and no\nDesign-directives section. Every UI brief — including send-backs and addenda — must\nname the design skill(s) the creator invokes (/ui-ux-pro-max, /emil-design-eng,\n/frontend-design) and require a \"Design directives applied\" section in the\ndone-report, OR — only if this brief genuinely does not touch UI — carry the\ncompact header's `| no-ui` tag (BRIEF:<file>.md | <kind> | no-ui). Add one and\nre-send.\n"
+      }
+    ]
+  },
+  "commander": {
+    "_note": "ADDED SECTION (justification: commander-guard's activation modes, marker lookup order and message were hardcoded; they are policy, and the exempt list they share with skill_anchor already had to move to paths.exempt_patterns).",
+    "enabled": true,
+    "marker_lookup_order": [
+      "${CWD}/.claude/state/commander-mode",
+      "~/.claude/state/commander-mode"
+    ],
+    "_note_marker": "First existing path wins (repo override, then global default). The mode is the FIRST LINE only, trimmed and casefolded.",
+    "decision_log": "~/.claude/hooks/logs/commander-guard.jsonl",
+    "max_decision_log_bytes": 2097152,
+    "_note_max_decision_log_bytes": "OWN key, deliberately NOT logging.max_error_log_bytes, even though it ships the same 2 MiB value today. paths.error_log / logging.config_error_log only grow when something is wrong; decision_log grows on every main-chain Write/Edit the guard evaluates, in NORMAL operation -- a different failure mode needs a knob an operator can tune independently, even if nobody has yet. It also uses a DIFFERENT cap function (lib/io.py:append_jsonl_drop_oldest, not append_jsonl): the error logs keep the HEAD (an investigator wants what STARTED a hot-spin) and freeze once capped; a decision-log reader wants the opposite -- 'did commander just block me, and why' is always a question about the newest entries -- so this cap drops whole lines from the FRONT to make room for each new one instead of freezing. No footer, no drop counter: a dropped decision is just an old decision, not a diagnosable fault the way a dropped error-log entry is.",
+    "modes": {
+      "block": "enforce",
+      "log_only": "observe",
+      "inert": "off"
+    },
+    "default_mode_when_unrecognised": "log_only",
+    "_note_default_mode_when_unrecognised": "J2. This is a MODE ID (a key of `modes`), not a mode token. The guard resolves it as modes[default_mode_when_unrecognised] -> 'observe'. It previously held the literal 'observe', duplicating modes.log_only: renaming the vocabulary would have left the fallback pointing at a token that no longer existed, and the guard would have silently fallen through to a mode nobody chose — the same failure class as F-21. Effective behaviour is unchanged: an unrecognised marker value still means observe (log, never block).",
+    "inert_when_no_marker": true,
+    "tools_named": "write_edit_tools",
+    "_note_tools_named": "N-4. Resolves from regex.named_alternations and is anchored by this guard as ^(...)$ — the literal it replaced was a third copy of the same list.",
+    "outside_cwd_is_exempt": true,
+    "empty_file_path_behaviour": "evaluate",
+    "_note_empty_file_path_behaviour": "PARITY, and it is a real divergence between the three Write/Edit guards — preserved, NOT harmonised. commander-guard.ps1 reads tool_input.file_path only; for NotebookEdit the harness supplies `notebook_path` instead, so $file is empty. The empty string matches no exempt pattern, and line 91's outside-cwd exemption is skipped precisely because the path IS blank (`-not [string]::IsNullOrWhiteSpace($file)`), so exempt stays false and the guard BLOCKS every NotebookEdit under enforce mode. deploy-guard.ps1 line 15 and skill-anchor.ps1 line 69 both take the opposite branch and exit 0 on a blank path. Three guards, three behaviours, from the same missing field. Do not fix unasked — see F-16.",
+    "message": "BLOCKED (commander discipline): commander-mode is active, and this session is the\ncommander. You delegate and review -- you do not author deliverables.\n\n  tool: {tool}\n  file: {file}\n\nDispatch a creator subagent with a filled Creator Brief instead\n(briefing-templates.md -> Creator Brief; gate-protocol.md § 1 for the size/gate).\nCoordination stays open to you: reading files and diffs, git inspection, dispatching\nagents, and writing to the scratchpad, .claude/, and plan/contract documents.\n\nIf this really is not commander work, write \"off\" as the first line of:\n  {cwd}\\.claude\\state\\commander-mode\n(the global default lives in ~\\.claude\\state\\commander-mode; the repo file overrides it).\n"
+  },
+  "skill_anchor": {
+    "_note": "ADDED SECTION (justification: the anchor's activation markers, size ceiling and stdout envelope shape were hardcoded; the size ceiling is asserted by test-skill-anchor.ps1 and is policy).",
+    "enabled": true,
+    "list_lookup_order": [
+      "${CWD}/.claude/state/active-skills",
+      "~/.claude/state/active-skills"
+    ],
+    "off_token": "off",
+    "off_token_requires_single_entry": true,
+    "_note_off_token": "PARITY. skill-anchor.ps1 line 58 is `if ($names.Count -eq 1 -and $names[0].ToLower() -eq 'off')` — 'off' disables anchoring ONLY when it is the list's SOLE entry. A list of ['off','ulthar'] does NOT disable anchoring; 'off' is simply treated as a skill name, found to have no ANCHOR.md, and skipped. Preserve exactly.",
+    "comment_prefix": "#",
+    "name_reject_pattern": "[\\\\/:]",
+    "anchor_file_name": "ANCHOR.md",
+    "self_skill_name": "ulthar",
+    "_note_self_skill_name": "The active-skills entry that means THIS skill. Every other entry is looked up only under paths.skills_root; this one additionally falls back to the master clone install.py recorded in <deploy_dir>/deployed-from.txt, because the published install procedure never creates skills_root/ulthar — it says `git clone` (anywhere) then `python hooks/install.py`, so before this fallback existed a user who created the marker exactly as documented got no anchor and no explanation. Compared CASEFOLDED against the marker's entries, and never against the clone's DIRECTORY name: GitHub's default clone dir for this repo is `ULTHAR` while the skill name is `ulthar`, which differ on a case-sensitive filesystem. A fork that renames the skill sets this key; renaming the clone directory changes nothing.",
+    "max_chars": 1200,
+    "truncation_suffix": "\n... (ANCHOR.md truncated -- keep it short)",
+    "join_separator": "\n\n",
+    "plain_stdout_events": [
+      "SessionStart"
+    ],
+    "envelope_key": "hookSpecificOutput",
+    "write_edit_tools_named": "write_edit_tools",
+    "_note_write_edit_tools_named": "N-4. Resolves from regex.named_alternations and is anchored by this guard as ^(...)$.",
+    "write_edit_main_chain_only": true,
+    "write_edit_respect_exempt_patterns": true,
+    "outside_cwd_is_exempt": true,
+    "_note_outside_cwd_is_exempt": "M-5. skill-anchor.ps1 line 70 exits 0 when the target file is not under cwd — the same policy commander expresses via commander.outside_cwd_is_exempt, but it was a bare literal in code with no config home, which violates the section-1 rule that a guard holds no policy literal. It now has one. PE-3 changes exactly this line (StartsWith -> paths.is_under), so leaving it undeclared would have meant an intentional divergence applied to an undocumented policy."
+  },
+  "deploy_guard": {
+    "_note": "ADDED SECTION (justification: acceptance requires the ported guard to cover .py as well as .ps1 — a hole the port itself opens — and the extension list is exactly the kind of policy that must be data).",
+    "enabled": true,
+    "guarded_extensions": [
+      ".ps1",
+      ".py"
+    ],
+    "guarded_names": [
+      "config.json",
+      "deployed-from.txt"
+    ],
+    "_note_guarded_names": "PROPOSED ADDITION, needs PM ack: after the port the deployed ~/.claude/hooks/config.json is also a derived artifact and editing it directly reproduces the exact master/deploy drift this guard exists to stop. Not in the current .ps1 behaviour; listed in CONTRACT.md Findings as F-7.",
+    "_note_deployed_from": "deployed-from.txt (lib.paths.DEPLOY_ORIGIN_FILE) is the deploy dir's TRUST ANCHOR and was left outside this guard when it was introduced. It is the only thing that tells a location-blind deployed runtime where its master lives, so it decides (a) which directory skill_anchor resolves ANCHOR.md from — i.e. which file's text is injected into the model's context — and (b) which path every infra/deploy recovery message tells a locked-out reader to edit and redeploy. A Write/Edit of it therefore redirects the anchor at an arbitrary ANCHOR.md, suppresses it, or falsifies recovery instructions, with nothing else on disk contradicting it. It is not .py, so guarded_extensions could not reach it; it is a fixed name, so it belongs here. GUARDED-FILE SWEEP (2026-09-05): everything else install.py writes into the deploy dir is already covered — the four root files by .py plus config.json, and hooks/lib and hooks/guards ship .py ONLY, so guarded_extensions covers those two trees whole. logs/ holds runtime OUTPUT, not input the runtime trusts, and stays out (it is nonetheless still covered for .py/.ps1 by `recursive`). The `<name>.tmp-deploy` / `<dir>.old-deploy` staging names are transient and cleared by install.py rather than trusted.",
+    "recursive": true,
+    "_note_recursive": "PARITY, not an improvement. deploy-guard.ps1 line 20 tests `$norm -like \"$deployDir\\*.ps1\"`, and PowerShell's -like wildcard `*` matches ACROSS directory separators — so the master already covered the whole deployed tree at any depth, including ~/.claude/hooks/logs/*.ps1. Restricting the port to a named subdirectory list would have been a NARROWING. The rule is therefore: any path under deploy_dir at ANY depth whose extension is in guarded_extensions, or whose file name is in guarded_names, is blocked. `logs/` is included, exactly as the master did. Enumerating subdirs would also have gone stale the moment a new one was added.",
+    "message": "BLOCKED (deploy guard): direct edits to deployed hooks are not allowed.\nEdit the MASTER instead:\n  {master_hooks_dir}/{relative_path}\nthen deploy with:\n  {python_exe} {master_hooks_dir}/install.py\n",
+    "master_unknown_label": "<the ULTHAR clone you installed from>",
+    "_note_message": "{master_hooks_dir} is the clone install.py recorded in <deploy_dir>/deployed-from.txt, plus '/hooks'. It used to be the literal '~/.claude/skills/ulthar/hooks', which is only correct on the machine this skill was written on: the published install procedure clones anywhere and deploys from there, so the message named a directory that does not exist for most readers — and named the DEPLOYED install.py, which cannot redeploy anything (it would take ~/.claude as its skill root). When no record exists, master_unknown_label is substituted instead, so the message says it does not know rather than inventing a path."
+  },
+  "artifact_dirs": {
+    "_note": "Consumed by guards.artifact_hygiene (Stop hook). These directories are gitignored, so `git status` structurally cannot see them.",
+    "enabled": true,
+    "dirs": [
+      ".playwright-mcp",
+      "test-results",
+      "playwright-report"
+    ],
+    "_note_dirs_swept": "The config-generalisation round sweep. Candidate for the same 'one environment's convention' class as deploy_refs/dev_server -- judged and KEPT as a shipped universal default, not moved out: these three names are Playwright's own standard output directories (not this owner's invention), so they are a fact about a widely-used tool, closer to protected_branches' 'main'/'master' than to a hosting-specific branch name. A project using a different E2E tool can ADD its own artifact directory via overlays.project_allowed_paths (this path is listed) without needing this list emptied first.",
+    "grace_minutes": 1,
+    "max_named": 6,
+    "marker_dir": "${TEMP}/claude-artifact-hygiene",
+    "one_fire_per_session": true,
+    "_note_scan": "M-7. `scan_recursive`/`scan_include_hidden` keys used to live here and were read by nothing: the guard always walks recursively and always includes hidden directories, unconditionally, in code -- these keys described a configurable mode that never existed. Deleted rather than left dead. artifact-hygiene-check.ps1 line 47 was `Get-ChildItem -LiteralPath $p -Recurse -File -Force`: -Recurse means the scan descends the WHOLE subtree (not just the top level), -File excludes directories from the count, and -Force INCLUDES hidden and system files. Playwright trace and screenshot output routinely lands in nested and dot-prefixed directories, so a non-recursive or hidden-skipping port would under-report and the guard would fall silent exactly where it matters. Python equivalent (guards/artifact_hygiene.py): Path.rglob('*') filtered to is_file(), with no hidden-file exclusion -- this is unconditional code, not driven by either deleted key.",
+    "marker_written_only_when_found": true,
+    "_note_marker_written_only_when_found": "M-7, ORDERING — load-bearing. artifact-hygiene-check.ps1 writes the once-per-session marker at line 59, AFTER the `if ($found.Count -eq 0) { exit 0 }` early return at line 57. So a session that scans clean does NOT burn its marker and can still fire later in the same session once artifacts appear. Writing the marker on every scan would silently disable the guard for any session whose first Stop happened to be clean. The golden fixture 'QUIET 2nd time (marker)' passes only with this ordering, and its sibling 'FIRE new session' proves the marker is per-session, not global.",
+    "session_id_sanitise_pattern": "[^A-Za-z0-9_-]",
+    "session_id_fallback": "nosession",
+    "message": "Artifact-directory hygiene check (gitignored -- `git status` CANNOT see these):\n\n{found}\n\nThese are invisible to every `git status --short` you and your subagents run, so they\naccumulate silently across a session. Before finishing:\n  - If the numbers/observations they support are already recorded somewhere durable\n    (Linear comment, HANDOFF doc, your report), DELETE them -- the recorded measurement\n    is the lasting artifact, the images are scaffolding.\n  - If something durable references a file by path, keep it and say so explicitly.\nThis check fires once per session; it will not interrupt you again.\n",
+    "found_line_format": "  {dir}/ -- {count} file(s): {names}{more}",
+    "found_more_format": " (+{n} more)"
+  },
+  "dev_processes": {
+    "_note": "ONE copy of the dev-process discovery policy. It was duplicated byte-for-byte between dev-process-hygiene-check.ps1 (Stop hook) and stop-dev-orphans.ps1 (manual CLI); lib/procs.py is now the only implementation and this is the only data.",
+    "enabled": true,
+    "pattern": "run dev|run e2e|wrangler|concurrently|vite|workerd|tail\\.exe.*-f |http\\.server|draw\\.io\\.exe.*--export",
+    "names": [
+      "bash",
+      "sh",
+      "node",
+      "tail",
+      "workerd",
+      "python",
+      "python3",
+      "draw.io"
+    ],
+    "strip_exe_suffix_when_matching": true,
+    "_note_names_swept": "The config-generalisation round sweep. Judged and KEPT: bash/sh/node/tail/workerd/python/python3 are common cross-project dev-tool process names, not one owner's preference. 'draw.io' is the one entry closer to personal convention (an export CLI habit), but by itself it changes nothing observable unless a draw.io.exe process is actually running, so its cost of staying is near zero versus the fixture-rewrite cost of removing it. A project with a different toolset appends via overlays.project_allowed_paths (this path is listed) rather than needing this default pruned.",
+    "_note_names": "ONE list of BASE names, replacing the former windows/posix split (psutil addendum, item 3). psutil reports `name` per platform — 'node.exe' on Windows, 'node' on POSIX — so matching strips a trailing '.exe' from the REPORTED name and compares casefolded against this list. That reproduces the masters exactly on Windows: their $NAMES were bash.exe/sh.exe/node.exe/tail.exe/workerd.exe/python.exe/draw.io.exe, and stripping '.exe' from both sides yields the identical match set. Note 'draw.io' keeps its internal dot — only a TRAILING '.exe' is stripped, so 'draw.io.exe' -> 'draw.io' and not 'draw'. Two lists were kept in sync by hand before; one list plus a normalisation rule is the consolidation the owner asked for. The single effective-set change is 'python3', which the masters never had — see CONTRACT.md PE-12.",
+    "session_root": {
+      "_note": "ulthar-enforcement-round1 (round 4 correction). How dispatch.py / lib/procs.py find THIS session's root process by walking psutil ancestry from the hook process upward. Round 4 fixed a real defect in the round-2/3 one-pass climb: it checked substring-then-name PER ANCESTOR and returned as soon as EITHER matched, so a generic `node` process sitting BETWEEN the hook and the real host (a Vite dev server, an editor's extension host) was accepted by the NAME fallback before the climb ever reached the actual Claude Code host further up. Round 4 instead collects the WHOLE ancestor chain first (up to `max_ancestor_hops`) and runs two FULL passes over it: every ancestor for a `candidate_substrings` match (exe() path + cmdline, casefolded, backslashes normalised to '/') -- the nearest match wins; only if NONE match anywhere in the chain, every ancestor for a `candidate_names` match (bare name, casefolded, trailing '.exe' stripped) -- again nearest wins; only if neither pass finds anything, the nearest non-shell ancestor (`shell_names`) is the last-resort fallback (PM decision: 'とれない場合はフックの直近の非シェル祖先を根とする'). `max_ancestor_hops` bounds the climb so a cycle or a pathologically deep tree cannot hang a dispatch. Session isolation rests entirely on this resolution being correct: a wrong root means a wrong ledger key, which means either missed orphans (root resolved too high, in an ancestor shared with another session) or a leak across sessions (root resolved to something that is not actually this session's own host).",
+      "_note_boundary_is_substring_only": "round 4 correction (separate from root resolution above). The DESCENDANT-WALK boundary predicate (lib.procs._matches_candidate_substrings, used to decide where the ledger's BFS stops descending because it has hit ANOTHER session's own root) uses `candidate_substrings` ONLY -- `candidate_names` is NEVER consulted there. A bare name is precise enough to be a reasonable LAST-RESORT for finding this session's OWN root (nothing better was found anywhere in the ancestor chain), but far too generic to justify stopping descent into an ordinary DESCENDANT: an ordinary Vite dev server is a `node` process, and treating every `node` descendant as a foreign-session boundary would stop the walk from ever reaching the `workerd` process Vite spawns underneath it -- measured as a real capture gap before this correction.",
+      "_note_substrings_not_regex": "Deliberately PLAIN CASE-INSENSITIVE SUBSTRINGS, not regex: the round-1 dev_processes.pattern field is compiled through lib.ctx.compile_text_pattern, which requires the JSON path to be enumerated in config.regex.pattern_fields (config.json's own single-authority rule for every regex in this file, test_contract.py enforced) -- a section outside dev_processes this round's edit scope does not extend to. Three literal substrings (an exe-path fragment and two npm-package-name fragments) need no regex metacharacters to express, so plain `in` containment is both simpler (ponytail: stdlib beats a dependency-widening regex declaration) and keeps this change inside dev_processes.",
+      "_note_desktop_app_fallback_residue": "round 3 (M-1 note). The `candidate_names` FALLBACK still matches the Claude DESKTOP app's own claude.exe by bare name (it has no distinguishing substring configured here) -- kept deliberately, not fixed: the fallback existed before candidate_substrings did, and its failure direction is SAFE. Matching the desktop app as if it were this session's root only means dev_process_hygiene stops one hop too early up an ancestor chain that will not usually contain one anyway (the desktop app is not normally the CLI's own ancestor); it does not cause a cross-session ledger merge or a missed orphan report the way an UNDER-matching root would. Tightening it further (e.g. requiring a substring match for `claude` specifically) is a real option but was not made THIS round -- flagged here rather than silently left, per the review's request to state it rather than fix it.",
+      "candidate_substrings": [
+        ".local/bin/claude",
+        "claude-code",
+        "@anthropic-ai/claude-code"
+      ],
+      "candidate_names": [
+        "claude",
+        "node"
+      ],
+      "shell_names": [
+        "bash",
+        "sh",
+        "zsh",
+        "dash",
+        "ksh",
+        "cmd",
+        "powershell",
+        "pwsh"
+      ],
+      "max_ancestor_hops": 12
+    },
+    "session_ledger": {
+      "_note": "ulthar-enforcement-round1. Replaces a full psutil.process_iter() table scan on Stop with a per-session record of 'processes this session's root ever had as a descendant', built up incrementally on PreToolUse (Bash/PowerShell only) and Stop -- see dispatch.py's ledger-update call. One JSON file per session at <state_dir>/<subdir>/<session_id>.json: {root_pid, root_create_time, entries: {pid: {pid, ppid, name, cmdline, create_time, first_seen}}}. A PID never recorded here is never reported as an orphan, however it looks on the live machine -- that is the whole point (another session's same-named process is invisible by construction, not by a root/cwd filter that could be fooled). `max_entries`/`ttl_sec` bound the file's growth across a long session; round 4 sweeps ledger/.rootfail/.tmp/.append.lock files (a `.json` ledger only when its recorded ROOT is actually dead, never merely by mtime), and never TTL-evicts an entry whose process is still alive, evicting DEAD entries oldest-first once over `max_entries`. round-4 item 6 wraps the read-modify-replace and the sweep's per-file delete decision in lib/io.py's existing append-lock primitive.",
+      "_note_lock_contention_latency": "round 5. The read-modify-replace (update_session_ledger) and the sweep's per-file re-check both take lib/io.py's append lock, whose retry budget is BOUNDED at roughly 0.5s (_APPEND_LOCK_RETRY_ATTEMPTS x _APPEND_LOCK_RETRY_SLEEP_SEC, io.py's own docstring notes Windows' ~15ms timer granularity rounds this nearer 0.4-0.5s in practice) before this update simply gives up and lets the next dispatch retry -- never an unbounded wait on the hook path. Measured NON-CONTENDED (the common case: nothing else holds this session's lock) PreToolUse Bash p95 784ms against the acceptance budget of 1052ms -- the lock adds negligible overhead when uncontended, and the worst case (a genuine collision) is capped at the ~0.5s retry ceiling above, still within budget for a single occurrence.",
+      "_note_double_degradation_residue": "round 6 LOW. Two independent visibility reductions can stack: (1) the _ppid_map()-unavailable fallback (no widening at all, see lib/procs.py's _fallback_descendants), and (2) an unreadable (AccessDenied) node encountered anywhere in the walk (is_root_boundary recorded as null/'unknown', never descended through -- see the round-6 HIGH fix). Inside the fallback specifically, an unknown node's subtree stays invisible for the rest of the session even after that node dies, because the fallback has no widening mechanism to link its children back in the way the main (_ppid_map) path's H-1 widening does. This requires BOTH an unsupported psutil version/platform AND a permission-denied node in the same session to actually occur -- narrow, and accepted rather than closed.",
+      "subdir": "session-procs",
+      "max_entries": 500,
+      "ttl_sec": 86400
+    },
+    "ports": [
+      8788,
+      5173
+    ],
+    "_note_ports_swept": "The config-generalisation round sweep. Judged and KEPT, not moved out, despite being closer to the dev_server offender than artifact_dirs.dirs is: 8788/5173 ARE one owner's specific dev-server ports (Wrangler Pages / Vite defaults), same class as the removed dev-server heap rule. Left in because the blast radius differs materially -- this list backs extensive golden fixtures (dev_process_hygiene, stop_dev_orphans) asserting on these exact numbers in message text, and it is informational (which ports a cleanup script reports/frees), never a BLOCK condition the way deploy_refs/dev_server are; a wrong or absent port here degrades a diagnostic message, it does not misfire a gate. Reported per the brief's ask rather than silently left. A project with different ports appends via overlays.project_allowed_paths (this path is listed) instead of needing this default changed.",
+    "ports_join": "/",
+    "_note_ports_join": "M-6. The masters render the port list as the literal string '8788/5173' inside two messages (dev-process-hygiene-check.ps1 line 45 and stop-dev-orphans.ps1 line 37's 'ports 8788/5173 free'). Config holds an array, so the join separator has to be pinned or the ported message diverges from the master by punctuation alone — and CONTRACT section 6 step 6 now compares stderr, so a ', ' instead of a '/' would fail parity. '/' reproduces both messages exactly. {ports} in any message means str(ports_join).join(str(p) for p in ports).",
+    "max_listed": 12,
+    "cmdline_truncate": 110,
+    "discovery": {
+      "strategy": "psutil",
+      "attrs": [
+        "pid",
+        "ppid",
+        "name",
+        "cmdline"
+      ],
+      "cmdline_join": " ",
+      "_note": "SINGLE code path (owner decision 2026-09-04, superseding OWNER-CONFIRMED item 4's 'OS branching, no external deps'). psutil.process_iter(attrs) is cross-platform and reports ppid and cmdline on both, which is exactly what the orphan predicate needs and what tasklist could never supply. The Windows Get-CimInstance branch and the POSIX `ps` output parser are BOTH DELETED, along with their two output parsers — this is a consolidation, not a third alternative. There is deliberately NO FALLBACK: a silent fallback would mean two behaviours to test and a guard that can quietly change semantics, which is the failure mode this whole port exists to remove. If psutil is missing the dependency check fails loudly (see CONTRACT.md I-13). psutil reports cmdline as a LIST; it is joined with cmdline_join before matching `pattern`, so the regex sees the same flat string the masters matched against.",
+      "iter_error_policy": "skip_process",
+      "_note_iter_error_policy": "psutil raises NoSuchProcess (process exited mid-iteration — routine, the table is a moving target), AccessDenied (another user's or a protected process) or ZombieProcess per PROCESS. These are caught per iteration and that process is skipped, never aborting the sweep: one unreadable system process must not stop orphan detection. Distinct from a failure of psutil itself, which is loud."
+    },
+    "hygiene_message": "Dev-process hygiene check: {count} ORPHANED tool process(es) (parent already dead):\n\n{lines}{more}\n\nThese keep git handles open, squat ports {ports} and burn CPU. Before finishing, run:\n  {python_exe} \"{deploy_dir}\\stop_dev_orphans.py\"\nthen re-check with `Get-Process bash,tail,workerd`. Rule: every tool started for a task\n(dev server, e2e server, tail, export CLI) is stopped -- whole chain, not just the parent --\nwhen that task's verification is done.\n",
+    "hygiene_line_format": "  PID {pid} {name}: {cmdline}",
+    "hygiene_more_format": "\n  (+{n} more)",
+    "stop_orphans": {
+      "settle_seconds": 1,
+      "kill_strategy": "psutil",
+      "terminate_first": true,
+      "terminate_grace_seconds": 3,
+      "_note_kill": "psutil replaces Stop-Process -Force. Sequence: proc.terminate() on the whole target set, then psutil.wait_procs(grace=terminate_grace_seconds), then proc.kill() on whatever survives. The masters went straight to -Force (SIGKILL-equivalent); terminate-then-kill is gentler and lets vite/wrangler flush, while the kill fallback preserves the master's guarantee that the chain actually dies. Per-process NoSuchProcess (already gone — the common case when killing a tree) and AccessDenied are caught and reported per PID in the existing 'skip <pid> <name>: <reason>' line, matching the masters' try/catch output shape.",
+      "port_check_strategy": "psutil_net_connections",
+      "port_check_degraded_message": "ports {ports}: status unavailable (psutil.net_connections: {error}) -- check manually",
+      "_note_port_check": "Replaces `netstat -ano | Select-String ':8788|:5173' | Select-String LISTENING`. Uses psutil.net_connections(kind='inet') filtered to status == 'LISTEN' and laddr.port in ports. PRIVILEGE CAVEAT, specified rather than left to fail open: on Windows psutil.net_connections() can raise AccessDenied when it cannot map connections to owning PIDs without elevation, and on macOS it requires root. On AccessDenied the CLI prints port_check_degraded_message and exits NON-ZERO-free but explicitly degraded — it must NOT print ports_free_message, because reporting 'ports free' when the check could not run is a false all-clear, and this helper exists precisely to confirm the ports were released. The kill result itself is unaffected; only the confirmation step degrades.",
+      "no_targets_message": "no dev orphans",
+      "ports_free_message": "ports {ports} free",
+      "still_listening_message": "still LISTENING:"
+    }
+  },
+  "viewport_matrix": {
+    "_note": "Absorbed VERBATIM from references/viewport-matrix.json. The inner key shape (widths / heights / aspectRange / breakpointDeltaPx / projectBreakpointsNote / quickCheckPresets / invariants) is FROZEN and byte-compatible with the retired file, because live external consumers readFileSync it — see CONTRACT.md §10 'Consumer migration' and Finding F-13. Do NOT rename or restructure these inner keys: their only migration cost must be a path change plus one property hop (`json.viewport_matrix`). references/viewport-matrix.md remains the human doc and is updated to point here as the machine-readable source. Retirement of the standalone .json is BLOCKED on the owner approving the consumer patch in §10.",
+    "widths": [
+      360,
+      390,
+      420,
+      555,
+      640,
+      768,
+      844,
+      1000,
+      1280,
+      1366,
+      1440,
+      1920,
+      2020,
+      2400,
+      2560
+    ],
+    "heights": [
+      390,
+      450,
+      700,
+      800,
+      844,
+      1080,
+      1347,
+      1440
+    ],
+    "aspectRange": {
+      "min": 0.25,
+      "max": 4.0
+    },
+    "breakpointDeltaPx": 1,
+    "projectBreakpointsNote": "Add each project breakpoint b as widths b-1 and b (e.g. 1023, 1024).",
+    "quickCheckPresets": [
+      {
+        "name": "sp-portrait",
+        "width": 390,
+        "height": 844
+      },
+      {
+        "name": "sp-landscape",
+        "width": 844,
+        "height": 390
+      },
+      {
+        "name": "tablet",
+        "width": 768,
+        "height": 1024
+      },
+      {
+        "name": "laptop",
+        "width": 1366,
+        "height": 768
+      },
+      {
+        "name": "fhd",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "wqhd",
+        "width": 2560,
+        "height": 1440
+      }
+    ],
+    "invariants": [
+      {
+        "id": "no-unintended-scroll",
+        "desc": "scrollHeight <= viewport +/-1px when the design is zero-scroll; otherwise no unplanned overflow"
+      },
+      {
+        "id": "crop-zero",
+        "desc": "no element cropped/clipped except documented intentional peeks"
+      },
+      {
+        "id": "overlap-zero",
+        "desc": "no unintended element overlap"
+      },
+      {
+        "id": "collapse-consistency",
+        "desc": "responsive collapse/expand state matches its condition (icon iff full control cannot fit)"
+      },
+      {
+        "id": "no-unjustified-shrink",
+        "desc": "content is not shrunk while headroom exists on the constraining axis"
+      },
+      {
+        "id": "no-dead-gap",
+        "desc": "unused gap between principal regions stays under the stated max"
+      },
+      {
+        "id": "touch-target-44",
+        "desc": "interactive targets >= 44px"
+      }
+    ]
+  },
+  "grants": {
+    "_note": "OWNER GRANTS -- the generalisation of the delete rule's pm_allowlist to every rule any guard enforces. A grant is ONE EMPTY FILE, created by the OWNER, whose path under `dir` IS the rule identifier: <dir>/<dotted config path>/<rule id>, e.g. ~/.claude/state/ulthar-grants/git_policy.force_push/push-force. That is the SAME addressing the overlay `disable` operation uses (overlays._note_disable), deliberately -- one syntax, two lifetimes: an overlay `disable` is STANDING and scoped to a repository (or to the user's own machine, in the user overlay); a grant is scoped to this machine and CONSUMED THE FIRST TIME IT IS USED. If you want a rule off permanently, that is not a grant, it is a `disable` in your user overlay -- and saying so is the whole reason no session-scoped or standing grant exists here. Consulted by a guard at the moment it would BLOCK: it takes the file (see `_note_claim` for what decides the winner of a race -- NOT os.remove, which was measured double-succeeding on Windows) and lets that ONE call through, then the next identical call blocks again. `main_chain_only` is not negotiable per-grant: a grant never applies to a subagent whatever it names. Every consumption is logged to `log` with the rule id and what it permitted; a grant that was never used is observable as the file still sitting there.",
+    "_note_self_grant": "THE POINT OF `protected`, and the reason this section exists at all rather than just a second copy of pm_allowlist. The owner's words are 'when the USER has permitted it'. A grant file that the AGENT can create does not establish that -- it is the agent permitting itself, which is what repeatedly happened with pm-delete-allow (it lives under ~/.claude/state, which paths.exempt_patterns exempts, so the commander could Write it and then consume it in the same turn). On a single-user machine the author of a file cannot be authenticated, so the answer has to be structural: every file that carries the owner's permission is UNWRITABLE BY EVERY AGENT, commander included -- guards/grant_files.py blocks the Write/Edit tools, command_rules.tool_discipline/authority-file-in-shell blocks the shell. WHAT THIS DOES NOT GUARANTEE is written out in docs/DESIGN.md and is not hidden here: it does not authenticate anyone, and an agent that assembles the path from pieces in a shell command, or that persuades the owner to run a command they do not understand, still gets through. What it removes is the OBVIOUS path -- self-granting now requires deliberate evasion rather than being the natural next tool call. Visibility was considered as an alternative and rejected: a log line is written after the file is already deleted and the force-push already pushed, so it can only tell the owner what was done to them, never let them decide.",
+    "enabled": true,
+    "dir": "~/.claude/state/ulthar-grants",
+    "main_chain_only": true,
+    "log": "~/.claude/hooks/logs/grants.jsonl",
+    "max_log_bytes": 2097152,
+    "permitted_truncate": 300,
+    "claim_suffix": ".claim",
+    "claim_stale_sec": 5,
+    "_note_claim": "WHO WINS A RACE for one grant. The obvious answer -- 'os.remove is atomic, so only one of two racing tool calls can consume the file' -- is FALSE on Windows, and it was measured before it shipped rather than assumed: two threads racing os.remove() on the same path, 300 trials, BOTH reported success in 144 of them (48%); see tests/test_grants.py::check_consume_primitive_is_exactly_one_winner. Same class of Windows surprise recorded for os.replace in guards/tool_discipline.py:_reclaim_stale_lock, and it would have meant two concurrent calls both granted by ONE grant file about half the time they raced -- the double-spend a ledger lock exists to prevent, reintroduced by the design that was supposed to need no lock. The winner is therefore decided by `os.open(<grant><claim_suffix>, O_CREAT|O_EXCL)` -- exactly one winner in 300/300 trials in the same harness -- and only the claim winner removes the grant. `claim_stale_sec` bounds the one residue: a marker outlives its creator only if that process died mid-consume (microseconds), and without a reclaim that residue would make one identifier silently ungrantable forever -- validate() cannot report a stray marker as an error, because a marker legitimately exists during any other process's consume.",
+    "_note_log": "OWN key, like commander.max_decision_log_bytes: this log grows only when a grant is actually used, and an operator asking 'what did my grant let through' wants the record intact, so it uses lib/io.py:append_jsonl (keep the head, freeze at the cap with a drop counter) rather than the decision log's drop-oldest. `permitted_truncate` bounds the one payload-derived field -- the command or file path the grant permitted -- so a pathological command cannot fill the cap on its own. That field is deliberate: an audit line saying only WHICH rule was exempted, and not what it let happen, is not an audit line.",
+    "never_exempt": [
+      "command_rules.tool_discipline/delete-outside-disposable",
+      "command_rules.tool_discipline/authority-file-in-shell"
+    ],
+    "_note_never_exempt": "Rules that neither a grant NOR an overlay `disable` may switch off; a grant file or an overlay entry naming one is refused loudly at dispatch time, exactly like one naming a rule that does not exist. THE OVERLAY HALF WAS MISSING UNTIL 2026-09-06 (lib/ctx.py:_refuse_never_exempt): `command_rules.tool_discipline` is in overlays.project_allowed_paths, so a cloned repo could switch off `authority-file-in-shell` PERMANENTLY by shipping one overlay file -- the same power a grant is refused, with a longer lifetime. Both arguments below are about the RULE, not about the lifetime, so they apply verbatim. ENFORCED ON BOTH LAYERS, the user's own overlay included: this rule matches a command that NAMES the file, so `cp x ~/.claude/` or `tar -xf -C ~/.claude` (destination directory only) materialises a user overlay exactly as easily as a project one -- 'it is the owner's own file' is not a structural property here. THIS LIST IS ITSELF PINNED: it is not in overlays.list_merge, so it merged by REPLACEMENT, and the user layer has no path restriction -- `{\"grants\": {\"never_exempt\": []}}` in a user overlay would have handed back both the disable route and the grant route (lib/grant.py:validate reads the MERGED cfg). An overlay that changes it is refused loudly. The owner's way to switch these two off is `enabled: false` in THIS file, which no overlay can reach. The owner's standing decision that a project overlay may weaken ORDINARY rules is untouched. `authority-file-in-shell` is here because a grant that switched it off would be a grant that authorises writing grants -- the mechanism would close over itself. `delete-outside-disposable` is here for a different reason: a whole-rule one-shot on it is strictly COARSER than the pm_allowlist grant that rule already has (any path in that one command, instead of the exact paths the owner listed), and the path scoping is the entire reason that mechanism exists -- so the delete rule keeps its own, unchanged, and this one refuses the blunt form. NOTE the Write/Edit half of the protection (guards/grant_files.py) needs no entry here: it is not a rule in a config rule list, so it has no identifier a grant could name -- it is unaddressable by construction.",
+    "hint": "\nThe OWNER (not you) can permit this one call by creating an empty file at:\n  {grant_path}\nfrom an editor or a terminal outside this session -- every agent, including the\ncommander, is blocked from writing there, which is what makes the file mean the owner\npermitted it. It is consumed the first time it is used (the next identical call blocks\nagain), never applies to a subagent, and every use is logged to {log}.\nIf this rule should be off for good, that is not a grant: disable it in your overlay\n(\"disable\": [\"{ident}\"]).\n",
+    "hint_subagent": "\n(A grant exists for this rule at {grant_path} and was NOT used: grants never apply to a\nsubagent, only to the main chain. It is still there; the commander can run this call.)\n",
+    "protected": [
+      {
+        "id": "grants-dir",
+        "ref": "grants.dir",
+        "why": "the owner grant directory -- a file here IS a permission"
+      },
+      {
+        "id": "pm-delete-allow",
+        "ref": "command_rules.tool_discipline[].pm_allowlist.file",
+        "why": "the owner's pre-authorised delete paths"
+      },
+      {
+        "id": "user-overlay",
+        "ref": "overlays.user_path",
+        "why": "the user overlay -- it can disable any rule, standing"
+      },
+      {
+        "id": "project-overlay",
+        "ref": "overlays.project_path",
+        "why": "the project overlay -- it can disable any rule at overlays.project_allowed_paths, standing"
+      }
+    ],
+    "_note_protected": "Each entry names its target by REFERENCE to the one place that value already lives, never by restating the path -- `ref` is the dotted form config.json already uses for regex.pattern_fields, including the `[]` element step, so moving pm_allowlist.file or overlays.user_path moves the protection with it instead of silently leaving it pointed at the old path. The user overlay is on this list for the same reason the grant directory is, and it is the more urgent of the two: it merges with NO path restriction, so a single Write of {\"disable\": [\"git_policy.force_push/push-force\"]} there would turn a rule off permanently -- a bigger self-grant than any one-shot. Both overlay files stay hand-editable BY THE OWNER, which is how they were always meant to be written.",
+    "protected_message": "BLOCKED (owner authority): this file carries the OWNER's permission over ULTHAR's own\nrules, so no agent may write it -- not a subagent, not the commander.\n  file: {file}\n  why:  {why}\nAn agent that can create its own permission is not being permitted by anyone. Tell the\nowner exactly which file and which one line you need, and let them write it from an\neditor or a terminal outside this session.\n"
+  },
+  "overlays": {
+    "_note": "The config-generalisation round. ADDED SECTION -- the plugin layer for policy this round exists to build. ULTHAR ships the mechanism (this section, plus lib/ctx.py:merge_overlays) and universal rules (everything else in this file); WHOSE rules an individual json path holds comes from OUTSIDE ulthar, via the two files named below. Consumed once per dispatch, in dispatch.py's main(), immediately after load_config() and inside its OWN try/except -- a bad overlay is treated exactly like a bad config.json (BLOCK, exit 2, logged to logging.config_error_log, never a silent per-guard fail-open), but it gets its own recovery text (dispatch.infra_recovery.overlay), because 'redeploy the master' is the wrong instruction for a file that is neither under hooks/ nor in git. A malformed overlay ENTRY is caught in TWO places, and the split is the point. (1) At merge time the merge refuses any entry whose shape it can DERIVE -- a declared list's element schema, a section merged with a section, an undeclared list replaced with the wrong element shape (see _note_project_allowed_paths (2)). (2) Shape is structure only, so a STRUCTURALLY VALID entry with a semantically wrong VALUE still reaches its guard -- a tool_discipline append carrying `target: \"bogus\"` passes every merge check and then KeyErrors inside the guard. That one is caught by its CONSEQUENCE instead: while ANY overlay is merged, a guard that raises BLOCKS and names the overlay file rather than being turned into ALLOW by the dispatcher's fail-open (dispatch.py:_attribute_to_project_overlay). So the claim is not 'no guard is ever handed content it cannot handle' -- it is that no such content can end as a SILENT allow. This is deliberate: an overlay that silently degraded to 'ignored' on error would be exactly the hollowing-out this whole project exists to remove — a rule nobody can see is gone.",
+    "enabled": true,
+    "user_path": "~/.claude/ulthar-overlay.json",
+    "project_path": "${CWD}/.claude/ulthar-overlay.json",
+    "_note_paths": "TWO layers. `user_path` (under the user's OWN ~/.claude) is as trusted as this file -- the user owns both -- so it is deep-merged with no ALLOWLIST restriction: it may add, replace or remove anything at any declared path EXCEPT the four sections named in `pinned_paths` below (dispatch, grants, regex, overlays), and subject to the container rule that a rule LIST may only be merged with a list and a section only with a section. Those two bounds are not about trusting the owner less: they are the difference between a file the owner wrote and a file an agent materialised there with `cp`/`tar -C`/`git clone`, which the shell rule cannot see because it names no path. Everything else is the same as editing this file directly would be, and it gets the same explicit `disable` operation. `project_path` (inside the repo the agent is working in, resolved against the PAYLOAD's cwd, expanded via lib/paths.expand exactly like every other ${CWD}-rooted path in this config) states the REPO's policy, and that policy wins while you work in that repo: it may add rules at `project_allowed_paths` and may `disable` named rules there, including rules that were protecting you. That is deliberate (see `_note` and `_note_project_allowed_paths`). It is bounded in two ways only, neither of which second-guesses the repo's policy. (a) SCOPE: `project_allowed_paths` lists the RULE lists; the rest of this file is ULTHAR's own wiring (paths.python_exe, dispatch.events, logging.*, overlays.*), and a cloned repo repointing the interpreter the hooks run under, or the log they write to, is not policy at all -- it is the repo rewriting the guards that judge it. (b) SHAPE: an entry appended to a declared list must have the shape that list's existing entries have (a scalar list is homogeneous; an append_by_id entry carries at least the keys every existing entry carries, with the same types), and a violation is refused at merge time naming the OFFENDING FILE and the offending dotted path. (b) binds the user layer too, as a correctness check rather than as a boundary: a wrong type there is always a typo, never a policy.",
+    "_note_absent": "Absent is the common case and must stay cheap and silent: both paths are checked with a single os.stat() each: a missing file is not an error, produces no log line, and costs one failed stat() call on the hot PreToolUse path -- negligible next to load_config's own os.stat()+open() on config.json itself, and no json.load() is attempted for a file that is not there.",
+    "list_merge": {
+      "_note": "Per-JSON-path merge strategy AND element shape for every path an overlay may touch, so 'append vs replace' and 'what a valid entry looks like' are both DATA, not something a creator infers from the field's shape. A value is either a bare strategy string (the element shape is then DERIVED from the entries this file already ships at that path) or an object {\"strategy\": ..., plus a declared shape}, which is what a list that ships EMPTY needs -- there is nothing there to derive from. 'append': the value at this path must be a list of PLAIN scalars (strings/ints); overlay items are appended after the base list, in layer order (base, then user, then project), and an item ALREADY PRESENT (by `==` equality) is a silent no-op, not a duplicate -- an overlay restating an existing entry is not an error, it is just redundant. TYPE RULE, and it applies to the USER layer too: an 'append' list is HOMOGENEOUS, and an item whose type differs from the type the base list already holds -- or, for a list that ships empty, from the declared `element` -- is a ConfigError naming the overlay file and the dotted path (lib/ctx.py:_check_scalar_conforms). Putting the string '8080' into `dev_processes.ports`, which holds ints, is refused at load, by install.py at deploy time and by the dispatcher at the next tool call; so is the integer 5 in `git_policy.deploy_refs`, which git_discipline feeds to re.escape(). Either used to merge silently and then never match anything, or raise inside a guard and be converted to ALLOW by the fail-open. This is a deliberate BEHAVIOUR CHANGE to the fully-trusted user layer, made because a wrong type there is always a typo and never a policy. 'append_by_id': the value must be a list of OBJECTS each carrying an `id` key (exactly the shape command_rules.tool_discipline/dev_server, git_policy.destroyers/blanket_staging/hook_bypass/force_push and design_cases.cases already use); overlay items are appended the same way, but an overlay item whose `id` MATCHES an id already present at that path (from the base config OR an earlier-merged user layer) is REFUSED: an id identifies a rule and must stay unique, so a redefinition is ambiguous rather than forbidden. To switch the existing rule off, say so explicitly with the top-level `disable` list (see _note_disable) and give any replacement entry its own id. SHAPE RULE for append_by_id: an appended entry must carry at least the keys EVERY existing entry at that path carries, and for each of those keys a value of the same type, wherever the existing entries agree on one (lib/ctx.py:_object_schema). The existing entries ARE the schema, so it cannot drift from this file as this file grows -- unlike a hand-written required-key table, which is the objection that made validation look unattractive the first time. EMPTY BASE LISTS -- the case with no entries to derive from -- are not waved through: an append to a list that ships empty and declares no shape is REFUSED outright, naming the path, the overlay file and what to declare. The two paths that ship empty are exactly the two documented extension points (git_policy.deploy_refs, command_rules.dev_server) and both declare their shape below, so the shipped examples/user-overlay.example.json and examples/project-overlay.example.json still merge. A new empty list added here without a declared shape is un-appendable rather than un-validated: refusal is the safe default, and the error says exactly what to add. Every path here is one this file itself declares as a list at that exact location; a mismatch (overlay supplies a list where cfg has a dict, or vice versa) is also a ConfigError.",
+      "git_policy.deploy_refs": {
+        "strategy": "append",
+        "element": "str",
+        "_note": "Ships EMPTY (the owner-specific preview-branch names moved to examples/user-overlay.example.json), so the element type is DECLARED here rather than derived from entries that no longer exist. guards/git_discipline.py feeds each entry to re.escape(), which raises TypeError on a non-string -- a guard crash, hence a fail-open, and exactly the bypass that treating an empty base list as 'accepts anything' allowed."
+      },
+      "git_policy.protected_branches": "append",
+      "command_rules.dev_server": {
+        "strategy": "append_by_id",
+        "required_keys": [
+          "id",
+          "enabled",
+          "type",
+          "target",
+          "pattern",
+          "requires",
+          "message"
+        ],
+        "_note": "Ships EMPTY and is THE documented extension point users are expected to use, so it must stay appendable -- hence a declared required-key list rather than the refusal an undeclared empty list gets. These are exactly the keys guards/dev_server.py reads for its one rule type (regex_require); an entry missing any of them raises inside the guard. Adding a second rule type there means revisiting this list, which is the standing cost of the one path that cannot derive its own schema."
+      },
+      "command_rules.tool_discipline": "append_by_id",
+      "git_policy.destroyers": "append_by_id",
+      "git_policy.blanket_staging": "append_by_id",
+      "git_policy.hook_bypass": "append_by_id",
+      "git_policy.force_push": "append_by_id",
+      "design_cases.cases": "append_by_id",
+      "artifact_dirs.dirs": "append",
+      "dev_processes.names": "append",
+      "dev_processes.ports": "append"
+    },
+    "project_allowed_paths": [
+      "git_policy.deploy_refs",
+      "git_policy.protected_branches",
+      "command_rules.dev_server",
+      "command_rules.tool_discipline",
+      "git_policy.destroyers",
+      "git_policy.blanket_staging",
+      "git_policy.hook_bypass",
+      "git_policy.force_push",
+      "design_cases.cases",
+      "artifact_dirs.dirs",
+      "dev_processes.names",
+      "dev_processes.ports"
+    ],
+    "pinned_paths": [
+      {
+        "id": "dispatch",
+        "ref": "dispatch",
+        "why": "it decides which guards are ROUTED at all, so emptying one event's list switches every guard on that event off without disabling anything"
+      },
+      {
+        "id": "grants",
+        "ref": "grants",
+        "why": "it is the owner-authority mechanism itself -- which files no agent may write, which rules nothing may exempt, where a grant lives, and the message text a guard formats"
+      },
+      {
+        "id": "regex",
+        "ref": "regex",
+        "why": "it holds the named alternations guard routing resolves through and the per-platform compile flags, so a rewrite unroutes or defangs a guard without naming it"
+      },
+      {
+        "id": "overlays",
+        "ref": "overlays",
+        "why": "it is the merge mechanism, this list included -- an overlay able to rewrite it would have every path on it for free"
+      }
+    ],
+    "_note_pinned_paths": "2026-09-06, final review round 2. The SUBTREES no overlay may change, in EITHER layer -- enforced by lib/ctx.py:_refuse_pinned_paths against a REWRITE (base subtree value vs merged subtree value) and against a `disable` whose left half IS a pinned prefix or starts with '<prefix>.' (a disable removes an entry from any dotted list and runs AFTER the merge, so a value comparison alone would not see it). Read from the BASE cfg, so an overlay cannot empty the list on its way past; `overlays` being one of the four is what pins this list itself. WHY SUBTREES AND NOT A LIST OF LEAVES. Round 1 pinned four leaves (dispatch.events, grants.protected, grants.never_exempt, overlays.pinned_paths). The review then measured FIVE more single-overlay switch-offs that the leaf list did not reach, every one of them rc=0 on a Write of a grant file that is rc=2 with no overlay: {\"disable\":[\"dispatch.events.PreToolUse/None\"]} (a CHILD path -- entries carry no id, so _entry_id yields the string 'None' and the whole chain is removed); {\"regex\":{\"named_alternations\":{\"write_edit_tools\":\"__never__\"}}} (the Write/Edit chain routes through that name, so nothing runs); {\"grants\":{\"enabled\":false}} (guards/grant_files.py returns ALLOW immediately, so all four protected files become writable INCLUDING the user overlay, which makes it permanent); {\"grants\":{\"dir\":\"...\"}} (the Write half follows grants.dir while this file's authority-file-in-shell pattern holds the literal, so a repointed directory was reachable through the shell and the grant was honoured end-to-end); and {\"grants\":{\"protected_message\":5}} (grant_files formats it with .replace(), so a non-string is an AttributeError -> the dispatcher's fail-open -> ALLOW). Enumerating leaves is chasing instances of a class. The class is: a path that is NOT A RULE but decides what a rule can do. Those live in exactly four sections, and pinning the section closes the ones nobody has thought of yet -- including the scalar-type case, which shape validation does not cover (it validates LIST entries; every scalar a guard reads with a type assumption is the same shape of bug). THE ARGUMENT for pinning the user layer at all is unchanged and is about materialisation rather than trust: `cp x ~/.claude/`, `tar -xf -C ~/.claude`, `git apply`, `git clone` all reach the user overlay without naming it, so 'it is the owner's own file' is not a structural property. WHAT AN OWNER LOSES, stated because it is more than round 1 took: from an overlay they can no longer reroute guards, re-list the protected files, change either carve-out, move the grant directory, turn the grant mechanism off, or EXTEND regex.named_alternations (adding a new edit-style tool name is a legitimate use and it is now refused from an overlay -- the owner's call to revisit, not a bug). WHAT THEY KEEP: all six in THIS file, which no overlay can reach and which install.py re-registers the hooks from. Everything outside the four sections stays overlayable, logging.* and paths.* included, and every RULE list stays appendable and disableable from both layers -- the owner's standing decision that a project overlay may weaken ordinary rules is untouched. ONE CONSEQUENCE WORTH NAMING: authority-file-in-shell's pattern holds the literal `ulthar-grants` rather than deriving it from grants.dir. Deriving would be new machinery (regex.named_alternations is for *_named REFERENCES at routing and guard sites, not for interpolation inside a rule's pattern), and it is no longer needed: grants.dir is inside the pinned `grants` subtree, so the literal cannot drift away from it.",
+    "_note_project_allowed_paths": "The RULE PATHS, and therefore the line between project policy and ULTHAR's own wiring. It is no longer a non-weakening boundary -- a project overlay may switch rules off here (see `_note_disable`), which is the owner's decision and the model this file now describes. What it still does is say WHICH json paths hold rules a project has any business having an opinion about. A path not in this list -- logging.max_error_log_bytes, thresholds, paths.python_exe, dispatch.events, deploy_guard, overlays.* -- is refused with ConfigError naming it, for both an append and a `disable`. The reason is the tool's own integrity, not doubt about the repo's policy: those keys decide which interpreter the hooks run under, which guards are routed at all, where the evidence is written, and whether the deployed runtime can be edited from inside a cloned repo. A repo setting them is not stating a policy about its own development, it is rewriting the guards that judge it -- and deploy_guard in particular protects the deployed copy of every guard, so disabling it from inside a repo would let that repo replace the whole mechanism, including this restriction. Everything a repo can actually express about how work is done in it is a rule at one of these paths, and every one of them is both appendable and disableable -- including command_rules.tool_discipline/delete-outside-disposable and git_policy.destroyers/*, which are the rules that protect untracked files. WHAT IS STILL GUARANTEED, and it is now about ACCIDENTS rather than about permission: (a) merge-time SHAPE VALIDATION (lib/ctx.py:_merge_list, _object_schema, _check_scalar_conforms) refuses an entry whose shape the consuming guard could not read, so no guard is ever handed content it will crash on and the dispatcher's fail-open cannot be used to remove a guard wholesale; the schema is DERIVED from this file's own entries at that path, so it cannot drift as this file grows, and a list that ships empty declares its shape beside its strategy in `list_merge`. (b) a `disable` naming nothing existing is refused, so a typo cannot leave the author believing a rule is off when it is on, or the reverse. (c) every overlay failure names the overlay FILE it came from whatever the underlying exception type (lib/ctx.py:_merge_layer), because the recovery text tells the reader to delete that file and must never point at nothing. (d) guard-time source attribution (dispatch.py:_attribute_to_project_overlay) remains as the backstop for the case shape validation cannot reach -- a structurally valid entry whose VALUE is wrong for the consuming guard (`target: \"bogus\"`, whose `probes[target]` raises KeyError). It BLOCKS naming the overlay file instead of failing open. It is not a boundary and must not be re-promoted to one; the guard is NEVER re-run (an earlier design did, and a marker file vanishing between the two runs made an innocent overlay look guilty and locked the operator out -- documented at length in dispatch.py:_attribute_to_project_overlay). WHAT IS NOT GUARANTEED, stated plainly: a project overlay CAN leave you with fewer rules than your own config gives you, and can cause a DENIAL (a repo shipping a broken overlay blocks tool calls in that repo, loudly, with its own path in the message). The first is the policy; the second is the failure mode, and both are visible.",
+    "_note_disable": "HOW A RULE IS SWITCHED OFF, and the only way it can be. TWO RULES ARE EXCLUDED FROM IT ENTIRELY: everything named in grants.never_exempt is refused here as well as to a grant file, from BOTH layers -- see lib/ctx.py:_refuse_never_exempt and grants._note_never_exempt for the argument, which is that those rules are not policy about a repository, they are what decides what a repository may do. An overlay (either layer) may carry a top-level `disable` key: a list of \"<dotted config path>/<rule id>\" strings, e.g. {\"disable\": [\"git_policy.destroyers/clean\", \"git_policy.force_push/push-force\"]}. The left half is exactly the dotted path used by `list_merge` and `project_allowed_paths`; the right half is the entry's `id` for an object list, or the scalar itself for a plain list (\"git_policy.protected_branches/main\"). A dotted path never contains '/', so the FIRST '/' splits it, and a ref-shaped id (\"release/1.0\") stays addressable. Implemented in lib/ctx.py:_collect_disables/_apply_disables: the named entry is REMOVED from its list after every layer has merged, so exactly one rule stops applying and every sibling entry in the same list -- and every other rule in the same guard -- keeps enforcing. That blast radius is the whole point: what this operation replaces is a malformed entry crashing a guard, which removed everything that guard enforced, silently. FAILURE IS LOUD: an identifier that matches no rule (a typo, or a rule that has since been renamed) is a ConfigError naming the overlay file, the path and the ids that ARE there -- a `disable` that silently switched nothing off would be the same invisible failure. So is a malformed identifier, and, for a PROJECT overlay, one naming a path outside `project_allowed_paths`. Every one of those is checkable without running a guard. VISIBILITY: when a PROJECT overlay disables anything, dispatch.py logs it to logging.config_error_log (phase `overlay_disable`, with the overlay path and the ids) and states it in the operator's context. Both fire on FIRST ENCOUNTER -- the first dispatch of the session that sees those disables, whatever event it is -- and then not again for that session and that set of ids. They were gated on `event == \"SessionStart\"` until 2026-09-06, which meant a session that started outside the repository and later entered it, or one whose overlay appeared after startup, honoured the disables from the very next tool call while recording them nowhere and saying nothing, with no later SessionStart guaranteed -- the silent removal this model was rebuilt to prevent, mechanism changed and invisibility intact. The CADENCE is what must not change: printing on every tool call would train the reader to ignore the notice and would push real entries out of a size-capped log. \"Once\" therefore lives on disk (dispatch.py:_overlay_notice_marker -- a digest of session id + overlay path + disabled ids, under paths.logs_dir/overlay-notice, expiring after a day), beside the logs deliberately: the marker is unwritable exactly when the log write is, and when it cannot be recorded the notice REPEATS rather than disappearing. The context notice rides the same JSON envelope skill_anchor uses (raw text only on skill_anchor.plain_stdout_events) and is attached only when no guard in the chain emitted stdout itself, since a second emitter would corrupt the first one's envelope.",
+    "example_note": "Two worked examples ship as documentation, never as live defaults: examples/user-overlay.example.json (the two former shipped offenders -- git_policy.deploy_refs and command_rules.dev_server -- restored as a USER overlay) and examples/project-overlay.example.json (a project adding a restriction of its own AND disabling one of ULTHAR's by id -- the two things a project overlay may do). Copy the relevant one to overlays.user_path / overlays.project_path and edit."
+  }
+}

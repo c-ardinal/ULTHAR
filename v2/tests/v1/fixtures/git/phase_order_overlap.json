@@ -1,0 +1,59 @@
+[
+  {
+    "id": "git-phase-order-clean-on-main-is-destroyer-not-branch",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git clean -fd"}, "cwd": "${MAIN_REPO}"},
+    "cwd_kind": "main",
+    "_why": "PROVES phase order, not just rule identity: `git clean` while standing on `main` must yield the DESTROYER message, because destroyers are checked BEFORE the branch is ever resolved (CONTRACT #2 'the order is load-bearing'). A guard that resolved the branch first, or that checked protected_branch before destroyers, would emit the wrong message here even though both are exit 2.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git clean (deletes untracked files) is not allowed.",
+    "parity": true
+  },
+  {
+    "id": "git-phase-order-deploy-ref-wins-over-protected-branch",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin preview-branch-a main"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PROVES deploy_refs is checked before protected_push: this command's push-part contains BOTH 'preview-branch-a' (deploy_refs) and a trailing ' main' (protected_push's suffix pattern), so BOTH regexes match. Only the deploy-ref message may win.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): pushing to the deploy branch 'preview-branch-a' is reserved for the owner.",
+    "parity": true
+  },
+  {
+    "id": "git-phase-order-explicit-push-main-wins-over-implicit-branch-check",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push origin main"}, "cwd": "${MAIN_REPO}"},
+    "cwd_kind": "main",
+    "_why": "PROVES protected_push (the explicit push-to-<branch> form) is checked before current_branch (the implicit standing-on-<branch> form, which shells out to git rev-parse). Standing on main AND pushing to main both fire; only the explicit push message may win, and it must be the 'pushing to the protected branch' wording, not 'you are on the protected branch'.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): pushing to the protected branch 'main' is not allowed.",
+    "parity": true
+  },
+  {
+    "id": "git-phase-order-force-push-wins-over-deploy-ref",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git push --force origin preview-branch-a"}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PE-18. PROVES force_push is checked before deploy_refs (and therefore before protected_push too): this command matches BOTH force_push ('--force') and deploy_refs ('preview-branch-a'). force_push is placed earlier in phase_order as an operation-type check, the same precedence destroyers already has over the branch-specific checks below it -- so the force-push message must win here, not the deploy-ref one. No .ps1 master has force_push at all, so this is parity:false.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): git push --force / --force-with-lease / -f (rewrites remote history) is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-18"
+  },
+  {
+    "id": "git-phase-order-hook-bypass-wins-over-blanket-staging",
+    "guard": "git_discipline",
+    "ps1": "git-discipline-guard.ps1",
+    "payload": {"tool_name": "Bash", "tool_input": {"command": "git commit -a --no-verify -m \"x\""}, "cwd": "${FEATURE_REPO}"},
+    "cwd_kind": "feature",
+    "_why": "PROVES blanket_staging is checked before hook_bypass (it runs first in phase_order, unchanged): this command matches BOTH blanket_staging ('commit -a') and hook_bypass ('--no-verify'). The pre-existing blanket-staging message must win, since blanket_staging was not moved and still precedes the new hook_bypass phase; PE-18 changes nothing about which rule wins here, only in the hook_bypass-only fixtures. Still parity:false, but the divergence is PE-14's (backtick loss in the master's own blanket_staging message, see git-golden-block-commit-a), not PE-18's -- both sides agree on exit code AND on WHY (blanket staging), only the literal backtick differs.",
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (git discipline): blanket staging via git commit -a is not allowed.",
+    "parity": false,
+    "parity_exception": "PE-14"
+  }
+]

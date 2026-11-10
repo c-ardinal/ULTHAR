@@ -1,0 +1,11 @@
+[
+  {"event": "SessionStart", "payload": {"session_id": "fx-main", "transcript_path": "${TRANSCRIPT}", "source": "startup"}},
+  {"event": "UserPromptSubmit", "payload": {"session_id": "fx-main", "transcript_path": "${TRANSCRIPT}", "prompt": "hello"}},
+  {"event": "PreToolUse", "payload": {"session_id": "fx-main", "transcript_path": "${TRANSCRIPT}", "tool_name": "Bash", "tool_input": {"command": "ls -la"}}},
+  {"event": "PostToolUse", "payload": {"session_id": "fx-main", "transcript_path": "${TRANSCRIPT}", "agent_id": "a-1", "agent_type": "ulthar-creator", "tool_name": "Read", "tool_input": {"file_path": "README.md"}, "tool_response": {}}},
+  {"event": "SubagentStart", "payload": {"session_id": "fx-main", "transcript_path": "${TRANSCRIPT}", "agent_id": "a-1", "agent_type": "ulthar-creator"}},
+  {"event": "SubagentStop", "payload": {"session_id": "fx-main", "transcript_path": "${TRANSCRIPT}", "agent_id": "a-1", "agent_type": "ulthar-creator", "stop_hook_active": false}},
+  {"event": "PreCompact", "payload": {"session_id": "fx-main", "transcript_path": "${TRANSCRIPT}", "trigger": "auto", "custom_instructions": ""}},
+  {"event": "Stop", "payload": {"session_id": "fx-main", "transcript_path": "${TRANSCRIPT}", "stop_hook_active": false}},
+  {"event": "SessionEnd", "payload": {"session_id": "fx-main", "transcript_path": "${TRANSCRIPT}", "reason": "other"}}
+]

@@ -1,0 +1,199 @@
+[
+  {
+    "id": "commander-01-allow-no-marker",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": null,
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${CWD}/src/App.tsx" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "commander-02-allow-observe-main",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "observe",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${CWD}/src/App.tsx" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "commander-03-block-enforce-main-src",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "enforce",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${CWD}/src/App.tsx" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "BLOCKED (commander discipline)",
+    "parity": false,
+    "parity_exception": "PE-15",
+    "_note": "PE-15: commander-guard.ps1 is saved WITHOUT a BOM while its message body contains '§' (gate-protocol.md § 1), so PowerShell 5.1 parses the FILE ITSELF in the system codepage and the master's own printed message is mangled -- a live master-source defect, not a port bug. Exit code still matches (both block); this fixture is also the boundary case proving a genuinely non-exempt deliverable path (src/App.tsx, no separator ambiguity, not under any exempt fragment) is still BLOCKED -- required alongside every PE-17 citation in this file so the exempt list does not read as having quietly gone universal."
+  },
+  {
+    "id": "commander-04-allow-subagent-by-id",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "enforce",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${CWD}/src/App.tsx" },
+      "cwd": "${CWD}",
+      "agent_id": "agent-123",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "commander-05-allow-subagent-by-path",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "enforce",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${CWD}/src/App.tsx" },
+      "cwd": "${CWD}",
+      "transcript_path": "${SUB_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "commander-06-allow-plan-doc",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "enforce",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${CWD}/docs/plans/contract.md" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-17",
+    "_note": "PE-17 (owner-approved, deliberate loosening): commander-guard.ps1's $EXEMPT_PATTERNS are backslash-only regexes ('\\\\docs\\\\plans\\\\'); this fixture's file path carries a forward-slash tail after the sandboxed cwd, so the master's pattern fails to match and it BLOCKS a path that was always meant to be exempt. The port normalises separators (lib.paths.to_posix) before matching, so it correctly exempts. The SET of intended-exempt paths is unchanged, only the spellings that reach it -- required for the port to work on POSIX at all, since a backslash-only pattern matches nothing there."
+  },
+  {
+    "id": "commander-07-allow-scratchpad",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "enforce",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${TEMP}/claude/scratchpad/note.md" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-17",
+    "_note": "PE-17: same separator-brittleness as commander-06, applied to '\\\\Temp\\\\claude\\\\' and '\\\\scratchpad\\\\' -- ${TEMP} resolves to a Windows path and this fixture appends a forward-slash tail, so the master's backslash-only patterns miss it and BLOCK; the port's separator-normalised match correctly exempts."
+  },
+  {
+    "id": "commander-08-allow-outside-repo",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "enforce",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${ELSEWHERE}/thing.ts" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-17",
+    "_note": "PE-17: ${ELSEWHERE} is a sandboxed sibling path with a mixed-separator tail; the same outside-cwd/exempt determination is separator-sensitive on the master and separator-normalised on the port -- master BLOCKS, port correctly ALLOWs."
+  },
+  {
+    "id": "commander-09-allow-dot-claude-config",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "enforce",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${CWD}/.claude/CLAUDE.md" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-17",
+    "_note": "PE-17: same separator-brittleness, this time against the .claude exempt fragment -- backslash-only on the master, separator-normalised on the port."
+  },
+  {
+    "id": "commander-10-allow-garbage-marker",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "wat",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${CWD}/src/App.tsx" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": true
+  },
+  {
+    "id": "commander-pe3-repo-backup-sibling",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "enforce",
+    "payload": {
+      "tool_name": "Edit",
+      "tool_input": { "file_path": "${CWD}-backup/x.ts" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 0,
+    "parity": false,
+    "parity_exception": "PE-3",
+    "_note": "old: file.StartsWith(cwd) treats C:\\repo-backup\\x as inside C:\\repo and blocks under enforce; new: paths.is_under() is component-wise and exempts it."
+  },
+  {
+    "id": "commander-f16-blank-file-path-notebookedit",
+    "guard": "commander",
+    "ps1": "commander-guard.ps1",
+    "event": "PreToolUse",
+    "marker": "enforce",
+    "payload": {
+      "tool_name": "NotebookEdit",
+      "tool_input": { "notebook_path": "${CWD}/nb.ipynb" },
+      "cwd": "${CWD}",
+      "transcript_path": "${MAIN_TRANSCRIPT}"
+    },
+    "expect_exit": 2,
+    "expect_stderr_contains": "file:",
+    "parity": false,
+    "parity_exception": "PE-15",
+    "_note": "F-16 (blank file_path still blocks, preserved not fixed) PLUS PE-15: commander-guard.ps1's BOM-less file containing '§' is mis-parsed by PowerShell 5.1's system-codepage read, mangling the master's own message text. NotebookEdit sends notebook_path, not file_path, so file_path is blank; the blank path matches no exempt pattern and skips the outside-cwd exemption too (it only applies to a non-blank file), so this blocks under enforce on both sides -- exit code matches, only the master's own text is garbled."
+  }
+]
