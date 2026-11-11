@@ -514,8 +514,25 @@ def submit(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, data: b
         return atomic(store, rt, _writer(actor, "contract submit"), body)
     except BaseException:
         for path in created:
-            path.unlink(missing_ok=True)
+            if not _published(store, unit_id, path, sha):
+                path.unlink(missing_ok=True)
         raise
+
+
+def _published(store: store_mod.Store, unit_id: str, path: Path, sha: str) -> bool:
+    """Whether a committed unit record may point at this contract file. False only when
+    the store provably holds none (the failure came before its commit); when the store
+    cannot be read, the file is kept -- an orphan file is harmless, a referenced one
+    deleted is not (a failed runtime.db COMMIT or finalize comes after the commit)."""
+    rel = path.relative_to(store.dir).as_posix()
+    try:
+        with store.reader() as conn:
+            return conn is not None and conn.execute(
+                "SELECT 1 FROM records WHERE kind='unit' AND id=?"
+                " AND json_extract(json, '$.contract.path')=? AND json_extract(json, '$.contract.sha')=?",
+                (unit_id, rel, sha)).fetchone() is not None
+    except Exception:  # noqa: BLE001 -- unsure: keep the file
+        return True
 
 
 # ---------------------------------------------------------------------------- review record

@@ -264,7 +264,7 @@ class _FailCommit:
         return getattr(self._conn, name)
 
 
-def _inject(sb, unit_id: str, to: str, name: str, wrap=None) -> str:
+def _inject(sb, unit_id: str, to: str, name: str, wrap=None, submit: bytes | None = None) -> str:
     from ulthar import db as db_mod  # noqa: PLC0415
     from ulthar import flow  # noqa: PLC0415
 
@@ -280,8 +280,11 @@ def _inject(sb, unit_id: str, to: str, name: str, wrap=None) -> str:
         if wrap:
             flow.atomic = arming_atomic
         try:
-            flow.advance(sb.store(), rt, unit_id, to, reason=None, cause=None,
-                         actor={"test": name})
+            if submit is not None:
+                flow.submit(sb.store(), rt, unit_id, submit, actor={"test": name})
+            else:
+                flow.advance(sb.store(), rt, unit_id, to, reason=None, cause=None,
+                             actor={"test": name})
             return "no error"
         except Exception as exc:  # noqa: BLE001 -- the injected failure
             return str(exc)
@@ -369,6 +372,81 @@ def check_atomic(p: Probe) -> None:
         sb.cleanup()
 
 
+def check_submit_atomic(p: Probe) -> None:
+    """AC-6 for `contract submit`: before the store commit -> no unit revision and no
+    contract file; at the runtime.db COMMIT or at finalize (after the store commit) ->
+    after the next open, the whole revision, the invalidated questions and the exact
+    contract bytes are there."""
+    from ulthar import integrity  # noqa: PLC0415
+    from ulthar import store as store_mod  # noqa: PLC0415
+
+    sb = new_sandbox()
+    try:
+        unit_id = make_unit(sb)
+        cli(sb, "contract", "submit", unit_id, "--file", str(write_contract(sb, contract())))
+        folder = sb.kr / ".ulthar" / "contracts" / unit_id
+
+        def asked(version: int) -> list:
+            cli(sb, "contract", "show", unit_id)  # an open question for this version
+            return sb.query("SELECT qid FROM questions WHERE unit_id=? AND"
+                            " json_extract(payload, '$.version')=?", (unit_id, version))
+
+        def invalidated(qids) -> bool:
+            return all(sb.query("SELECT json_extract(payload, '$.invalidated') FROM questions"
+                                " WHERE qid=?", q)[0][0] for q in qids)
+
+        v1_questions = asked(1)
+        lines = units_lines(sb)
+        data = {v: write_contract(sb, contract(non_goals=[f"版 {v} の外"]), f"s{v}.yaml").read_bytes()
+                for v in (2, 3)}
+
+        def no_manifest(*a, **k):
+            raise OSError("injected: the store's write-ahead manifest cannot be written")
+
+        integrity.write_manifest, real_manifest = no_manifest, integrity.write_manifest
+        try:
+            err = _inject(sb, unit_id, "", "s1", submit=data[2])
+        finally:
+            integrity.write_manifest = real_manifest
+        rec = unit(sb, unit_id)
+        p.check("AC-6 submit: failure before the store commit -> no unit revision, no contract "
+                "file, the old questions untouched",
+                "injected" in err and units_lines(sb) == lines and rec["contract"]["version"] == 1
+                and not (folder / "v2.yaml").exists() and not invalidated(v1_questions),
+                f"{err} {rec['contract']}")
+
+        err = _inject(sb, unit_id, "", "s2", wrap=_FailCommit, submit=data[2])
+        rec = unit(sb, unit_id)  # the next open recovers
+        p.check("AC-6 submit: failure at the runtime.db COMMIT -> after the next open the "
+                "revision (v2), the invalidations and the exact contract bytes are there",
+                "injected" in err and rec["contract"]["version"] == 2
+                and (folder / "v2.yaml").read_bytes() == data[2] and invalidated(v1_questions)
+                and cli(sb, "contract", "lint", unit_id).returncode == 0,
+                f"{err} {rec['contract']} v2 exists={(folder / 'v2.yaml').exists()}")
+
+        v2_questions = asked(2)
+        real_finalize = store_mod.Store.finalize
+
+        def no_finalize(self, rt=None):
+            raise OSError("injected: finalize failed")
+
+        store_mod.Store.finalize = no_finalize
+        try:
+            err = _inject(sb, unit_id, "", "s3", submit=data[3])
+        finally:
+            store_mod.Store.finalize = real_finalize
+        rec = unit(sb, unit_id)
+        p.check("AC-6 submit: failure at finalize -> after the next open the revision (v3), "
+                "the invalidations and the exact contract bytes are there, chain verified",
+                "injected" in err and rec["contract"]["version"] == 3
+                and (folder / "v3.yaml").read_bytes() == data[3] and invalidated(v2_questions)
+                and cli(sb, "store", "verify").returncode == 0
+                and not (sb.kr / ".ulthar" / "txn.json").exists(),
+                f"{err} {rec['contract']} v3 exists={(folder / 'v3.yaml').exists()}")
+    finally:
+        sb.cleanup()
+
+
 def check_agent_blocked(p: Probe) -> None:
     sb = new_sandbox()
     try:
@@ -398,6 +476,7 @@ def main() -> int:
     check_small_refusals(p)
     check_owner_review_return(p)
     check_atomic(p)
+    check_submit_atomic(p)
     check_agent_blocked(p)
     return p.result()
 
