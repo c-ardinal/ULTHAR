@@ -72,3 +72,30 @@ Evidence:
 
 Consequence for the design: per §8 P-14, TRUST-02 on Windows is hook blocking only (Bash/PowerShell
 command analysis), stated as such; the sandbox becomes available only under WSL2.
+
+# ULTHAR v2 R1-b — P-15 extraction probe (AC-7)
+
+Measured 2026-11-11 on Windows 11 (native), Claude Code 2.1.322, with
+`v2/probes/run_p15.py` (re-run: `C:/Python314/python.exe -X utf8 v2/probes/run_p15.py [--out FILE]`).
+The probe uses the production path unchanged: `worker.build_prompt` → the default extractor
+command `claude -p --model haiku` (run with `ULTHAR_EXTRACTOR=1`, prompt on stdin, cwd = the ulthar
+state dir, here redirected to a throwaway temp dir) → `worker.parse_output`. One existing confirmed
+decision (`D-p15sample01`「ボタンの角丸は 8px にする」) was passed as the active-decision list.
+Full answers: `v2/tests/results/p15-probe.json`.
+
+| ID | Premise | Result |
+|---|---|---|
+| P-15 | The real `claude -p --model haiku` answers the extraction prompt in the AC-6 format | **holds** — 5/5 parsed, 5/5 of the expected kind |
+
+| Message type | Message | Parsed | Answer (excerpt) |
+|---|---|---|---|
+| 指摘 | さっきの設定画面、ボタンの角丸がページごとにバラバラだった。全部 4px に揃えて。 | yes | `{"kind": "decision", "text": "ボタンの角丸は全ページで 4px に揃える", "scope": "project", "tags": ["UI", "ボタン", "角丸", "デザイン"], "supersedes": ["D-p15sample01"], ...}` |
+| 禁止 | 本番ブランチへの force push は絶対にしないで。 | yes | `{"kind": "decision", "text": "本番ブランチへの force push は絶対にしないこと。", "tags": ["git", "force-push", "本番ブランチ"], ...}` |
+| 好み | コミットメッセージは英語より日本語のほうが好き。今後は日本語で書いて。 | yes | `{"kind": "decision", "text": "コミットメッセージは英語より日本語のほうが好みなので、今後は日本語で書く。", ...}` |
+| 用語 | 画面や文書では「ユーザー」ではなく「利用者」と書いて。 | yes | `{"kind": "term", "text": "画面や文書では「ユーザー」ではなく「利用者」と書く。", "term": "利用者", "preferred": "利用者", "forbidden": ["ユーザー"], ...}` |
+| 該当なし | 今日の進み具合はどう？ | yes | `[{"kind": "none"}]` |
+
+Every answer was a bare JSON array (no prose, no code fence); 11–13 s per call. The correction was
+also linked to the existing decision it replaces (`supersedes: ["D-p15sample01"]`).
+Side effect, as with the R1-a probes: the five `claude -p` sessions left their session records under
+`~/.claude/projects/<temp state dir>/` (cleanup is the owner's call).
