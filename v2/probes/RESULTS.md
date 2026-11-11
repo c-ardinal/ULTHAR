@@ -99,3 +99,35 @@ Every answer was a bare JSON array (no prose, no code fence); 11–13 s per call
 also linked to the existing decision it replaces (`supersedes: ["D-p15sample01"]`).
 Side effect, as with the R1-a probes: the five `claude -p` sessions left their session records under
 `~/.claude/projects/<temp state dir>/` (cleanup is the owner's call).
+
+# ULTHAR v2 R1-c — P-16 updatedInput probe (AC-17)
+
+Measured 2026-11-11 on Windows 11 (native), Claude Code 2.1.322, with `v2/probes/run_p16.py`
+(re-run: `C:/Python314/python.exe -X utf8 v2/probes/run_p16.py [--logs DIR]`). Four short
+`claude -p --model haiku` runs, each in a fresh throwaway project with its own settings
+(`--setting-sources project,local`). The model is told to run exactly
+`<python> probe_echo.py ORIGINAL-<tag>`; a PreToolUse hook (matcher Bash) answers with
+`{"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": {..., "command":
+"<python> probe_echo.py REWRITTEN-<tag>"}}}` and **no permissionDecision** (the form ulthar's
+runner token uses). probe_echo.py records its argument in ran.txt. Permission rules are exact
+command strings.
+
+| ID | Premise | Result |
+|---|---|---|
+| P-16 (a) | The rewritten command is the one that runs | **holds** |
+| P-16 (b) | Permission deny and allow rules apply to the rewritten command | **holds** (deny and allow both) |
+
+| Run | Rules | Model's tool_use | Ran (ran.txt) | Tool result / permission_denials (excerpt) |
+|---|---|---|---|---|
+| A | allow original + rewritten | `... ORIGINAL-Ad22521` | `REWRITTEN-Ad22521` | `ran REWRITTEN-Ad22521` |
+| B | allow original, deny rewritten | `... ORIGINAL-Bcd71a4` | (nothing) | `Permission to use Bash with command C:/Python314/python.exe probe_echo.py REWRITTEN-Bcd71a4 has been denied.`; permission_denials: `... REWRITTEN-Bcd71a4` |
+| C | allow rewritten only | `... ORIGINAL-C2c1621` | `REWRITTEN-C2c1621` | `ran REWRITTEN-C2c1621` |
+| D | no rule (control) | `... ORIGINAL-D110b72` | (nothing) | `This command requires approval`; permission_denials: `... REWRITTEN-D110b72` |
+
+Reading: the hook saw the original command (hook log), yet only the rewritten one ran (A, C).
+Permissions are evaluated on the rewritten input: its deny rule blocks it although the original is
+allowed (B), and its allow rule admits it although the original has no rule (C), which without a
+rule is refused in `-p` (D, control). So ulthar's runner token reaches the CLI, and the owner's
+permission rules still govern the command that actually runs. 8–9 s per call. Side effect: the
+throwaway projects (`%TEMP%/ulthar-p16-*`) and their `claude -p` session records under
+`~/.claude/projects/` remain (cleanup is the owner's call).
