@@ -188,13 +188,18 @@ def ingest(conn: sqlite3.Connection, session_id: str, transcript_path: str,
                 for raw in fh:
                     if not raw.endswith(b"\n"):
                         break
+                    try:
+                        found += _line_episodes(extractor, key, raw, line_no + 1)
+                    except _Malformed as bad:
+                        _malformed_gap(conn, session_id, hook, key, line_no + 1, offset,
+                                       str(bad), counts)
+                        break  # the cursor stays before it: retried on every later call
                     line_no += 1
                     offset += len(raw)
                     tail_len, tail_sha = len(raw), _line_sig(raw)
                     counts["lines"] += 1
-                    found += _line_episodes(extractor, key, raw, line_no)
         if found or on_tx is not None:
-            _store_episodes(store, session_id, hook, found, counts, on_tx)
+            _store_episodes(conn, store, session_id, hook, found, counts, on_tx)
         conn.execute(
             "INSERT INTO ingest_cursors VALUES (?,?,?,?,?,?) "
             "ON CONFLICT(session_id, transcript_path) DO UPDATE SET byte_offset=excluded.byte_offset,"
@@ -207,23 +212,51 @@ def ingest(conn: sqlite3.Connection, session_id: str, transcript_path: str,
     return counts
 
 
+class _Malformed(Exception):
+    pass
+
+
+def _malformed_gap(conn, session_id: str, hook: str, key: str, line_no: int, offset: int,
+                   reason: str, counts: dict) -> None:
+    """A complete line that is not a JSON object is never stepped over (it could be an
+    owner message): it is a gap, recorded once per position, and ingestion stops there."""
+    detail = {"gap": "malformed", "transcript_path": key, "line": line_no, "offset": offset,
+              "reason": reason[:200]}
+    last = conn.execute("SELECT detail FROM events WHERE session_id=? AND guard_id=?"
+                        " ORDER BY id DESC LIMIT 1", (session_id, INGEST_GUARD_ID)).fetchone()
+    previous = json.loads(last[0]) if last and last[0] else {}
+    if (previous.get("gap"), previous.get("transcript_path"), previous.get("offset")) != (
+            "malformed", key, offset):
+        record_gap(conn, session_id, hook, detail)
+    counts["gaps"].append(detail)
+
+
 def _line_episodes(extractor: _Extractor, key: str, raw: bytes, line_no: int) -> list[tuple]:
     try:
         rec = json.loads(raw)
-    except ValueError:
-        return []
+    except ValueError as exc:
+        raise _Malformed(f"not JSON: {exc}") from None
+    if not isinstance(rec, dict):
+        raise _Malformed(f"not a JSON object: {type(rec).__name__}")
     episodes = extractor.extract(rec)
     if not episodes:
         return []
     ident = rec.get("uuid") or "L" + _line_sig(raw)
-    return [(kind, text, f"{ident}:{kind}:{part}", f"{key}:{line_no}", rec)
-            for kind, text, part in episodes]
+    content = (rec.get("message") or {}).get("content")
+    out = []
+    for kind, text, part in episodes:
+        meta = {}
+        if kind in ("ask", "answer") and isinstance(content, list):
+            block = content[part]
+            meta["tool_use_id"] = block.get("id") if kind == "ask" else block.get("tool_use_id")
+        out.append((kind, text, f"{ident}:{kind}:{part}", f"{key}:{line_no}", rec, meta))
+    return out
 
 
-def _store_episodes(store: store_mod.Store, session_id: str, hook: str, found: list[tuple],
-                    counts: dict, on_tx=None) -> None:
-    with store.transaction({"session_id": session_id, "hook": hook}) as tx:
-        for kind, text, dedupe, ref, rec in found:
+def _store_episodes(conn: sqlite3.Connection, store: store_mod.Store, session_id: str, hook: str,
+                    found: list[tuple], counts: dict, on_tx=None) -> None:
+    with store.transaction({"session_id": session_id, "hook": hook}, conn) as tx:
+        for kind, text, dedupe, ref, rec, meta in found:
             if tx.has_dedupe("episode", session_id, dedupe):
                 continue
             prompt_id = rec.get("promptId")
@@ -232,7 +265,7 @@ def _store_episodes(store: store_mod.Store, session_id: str, hook: str, found: l
                 continue
             tx.add("episode", {"session_id": session_id, "kind": kind, "unit_id": None,
                                "text": text, "transcript_ref": ref,
-                               "event_ts": rec.get("timestamp")}, dedupe_key=dedupe)
+                               "event_ts": rec.get("timestamp"), **meta}, dedupe_key=dedupe)
             counts[kind] += 1
         if on_tx is not None:
             on_tx(tx)

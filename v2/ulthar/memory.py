@@ -33,6 +33,7 @@ L0_EPISODE_ROWS = 200  # more headings than these never fit in 6,000 chars
 DATA_MARK = "[データ]"
 GIT_TIMEOUT_SEC = 20
 ACTIVE = ("provisional", "confirmed")
+NEEDS_EXTRACTION = "needs_extraction"  # an owner_msg Episode the barrier waits for
 
 
 class Item:
@@ -138,7 +139,8 @@ def blob_hashes(repo: Path, rel_paths: list[str]) -> dict[str, str | None]:
     return out
 
 
-def valid_facts(store: store_mod.Store, conn: sqlite3.Connection | None, writer: dict) -> list[dict]:
+def valid_facts(store: store_mod.Store, conn: sqlite3.Connection | None, writer: dict,
+                rt: sqlite3.Connection | None = None) -> list[dict]:
     """Valid facts after the source check (MEM-03): a fact whose source blob changed
     (or vanished) is stored as stale and left out."""
     facts = store_mod.current(conn, "fact", ("valid",))
@@ -147,19 +149,20 @@ def valid_facts(store: store_mod.Store, conn: sqlite3.Connection | None, writer:
     hashes = blob_hashes(store.repo or store.root, [f["src_path"] for f in facts])
     stale = [f for f in facts if hashes.get(f["src_path"]) != f["src_blob"]]
     if stale:
-        with store.transaction(writer) as tx:
+        with store.transaction(writer, rt) as tx:
             for f in stale:
                 tx.revise("fact", f["id"], status="stale", invalid_at=store_mod.now_iso())
     stale_ids = {f["id"] for f in stale}
     return [f for f in facts if f["id"] not in stale_ids]
 
 
-def active_decisions(conn: sqlite3.Connection | None) -> list[dict]:
+def active_decisions(conn: sqlite3.Connection | None,
+                     rt: sqlite3.Connection | None = None) -> list[dict]:
     """This project's provisional + confirmed decisions plus the global store's
     confirmed ones (scope "global" confirmed by the owner, MEM-09)."""
     mine = store_mod.current(conn, "decision", ACTIVE)
     seen = {d["id"] for d in mine}
-    with store_mod.Store.global_store().reader() as gconn:
+    with store_mod.Store.global_store().reader(rt) as gconn:
         shared = [d for d in store_mod.current(gconn, "decision", ("confirmed",))
                   if d["id"] not in seen]
     return mine + shared
@@ -167,14 +170,20 @@ def active_decisions(conn: sqlite3.Connection | None) -> list[dict]:
 
 def unextracted(rt: sqlite3.Connection, conn: sqlite3.Connection | None,
                 project_id: str) -> list[tuple[dict, str]]:
-    """(owner_msg Episode, status) for every extraction still pending or failed."""
-    rows = rt.execute("SELECT episode_id, status FROM extractions WHERE project_id=? AND"
-                      " status IN ('pending','failed') ORDER BY started", (project_id,)).fetchall()
+    """(owner_msg Episode, state) for every owner message that must be extracted and is
+    not `done`. Which messages must be is recorded in the Episode itself (status
+    NEEDS_EXTRACTION, written with it), so a message whose runtime.db row was never
+    written (state "unregistered") is still unresolved -- the store, not the runtime
+    table, decides who is pending (DEC-03)."""
+    if conn is None:
+        return []
+    states = dict(rt.execute("SELECT episode_id, status FROM extractions WHERE project_id=?",
+                             (project_id,)).fetchall())
     out = []
-    for episode_id, status in rows:
-        ep = store_mod.get(conn, "episode", episode_id)
-        if ep is not None:
-            out.append((ep, status))
+    for ep in store_mod.current(conn, "episode", (NEEDS_EXTRACTION,)):
+        state = states.get(ep["id"], "unregistered")
+        if state != "done":
+            out.append((ep, state))
     return out
 
 
@@ -201,12 +210,12 @@ def _term_line(t: dict) -> str:
 # ---------------------------------------------------------------------------- layers
 
 def build_l1(store: store_mod.Store, rt: sqlite3.Connection, writer: dict) -> Packed:
-    with store.reader() as conn:
-        decisions = active_decisions(conn)
+    with store.reader(rt) as conn:
+        decisions = active_decisions(conn, rt)
         active_ids = {d["id"] for d in decisions}
         terms = [t for t in store_mod.current(conn, "term")
                  if not t.get("decision_id") or t["decision_id"] in active_ids]
-        facts = valid_facts(store, conn, writer)
+        facts = valid_facts(store, conn, writer, rt)
         pending = unextracted(rt, conn, store.project_id)
         episodes = conn.execute(
             "SELECT json FROM records WHERE kind='episode' ORDER BY seq DESC LIMIT ?",
@@ -262,8 +271,8 @@ def build_l0(store: store_mod.Store, rt: sqlite3.Connection,
              required_only: bool = False) -> tuple[Packed, int]:
     """(packed L0, highest Episode seq it covers). `required_only` skips the Episode
     section: enough to decide whether L0 is over its limit (AC-10, every write call)."""
-    with store.reader() as conn:
-        decisions = active_decisions(conn)
+    with store.reader(rt) as conn:
+        decisions = active_decisions(conn, rt)
         candidates = sum(1 for d in decisions if d.get("status") == "provisional")
         episodes, top, older = None, 0, 0
         if not required_only and conn is not None:

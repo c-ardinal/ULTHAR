@@ -34,9 +34,12 @@ STORE_GUARD = "memory_store"
 BUDGET_GUARD = "memory_budget"
 DECIDE_GUARD = "memory_decide"
 ERROR_GUARD = "memory-error"
+REPAIR_PER_PROMPT = 3  # lost registrations re-sent to extraction per owner prompt
 
-_ULTHAR_CALL = r"(?:(?<![\w.\-])ulthar(?:\.exe|\.cmd|\.bat)?|-m\s+ulthar|ulthar[\\/]+__main__\.py[\"']?)"
-DECIDE_CALL = re.compile(_ULTHAR_CALL + r"\s+decide(?:\s+([\w\-]+))?")
+_ULTHAR_CALL = (r"(?:(?<![\w.\-])ulthar(?:\.exe|\.cmd|\.bat)?|-m\s+ulthar(?:\.__main__)?"
+                r"|ulthar[\\/]+__main__\.py)[\"']?")
+DECIDE_CALL = re.compile(_ULTHAR_CALL + r"\s+decide(?:\s+([\w\-]+))?", re.I)
+HOOK_ONLY_CALL = re.compile(_ULTHAR_CALL + r"\s+(hook|extract)\b", re.I)
 DECIDE_READ_ONLY = frozenset({"list", "review", "-h", "--help"})
 PROTECTED_IN_CMD = re.compile(
     r"\.claude[\\/]+ulthar(?![\w.\-])|(?:^|[\\/\s\"'=:])\.ulthar(?=[\\/\s\"';|&)]|$)", re.I)
@@ -85,17 +88,42 @@ class Project:
 
 # ---------------------------------------------------------------------------- AC-4
 
-def _protected_roots() -> list[str]:
-    roots = [Path.home() / ".claude" / "ulthar", store_mod.state_dir()]
-    return [os.path.normcase(os.path.abspath(r)) for r in roots]
+def _fold(path: str) -> str:
+    """The comparison form: separators unified, case-insensitive (AC-4 c)."""
+    return path.replace("\\", "/").rstrip("/").casefold()
+
+
+def _resolved(path: str) -> str:
+    """`path` with every existing component's symlinks and junctions resolved -- for a
+    file not created yet, its deepest existing ancestor -- and the rest appended."""
+    existing, rest = Path(path), []
+    while not os.path.lexists(existing) and existing.parent != existing:
+        rest.insert(0, existing.name)
+        existing = existing.parent
+    return os.path.join(os.path.realpath(existing), *rest)
+
+
+def _forms(path: str) -> set[str]:
+    full = os.path.abspath(path)
+    return {_fold(full), _fold(_resolved(full))}
+
+
+def _protected_roots() -> set[str]:
+    roots = set()
+    for root in (Path.home() / ".claude" / "ulthar", store_mod.state_dir()):
+        roots |= _forms(str(root))
+    return roots
 
 
 def _is_protected_path(raw: str, cwd: str) -> bool:
     p = Path(raw)
-    full = os.path.normcase(os.path.abspath(p if p.is_absolute() else Path(cwd) / p))
-    if store_mod.STORE_DIRNAME in Path(full).parts:
-        return True
-    return any(full == r or full.startswith(r + os.sep) for r in _protected_roots())
+    roots = _protected_roots()
+    for form in _forms(str(p if p.is_absolute() else Path(cwd) / p)):
+        if store_mod.STORE_DIRNAME in form.split("/"):
+            return True
+        if any(form == r or form.startswith(r + "/") for r in roots):
+            return True
+    return False
 
 
 def _first_words(segment: str) -> list[str]:
@@ -145,6 +173,11 @@ def protect(payload: dict) -> str | None:
     if tool not in SHELL_TOOLS:
         return None
     command = _shell_command(payload)
+    hook_only = HOOK_ONLY_CALL.search(command)
+    if hook_only:
+        return (f"BLOCKED (ulthar memory store): `ulthar {hook_only.group(1).lower()}` is an entry "
+                "point for Claude Code's hooks and the extraction worker only (AC-4 a2): a hook "
+                "event or an extraction started from a tool call would be forged evidence.")
     in_agent = bool(payload.get("agent_id"))
     for m in DECIDE_CALL.finditer(command):
         sub = (m.group(1) or "").lower()
@@ -233,7 +266,8 @@ def _add_prompt(tx, payload: dict) -> dict:
     key = ingest_mod.prompt_dedupe_key(prompt_id, prompt)
     return tx.find_dedupe("episode", session_id, key) or tx.add(
         "episode", {"session_id": session_id, "kind": "owner_msg", "unit_id": None,
-                    "text": prompt, "transcript_ref": None, "prompt_id": prompt_id},
+                    "text": prompt, "transcript_ref": None, "prompt_id": prompt_id,
+                    "status": memory.NEEDS_EXTRACTION},
         dedupe_key=key)
 
 
@@ -255,13 +289,17 @@ def _user_prompt(payload: dict, project: Project, rt, detail: dict) -> None:
     store = project.store()
     ep = project.prompt_episode if project.prompt_committed else None
     if ep is None:
-        with store.transaction(_writer(payload, "UserPromptSubmit")) as tx:
+        with store.transaction(_writer(payload, "UserPromptSubmit"), rt) as tx:
             ep = _add_prompt(tx, payload)
     detail["owner_msg_episode"] = ep["id"]
-    if rt.execute("SELECT 1 FROM extractions WHERE episode_id=?", (ep["id"],)).fetchone():
-        return  # this prompt was already sent to extraction
-    extract.register(rt, store.project_id, str(payload.get("session_id") or "(none)"), ep["id"])
-    extract.launch(rt, ep["id"], project.cwd)
+    todo = [ep] if not rt.execute("SELECT 1 FROM extractions WHERE episode_id=?",
+                                  (ep["id"],)).fetchone() else []
+    with store.reader(rt) as conn:  # earlier owner messages whose registration was lost
+        todo += [e for e, state in memory.unextracted(rt, conn, store.project_id)
+                 if state == "unregistered" and e["id"] != ep["id"]][:REPAIR_PER_PROMPT]
+    for e in todo:
+        extract.register(rt, store.project_id, e.get("session_id"), e["id"])
+        extract.launch(rt, e["id"], project.cwd)
 
 
 def _session_start(payload: dict, project: Project, rt, act: Action) -> None:
@@ -285,7 +323,7 @@ def _post_ask(payload: dict, project: Project, act: Action) -> None:
     store = project.store()
 
     def after_insert(rt, event_id: int, detail: dict) -> None:
-        token, note = decide.issue_token(rt, payload, store.project_id, event_id)
+        token, note = decide.issue_token(rt, payload, store, event_id)
         detail["decide_review"] = note
         if token:
             detail["issued_token"] = token

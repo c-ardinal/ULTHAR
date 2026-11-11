@@ -243,12 +243,70 @@ def check_l0(p: Probe) -> None:
         sb.cleanup()
 
 
+def check_barrier_failures(p: Probe) -> None:
+    """Review finding 5: no owner message drops out of the sending barrier."""
+    sb = Sandbox()
+    try:
+        path = sb.root / "barrier.jsonl"
+        good1 = {"type": "user", "uuid": "b1", "message": {"role": "user", "content": "最初の指示 one"}}
+        good2 = {"type": "user", "uuid": "b2", "message": {"role": "user", "content": "二つ目の指示 two"}}
+        broken = '{"type": "user", "uuid": "b-bad", "message": {"content": "壊れた行'.encode()
+        with open(path, "wb") as fh:
+            fh.write(json.dumps(good1, ensure_ascii=False).encode() + b"\n" + broken + b"\n"
+                     + json.dumps(good2, ensure_ascii=False).encode() + b"\n")
+        call = {"session_id": "bar", "transcript_path": str(path), "tool_name": "Read",
+                "tool_input": {}}
+        sb.hook("PreToolUse", call)
+        sb.hook("PreToolUse", call)
+        texts = [e["text"] for e in sb.episodes("owner_msg", "bar")]
+        gaps = sb.query("SELECT detail FROM events WHERE guard_id='ingest'")
+        cursor = sb.query("SELECT line_no FROM ingest_cursors WHERE session_id='bar'")
+        p.check("a malformed transcript line is not stepped over: the cursor stays before it",
+                texts == ["最初の指示 one"] and cursor == [(1,)], f"{texts} {cursor}")
+        p.check("  ... recorded as a 'malformed' gap, once across retries",
+                len(gaps) == 1 and json.loads(gaps[0][0])["gap"] == "malformed", str(gaps))
+        data = path.read_bytes().replace(broken, broken + b'"}}')  # repaired in place
+        path.write_bytes(data)
+        sb.hook("PreToolUse", call)
+        texts = [e["text"] for e in sb.episodes("owner_msg", "bar")]
+        p.check("  ... and retried: once readable, it and the lines after it are ingested",
+                "二つ目の指示 two" in texts and len(texts) == 3, str(texts))
+
+        with sb.inproc(), sb.store().transaction({"hook": "test"}) as tx:
+            lost = tx.add("episode", {"session_id": "bar", "kind": "owner_msg", "unit_id": None,
+                                      "text": "登録が失われた指示 LOST-REG", "transcript_ref": None,
+                                      "status": memory.NEEDS_EXTRACTION})
+        launch = sb.hook("PreToolUse", {"session_id": "bar", "tool_name": "Agent",
+                                        "tool_input": {"prompt": "go"}})
+        ctx = context_of(subagent_start(sb, agent="a-bar"))
+        p.check("an owner message whose extraction row was never written is still unresolved: "
+                "injected verbatim",
+                launch.returncode == 0 and "LOST-REG" in ctx and "unregistered" in ctx, ctx[:500])
+        sb.hook("UserPromptSubmit", {"session_id": "bar", "prompt": "次の指示", "prompt_id": "bar-1"})
+        repaired = sb.query("SELECT status FROM extractions WHERE episode_id=?", (lost["id"],))
+        p.check("  ... and the next owner prompt re-sends it to extraction", bool(repaired),
+                str(repaired))
+        wait_extractions(sb, 2)
+
+        conn = db_mod.connect(sb.db)
+        conn.execute("DROP TABLE extractions")
+        conn.close()
+        blocked = sb.hook("PreToolUse", {"session_id": "bar", "tool_name": "Agent",
+                                         "tool_input": {"prompt": "go"}})
+        p.check("when the extraction state cannot be read, an Agent launch is blocked (exit 2)",
+                blocked.returncode == 2 and "memory step failed" in blocked.stderr,
+                blocked.stderr[-300:])
+    finally:
+        sb.cleanup()
+
+
 def main() -> int:
     p = Probe()
     print("\n== AC-5: fact staleness ==")
     check_fact_staleness(p)
     print("\n== AC-9: L1 and the launch barrier ==")
     check_design_decision_reaches_subagent(p)
+    check_barrier_failures(p)
     print("\n== AC-10: budget ==")
     check_budget_boundary(p)
     check_budget_blocks(p)

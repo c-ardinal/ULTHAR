@@ -1,7 +1,8 @@
 """R1-b knowledge store:
   AC-1  8 processes x 50 locked appends: seq unique and gap-free, every common and
         type-specific field present, and the incrementally kept index equals the one
-        `ulthar index rebuild` regenerates; the default knowledge_root;
+        `ulthar index rebuild` regenerates; the default knowledge_root (file integrity
+        and AC-20: test_integrity.py);
   AC-3  a knowledge_root operated by another PC refuses writes (exit != 0, 0 lines);
   AC-14 five known secret formats are replaced by [REDACTED:<kind>] before writing.
 """
@@ -84,25 +85,6 @@ def check_concurrent_appends(p: Probe) -> None:
         sb.cleanup()
 
 
-def check_index_catches_up(p: Probe) -> None:
-    """A crash between the JSONL append and the index commit: the next reader catches up."""
-    sb = Sandbox()
-    try:
-        with sb.inproc():
-            store = sb.store()
-            with store.transaction({"hook": "test"}) as tx:
-                tx.add("episode", FIELDS["episode"])
-            line = dict(FIELDS["episode"], id="E-manual", seq=2, project_id=store.project_id,
-                        writer={"hook": "test"}, ts="2026-11-11T00:00:00Z", supersedes=[])
-            with open(store.dir / "episodes.jsonl", "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(line) + "\n")
-            with store.reader() as conn:
-                n = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-        p.check("an index behind its JSONL (crash after append) is caught up on open", n == 2, str(n))
-    finally:
-        sb.cleanup()
-
-
 def check_default_root(p: Probe) -> None:
     sb = Sandbox()
     try:
@@ -176,7 +158,6 @@ def main() -> int:
     p = Probe()
     print("\n== AC-1: JSONL source of truth + index ==")
     check_concurrent_appends(p)
-    check_index_catches_up(p)
     check_default_root(p)
     print("\n== AC-3: one PC per project ==")
     check_other_pc_refused(p)

@@ -10,11 +10,11 @@ also as a term record pointing at it). The extraction ends `done` or `failed`.
 Kept apart from ulthar.extract so the hook path never loads what only this needs.
 
 Process tree (AC-19): the extractor runs at most extractor.timeout_sec (default 120 s,
-inclusive). On Windows it is put in a Job Object that kills every process in it when
-the job is terminated or its last handle closes, so a timeout -- or the worker itself
-dying -- ends the extractor and all its descendants (`claude -p` and whatever it
-starts); taskkill /T (lib.ctx) is only the fallback when no job can be made. POSIX:
-its own session, killed as a process group. Windowless on Windows (AC-18).
+inclusive). On Windows it is created suspended, put in a Job Object that kills every
+process in it when the job is terminated or its last handle closes, and only then
+resumed -- so a timeout, or the worker itself dying, ends the extractor and all its
+descendants (`claude -p` and whatever it starts). Without a job it does not run.
+POSIX: its own session, killed as a process group. Windowless on Windows (AC-18).
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 
 from . import db as db_mod
@@ -41,6 +42,7 @@ KINDS = ("decision", "term", "none")
 SCOPES = ("project", "global")
 DETAIL_CHARS = 1000
 KILL_WAIT_SEC = 10
+CREATE_SUSPENDED = 0x00000004  # winbase.h; subprocess has no constant for it
 _FENCE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
 
 PROMPT = """You extract durable rules from a project owner's message to an AI coding team.
@@ -159,16 +161,16 @@ def norm(text: str) -> str:
 
 
 def write_candidates(store: store_mod.Store, episode: dict, items: list[dict],
-                     writer: dict) -> dict:
+                     writer: dict, rt=None) -> dict:
     """Writes decision/term candidates as provisional; a candidate whose normalised text
     equals an active decision's is skipped (AC-8). Returns counts."""
     counts = {"decisions": 0, "terms": 0, "duplicates": 0, "none": 0}
     if all(it["kind"] == "none" for it in items):
         counts["none"] = len(items)
         return counts  # nothing to write: no lock taken
-    with store_mod.Store.global_store().reader() as gconn:
+    with store_mod.Store.global_store().reader(rt) as gconn:
         shared = store_mod.current(gconn, "decision", ("confirmed",))
-    with store.transaction(writer) as tx:
+    with store.transaction(writer, rt) as tx:
         active = tx.current("decision", memory.ACTIVE) + shared
         texts = {norm(d.get("text", "")) for d in active}
         ids = {d["id"] for d in active}
@@ -257,25 +259,45 @@ def _job_limits():
     return Extended()
 
 
+def _contain(proc: subprocess.Popen) -> "_KillJob":
+    """Windows: the extractor was created suspended; it joins the kill-on-close job before
+    its first instruction runs, then resumes -- so nothing it starts can escape the job.
+    If containment cannot be made, the suspended process is terminated: an extractor
+    never runs uncontained (AC-19)."""
+    try:
+        job = _KillJob(proc)
+    except OSError as exc:
+        proc.kill()
+        proc.communicate()
+        raise RuntimeError(f"extractor not started: its process tree could not be contained "
+                           f"in a job object ({exc})") from exc
+    if _ntdll().NtResumeProcess(wintypes.HANDLE(int(proc._handle))) != 0:
+        job.kill()
+        job.close()
+        proc.communicate()
+        raise RuntimeError("extractor not started: NtResumeProcess failed")
+    return job
+
+
+def _ntdll():
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = (wintypes.HANDLE,)
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    return ntdll
+
+
 def _run_extractor(argv: list[str], prompt: str, timeout: float = TIMEOUT_SEC) -> str:
     """Runs the extractor for at most `timeout` seconds (inclusive); past that the whole
     process tree is killed and the run fails."""
     cwd = store_mod.state_dir()
     cwd.mkdir(parents=True, exist_ok=True)
-    spawn = ({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt"
-             else {"start_new_session": True})
+    spawn = ({"creationflags": subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED}
+             if os.name == "nt" else {"start_new_session": True})
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, encoding="utf-8",
                             errors="replace", cwd=str(cwd),
                             env=dict(os.environ, **{extract.EXTRACTOR_ENV: "1"}), **spawn)
-    # ponytail: the job is joined right after start, not suspended-start; a child forked
-    # in that first instant would escape it (a Python or node start-up takes far longer)
-    job = None
-    if os.name == "nt":
-        try:
-            job = _KillJob(proc)
-        except OSError:
-            job = None  # taskkill /T below
+    job = _contain(proc) if os.name == "nt" else None
     try:
         try:
             stdout, stderr = proc.communicate(prompt, timeout=timeout)
@@ -284,12 +306,12 @@ def _run_extractor(argv: list[str], prompt: str, timeout: float = TIMEOUT_SEC) -
             if job is not None:
                 job.kill()
             else:
-                ctx_mod.Ctx._kill_process_tree(proc)
+                ctx_mod.Ctx._kill_process_tree(proc)  # POSIX: the process group
             try:
                 proc.communicate(timeout=KILL_WAIT_SEC)
             except subprocess.TimeoutExpired:
                 proc.kill()
-            how = "job object" if job is not None else "taskkill /T" if os.name == "nt" else "killpg"
+            how = "job object" if job is not None else "killpg"
             raise RuntimeError(f"extractor timed out after {timeout:g} s; its process tree was "
                                f"killed ({how}, {time.monotonic() - started:.1f} s)") from exc
     finally:
@@ -305,11 +327,20 @@ def run_worker(episode_id: str, project_dir: str) -> int:
         os.nice(10)  # POSIX counterpart of the Windows priority class set at launch
     rt = db_mod.connect(db_mod.resolve_path())
     try:
+        claimed = rt.execute(
+            "UPDATE extractions SET detail=? WHERE episode_id=? AND status='pending'"
+            " AND detail IS NULL", (json.dumps({"claimed_by_pid": os.getpid()}), episode_id))
+        if claimed.rowcount != 1:
+            # only an extraction the hook registered, and only once (the CLI entry itself
+            # is hook-only, AC-4 a2)
+            print(f"ulthar extract: no unclaimed pending extraction for {episode_id}",
+                  file=sys.stderr)
+            return 2
         try:
             store = store_mod.Store.for_cwd(project_dir)
-            with store.reader() as conn:
+            with store.reader(rt) as conn:
                 episode = store_mod.get(conn, "episode", episode_id)
-                decisions = memory.active_decisions(conn)
+                decisions = memory.active_decisions(conn, rt)
             if episode is None:
                 raise RuntimeError(f"episode {episode_id} not found in {store.dir}")
             output = _run_extractor(extractor_argv(store.config),
@@ -321,7 +352,7 @@ def run_worker(episode_id: str, project_dir: str) -> int:
                 raise RuntimeError(f"invalid extractor output ({exc}): {output[:DETAIL_CHARS]}") from exc
             counts = write_candidates(store, episode, items,
                                       {"session_id": episode.get("session_id"),
-                                       "hook": "extractor"})
+                                       "hook": "extractor", "episode_id": episode_id}, rt)
         except Exception as exc:  # noqa: BLE001 -- every failure is recorded as failed
             extract.finish(rt, episode_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
             return 1

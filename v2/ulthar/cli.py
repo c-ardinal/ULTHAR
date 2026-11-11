@@ -1,6 +1,7 @@
 """`ulthar` command line (CORE-01):
   db init | ingest | status | hook                                  (R1-a)
-  decide list|review|confirm, fact add|list, inject, index rebuild  (R1-b)
+  decide list|review|confirm, fact add|list, inject, index rebuild,
+  store verify                                                     (R1-b)
   extract                         (internal: the detached extraction worker)
 Project-scoped commands act on the project of --project-dir (default: the current
 directory); see ulthar.store for how that maps to a knowledge_root.
@@ -177,6 +178,16 @@ def cmd_index_rebuild(args) -> int:
     return 0
 
 
+def cmd_store_verify(args) -> int:
+    """AC-20: recomputes every JSONL chain value; exit 5 and the first divergence when
+    any file differs from what ulthar wrote."""
+    problems = _store(args).verify()
+    for line in problems:
+        print(line)
+    print("store verify: OK" if not problems else f"store verify: {len(problems)} problem(s)")
+    return 0 if not problems else 5
+
+
 def cmd_extract(args) -> int:
     return worker_mod.run_worker(args.episode, args.project_dir or os.getcwd())
 
@@ -230,7 +241,11 @@ def build_parser() -> argparse.ArgumentParser:
     isub = idx.add_subparsers(dest="index_command", required=True)
     _leaf(isub, "rebuild", cmd_index_rebuild, "regenerate index.db from the JSONL files")
 
-    ex = _leaf(sub, "extract", cmd_extract, "(internal) run one extraction")
+    sto = sub.add_parser("store", help="knowledge store integrity")
+    ssub = sto.add_subparsers(dest="store_command", required=True)
+    _leaf(ssub, "verify", cmd_store_verify, "recompute the JSONL chain values (AC-20)")
+
+    ex = _leaf(sub, "extract", cmd_extract, "(internal, hook only) run one extraction")
     ex.add_argument("--episode", required=True)
     sub.add_parser("hook", help="hook dispatcher entry: ulthar hook --event <E> < payload",
                    add_help=False)

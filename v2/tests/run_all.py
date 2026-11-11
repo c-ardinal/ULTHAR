@@ -3,10 +3,12 @@
 
     C:/Python314/python.exe -X utf8 v2/tests/run_all.py
 
-  * v2 tests: test_*.py here -- R1-a AC-1..4, 7, 8, 11 and R1-b AC-1, 3..6, 8..15, 17
-    (test_store, test_protect, test_extract, test_memory, test_decide, test_cli_r1b,
-    test_imports); the real-transcript replay test_replay.py (R1-a AC-6/AC-9, R1-b
-    AC-2/AC-16) skips with a message when $ULTHAR_REPLAY_TRANSCRIPT is unset;
+  * v2 tests: test_*.py here -- R1-a AC-1..4, 7, 8, 11 and R1-b AC-1, 3..6, 8..15,
+    17..20 (test_store, test_integrity, test_protect, test_extract, test_memory,
+    test_decide, test_cli_r1b, test_spawn, test_imports); the real-transcript replay
+    test_replay.py (R1-a AC-6/AC-9, R1-b AC-2/AC-16) skips with a message when
+    $ULTHAR_REPLAY_TRANSCRIPT is unset, and runs only its counts (no timed stage, not
+    judged, no perf record) with ULTHAR_SKIP_PERF=1;
   * the four v1 guard suites (git discipline, tool discipline, commander, grants:
     464 checks at 971632f) from v1/, run against the v2 dispatcher.
 Each module exposes main() -> int (no pytest). A crash in one module is one failure

@@ -104,12 +104,88 @@ def check_timeout_kills_tree(p: Probe) -> None:
         sb.cleanup()
 
 
+def _wait_gone(marker: str, seconds: float = 5) -> list:
+    deadline = time.monotonic() + seconds
+    left = processes_matching(marker)
+    while left and time.monotonic() < deadline:
+        time.sleep(0.2)
+        left = processes_matching(marker)
+    return left
+
+
+def check_immediate_child_contained(p: Probe) -> None:
+    """Review finding 7: an extractor that starts a child at once (cmd.exe, far faster
+    than a Python start-up) cannot escape: it is created suspended and joins the job
+    before running."""
+    if os.name != "nt":
+        print("SKIP: job objects are Windows-only")
+        return
+    sb = Sandbox()
+    try:
+        marker = f"ulthar-fast-{os.urandom(4).hex()}"
+        cfg_path = sb.work / ".claude" / "ulthar.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["extractor"] = {"timeout_sec": TIMEOUT_SEC, "cmd": [
+            "cmd", "/c", "start", "fastchild", "/b", sys.executable, "-S", "-c", "import time; time.sleep(60)",
+            marker, "&", "ping", "-n", "60", "127.0.0.1"]}
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        sb.hook("UserPromptSubmit", {"session_id": "fast", "prompt": "すぐ子を作る抽出",
+                                     "prompt_id": "fast-1"})
+        rows = wait_extractions(sb)
+        left = _wait_gone(marker)
+        p.check("an extractor that spawns a child immediately: timed out, failed recorded",
+                [r[1] for r in rows] == ["failed"] and "timed out" in (rows[0][2] or ""), str(rows))
+        p.check(f"  ... and the immediately spawned child is gone too (left: {len(left)})",
+                not left, str(left))
+    finally:
+        sb.cleanup()
+
+
+def check_no_job_no_run(p: Probe) -> None:
+    """Review finding 7: when the job object cannot be made, the suspended extractor is
+    terminated before it runs (its child never starts) and the run fails."""
+    if os.name != "nt":
+        print("SKIP: job objects are Windows-only")
+        return
+    from ulthar import worker  # noqa: PLC0415
+
+    sb = Sandbox()
+    marker = f"ulthar-nojob-{os.urandom(4).hex()}"
+    real = worker._KillJob
+
+    def no_job(proc):
+        raise OSError(5, "injected: AssignProcessToJobObject failed")
+
+    try:
+        worker._KillJob = no_job
+        with sb.inproc():
+            try:
+                worker._run_extractor([sys.executable, "-S", "-c",
+                                       "import subprocess, sys, time; subprocess.Popen([sys.executable,"
+                                       " '-S', '-c', 'import time; time.sleep(60)', sys.argv[1]]);"
+                                       " time.sleep(60)", marker], "prompt", 30)
+                err = "ran"
+            except RuntimeError as exc:
+                err = str(exc)
+        time.sleep(1)
+        left = processes_matching(marker)
+        p.check("job setup failing (forced): the extractor is not run, failure raised",
+                "could not be contained" in err, err)
+        p.check(f"  ... nothing it would have started exists (left: {len(left)})", not left,
+                str(left))
+    finally:
+        worker._KillJob = real
+        sb.cleanup()
+
+
 def main() -> int:
     p = Probe()
     print("\n== AC-18: no console windows ==")
     check_no_console_window(p)
     print("\n== AC-19: extractor timeout kills the tree ==")
     check_timeout_kills_tree(p)
+    check_immediate_child_contained(p)
+    check_no_job_no_run(p)
     return p.result()
 
 

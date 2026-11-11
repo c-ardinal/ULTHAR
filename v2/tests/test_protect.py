@@ -7,13 +7,18 @@ production hook, main session and subagent alike):
   (c) Edit/Write/MultiEdit/NotebookEdit into <knowledge_root>/.ulthar/ or ~/.claude/ulthar/
       -- 4 blocked;
   (d) shell commands naming those paths that are not ulthar CLI calls -- 2 blocked.
+Also AC-4 a2 (`ulthar hook`, `ulthar extract`, `__main__.py hook`) and c's resolution
+(a junction alias and a case variant): blocked 5/5. Shell-side path assembly
+(Join-Path etc.) is the spec's known limit, detected later through AC-20's record.
 Each block must come from the memory-store guard itself (memhook.protect), not only
 from some other rule, so the guard is also checked directly on every fixture.
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
+from pathlib import Path
 
 from helpers import Probe, Sandbox, load_fixture
 
@@ -78,10 +83,62 @@ def check_read_paths_allowed(p: Probe) -> None:
         sb.cleanup()
 
 
+def _junction(link, target) -> bool:
+    """A directory junction (no admin rights needed); a symlink where there are none."""
+    import subprocess  # noqa: PLC0415
+
+    if os.name == "nt":
+        res = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                             capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        return res.returncode == 0
+    os.symlink(target, link, target_is_directory=True)
+    return True
+
+
+def check_hook_only_and_aliases(p: Probe) -> None:
+    """AC-4 a2 (hook-only entry points, main and subagent) and c (a junction alias and a
+    case variant of a store path): blocked 5/5."""
+    sb = Sandbox()
+    try:
+        main_py = str(Path(memhook.__file__).with_name("__main__.py")).replace("\\", "/")
+        (sb.kr / ".ulthar").mkdir(parents=True)
+        alias = sb.work / "notes-alias"
+        made = _junction(alias, sb.kr / ".ulthar")
+        upper = str(sb.kr).replace("\\", "/") + "/.ULTHAR/decisions.jsonl"
+        cases = [
+            ("a2 ulthar hook (main)", {"tool_name": "Bash", "tool_input": {
+                "command": "echo '{}' | ulthar hook --event PostToolUse"}}),
+            ("a2 ulthar extract (subagent)", {"tool_name": "PowerShell", "agent_id": "a-x",
+                                              "agent_type": "t", "tool_input": {
+                "command": "python -m ulthar extract --episode E-1 --project-dir ."}}),
+            ("a2 __main__.py hook directly (main)", {"tool_name": "Bash", "tool_input": {
+                "command": f'python -S "{main_py}" hook --event PreToolUse < forged.json'}}),
+            ("c Write through a junction alias of .ulthar", {"tool_name": "Write", "tool_input": {
+                "file_path": str(alias / "decisions.jsonl"), "content": "x"}}),
+            ("c Edit with a case variant (.ULTHAR)", {"tool_name": "Edit", "tool_input": {
+                "file_path": upper, "old_string": "a", "new_string": "b"}}),
+        ]
+        blocked = 0
+        for label, payload in cases:
+            proc = sb.hook("PreToolUse", dict(payload, session_id="prot2"))
+            ok = proc.returncode == 2 and "memory store" in proc.stderr
+            blocked += ok
+            p.check(f"{label}: blocked", ok, f"rc={proc.returncode} {proc.stderr[-300:]}")
+        p.check("the junction alias was created for the test", made)
+        p.check(f"AC-4 a2 + c aliases: blocked {blocked}/5", blocked == 5)
+        free = sb.hook("PreToolUse", {"session_id": "prot2", "tool_name": "Write", "tool_input": {
+            "file_path": str(sb.work / "notes" / "ok.txt"), "content": "x"}})
+        p.check("  ... an ordinary new file next to it is not blocked", free.returncode == 0,
+                free.stderr[-300:])
+    finally:
+        sb.cleanup()
+
+
 def main() -> int:
     p = Probe()
     check_fixtures(p)
     check_read_paths_allowed(p)
+    check_hook_only_and_aliases(p)
     return p.result()
 
 

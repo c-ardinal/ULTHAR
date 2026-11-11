@@ -6,7 +6,9 @@ ingest_cursors, tool_names (CORE-07 transcript ingestion), journal_replayed (mak
 the fallback journal's replay idempotent, ulthar.journal), extractions (decision
 extraction state per owner_msg Episode: pending/done/failed, DEC-01), injections
 (the last Episode seq shown by L0, per project) and reminders (candidate sets the
-Stop hook already asked about). Episodes themselves live in the knowledge store
+Stop hook already asked about), store_chain (the chain value of every knowledge-store
+append, AC-20, a second copy of index.db's) and confirm_ops (progress of a decide
+confirm, so a retry completes it). Episodes themselves live in the knowledge store
 (ulthar.store), not here (R1-b AC-2).
 """
 from __future__ import annotations
@@ -15,7 +17,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 BUSY_TIMEOUT_MS = 5000
 DB_ENV = "ULTHAR_RUNTIME_DB"
 
@@ -90,6 +92,11 @@ CREATE INDEX IF NOT EXISTS extractions_project ON extractions(project_id, status
 CREATE TABLE IF NOT EXISTS injections (
   project_id TEXT NOT NULL, layer TEXT NOT NULL, last_seq INTEGER NOT NULL, ts TEXT,
   PRIMARY KEY (project_id, layer));
+CREATE TABLE IF NOT EXISTS store_chain (
+  store_dir TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL, chain TEXT NOT NULL,
+  ts TEXT, PRIMARY KEY (store_dir, name, size));
+CREATE TABLE IF NOT EXISTS confirm_ops (
+  token_id TEXT PRIMARY KEY, stage TEXT NOT NULL, detail TEXT, ts TEXT);
 CREATE TABLE IF NOT EXISTS reminders (
   project_id TEXT NOT NULL, candidates_sha TEXT NOT NULL, ts TEXT,
   PRIMARY KEY (project_id, candidates_sha));

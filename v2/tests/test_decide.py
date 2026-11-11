@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sys
 
-from helpers import Probe, Sandbox
+from helpers import Probe, Sandbox, write_jsonl
 
 from ulthar import decide as decide_mod
 
@@ -27,17 +27,46 @@ def current(sb: Sandbox, rec_id: str) -> dict:
                                 (rec_id,))[0][0])
 
 
-def ask_and_answer(sb: Sandbox, answer: str, tool_use_id: str, notes: str | None = None):
-    """review -> PreToolUse/PostToolUse AskUserQuestion through the hook -> token id."""
+SESSION = "dec"
+
+
+def transcript(sb: Sandbox):
+    return sb.root / "dec-session.jsonl"
+
+
+def tool_use_line(tool_use_id: str, question_input: dict) -> dict:
+    return {"type": "assistant", "uuid": f"a-{tool_use_id}", "message": {"role": "assistant",
+            "content": [{"type": "tool_use", "id": tool_use_id, "name": "AskUserQuestion",
+                         "input": question_input}]}}
+
+
+def tool_result_line(tool_use_id: str, question: str, answer: str) -> dict:
+    """Claude Code's AskUserQuestion result text: `..."<question>"="<answer>"`."""
+    return {"type": "user", "uuid": f"r-{tool_use_id}", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tool_use_id,
+         "content": f'Your questions have been answered: "{question}"="{answer}"'}]}}
+
+
+def ask_and_answer(sb: Sandbox, answer: str, tool_use_id: str, notes: str | None = None,
+                   in_transcript: bool = True, transcript_answer: str | None = None):
+    """review -> the AskUserQuestion tool_use in the session transcript -> PreToolUse /
+    PostToolUse through the hook -> the tool_result in the transcript -> token id."""
     review = sb.cli("decide", "review")
     question_input = json.loads(review.stdout)
     q = question_input["questions"][0]["question"]
-    base = {"session_id": "dec", "tool_name": "AskUserQuestion", "tool_input": question_input,
-            "tool_use_id": tool_use_id}
+    path = transcript(sb)
+    if in_transcript:
+        write_jsonl(path, [tool_use_line(tool_use_id, question_input)], mode="a")
+    elif not path.exists():
+        path.write_text("", encoding="utf-8")
+    base = {"session_id": SESSION, "tool_name": "AskUserQuestion", "tool_input": question_input,
+            "tool_use_id": tool_use_id, "transcript_path": str(path)}
     pre = sb.hook("PreToolUse", base)
     response = {"questions": question_input["questions"], "answers": {q: answer},
                 "annotations": {q: {"notes": notes}} if notes else {}}
     post = sb.hook("PostToolUse", dict(base, tool_response=response))
+    if in_transcript:
+        write_jsonl(path, [tool_result_line(tool_use_id, q, transcript_answer or answer)], mode="a")
     row = sb.query("SELECT detail FROM events WHERE hook='PostToolUse' ORDER BY id DESC LIMIT 1")
     token = json.loads(row[0][0]).get("issued_token") if row else None
     return review, q, pre, post, token
@@ -160,12 +189,121 @@ def check_stop_reminder(p: Probe) -> None:
         sb.cleanup()
 
 
+def check_forgery_through_the_hook(p: Probe) -> None:
+    """Review finding 2, end to end through the public hook entry (as if the AC-4 a2 guard
+    were bypassed): fabricated Pre/PostToolUse events alone issue no token, and a
+    fabricated approval over a real question is refused at confirm."""
+    sb = Sandbox()
+    try:
+        add_decisions(sb, {"text": "決定 A"})
+        _, _, _, post, token = ask_and_answer(sb, decide_mod.APPROVE, "tu-fake", in_transcript=False)
+        detail = json.loads(sb.query("SELECT detail FROM events WHERE hook='PostToolUse'"
+                                     " ORDER BY id DESC LIMIT 1")[0][0])
+        p.check("forged AskUserQuestion events with no transcript record -> no token issued",
+                token is None and "not issued" in detail.get("decide_review", ""), str(detail))
+        _, _, _, _, token = ask_and_answer(sb, decide_mod.APPROVE, "tu-lie",
+                                           transcript_answer=decide_mod.REJECT)
+        res = sb.cli("decide", "confirm", "--token", token or "-")
+        p.check("a PostToolUse claiming 全て承認 while the transcript says 全て却下 -> confirm "
+                "refused, nothing applied",
+                bool(token) and res.returncode != 0 and "not in the session transcript" in res.stderr
+                and all(json.loads(r[0])["status"] == "provisional" for r in
+                        sb.kquery("SELECT json FROM current WHERE kind='decision'")),
+                res.stderr[-300:])
+    finally:
+        sb.cleanup()
+
+
+def _revisions_by(sb: Sandbox, token: str, work=None) -> int:
+    rows = sb.kquery("SELECT json FROM records WHERE kind='decision'", work=work)
+    return sum(1 for r in rows if json.loads(r[0]).get("op_id") == token)
+
+
+def check_confirm_recovers(p: Probe) -> None:
+    """Review finding 6: a confirm that fails mid-way (global-store lock, extraction
+    registration) leaves the token unconsumed; the retry completes the missing stages
+    without reapplying or refusing them."""
+    from ulthar import db as db_mod  # noqa: PLC0415
+    from ulthar import extract as extract_mod  # noqa: PLC0415
+    from ulthar import store as store_mod  # noqa: PLC0415
+
+    sb = Sandbox()
+    try:
+        old = add_decisions(sb, {"text": "旧: 余白 8px", "status": "confirmed", "binding": True})[0]
+        add_decisions(sb, {"text": "全体: 秘密は環境変数に置く", "scope": "global"},
+                      {"text": "余白 4px", "supersedes": [old["id"]]})
+        _, _, _, _, token = ask_and_answer(sb, decide_mod.APPROVE, "tu-rec")
+        real_global = decide_mod._global_store
+
+        class LockedGlobal(store_mod.Store):
+            def transaction(self, writer, rt=None):
+                raise store_mod.StoreError("injected: global store lock not acquired")
+
+        with sb.inproc():
+            decide_mod._global_store = lambda: LockedGlobal(store_mod.state_dir() / "global",
+                                                             store_mod.GLOBAL_PROJECT_ID)
+            rt = db_mod.connect(sb.db)
+            try:
+                decide_mod.confirm(sb.store(), rt, token, str(sb.work))
+                first = "no error"
+            except store_mod.StoreError as exc:
+                first = str(exc)
+            finally:
+                decide_mod._global_store = real_global
+            unconsumed = rt.execute("SELECT consumed_at FROM tokens WHERE token_id=?",
+                                    (token,)).fetchone()[0] is None
+            applied_once = _revisions_by(sb, token)
+            result = decide_mod.confirm(sb.store(), rt, token, str(sb.work))
+            rt.close()
+            with store_mod.Store.global_store().reader() as gconn:
+                shared = [d for d in store_mod.current(gconn, "decision") if d.get("op_id") == token]
+        p.check("confirm with the global store failing: error, token not consumed, project "
+                "stage already applied",
+                "injected" in first and unconsumed and applied_once == 3, f"{first} {applied_once}")
+        p.check("  ... the retry completes the global stage and consumes the token, "
+                "without re-applying the project stage",
+                result.get("answer") == "approve" and len(shared) == 1
+                and _revisions_by(sb, token) == 3
+                and sb.query("SELECT consumed_at FROM tokens WHERE token_id=?", (token,))[0][0],
+                f"{result} shared={len(shared)} revisions={_revisions_by(sb, token)}")
+
+        add_decisions(sb, {"text": "角丸 4px"})
+        _, _, _, _, token = ask_and_answer(sb, "カードだけ 8px", "tu-part")
+        real_register = extract_mod.register
+        with sb.inproc():
+            def failing(*a, **k):
+                raise RuntimeError("injected: runtime.db busy")
+            extract_mod.register = failing
+            rt = db_mod.connect(sb.db)
+            try:
+                decide_mod.confirm(sb.store(), rt, token, str(sb.work))
+                first = "no error"
+            except RuntimeError as exc:
+                first = str(exc)
+            finally:
+                extract_mod.register = real_register
+            decide_mod.confirm(sb.store(), rt, token, str(sb.work))
+            rt.close()
+        corrections = [e for e in sb.episodes("owner_msg") if e.get("op_id") == token]
+        rows = sb.query("SELECT status FROM extractions WHERE episode_id=?",
+                        (corrections[0]["id"],)) if corrections else []
+        p.check("partial answer failing at extraction registration: the retry saves the "
+                "correction once and registers it",
+                "injected" in first and len(corrections) == 1 and bool(rows)
+                and sb.query("SELECT consumed_at FROM tokens WHERE token_id=?", (token,))[0][0],
+                f"{first} corrections={len(corrections)} rows={rows}")
+    finally:
+        sb.cleanup()
+
+
 def main() -> int:
     p = Probe()
     print("\n== AC-12: batch confirmation ==")
     check_review_format(p)
     check_three_answers(p)
     check_refusals(p)
+    check_forgery_through_the_hook(p)
+    check_confirm_recovers(p)
     print("\n== AC-13: Stop reminder ==")
     check_stop_reminder(p)
     return p.result()
