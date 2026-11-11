@@ -178,6 +178,7 @@ class Store:
         self.config = config or {}
         self.dir = self.root / STORE_DIRNAME
         self.index_path = self.dir / "index.db"
+        self._deferred: dict | None = None  # the manifest this instance left for finalize
 
     # ------------------------------------------------------------------ construction
     @classmethod
@@ -258,14 +259,15 @@ class Store:
         chain does not account for. A same-size, same-content touch only refreshes mtime."""
         plan = integrity.read_manifest(self.dir)
         if plan is not None:
-            confirmed = [tuple(r) for r in plan.get("committed", [])]
+            prior = [tuple(r) for r in plan.get("committed", [])]
             indexed = dict(conn.execute("SELECT name, size FROM files"))
-            if all(indexed.get(n) == step["new"] for n, step in plan["files"].items()):
-                confirmed += [(n, s["new"], s["chain"]) for n, s in plan["files"].items()]
-            else:
+            done = all(indexed.get(n) == step["new"] for n, step in plan["files"].items())
+            if not done:
                 integrity.roll_back(self.dir, plan)
-            self._record_runtime_chain(rt, confirmed)
-            self._finish_manifest(rt, confirmed)
+            self._record_runtime_chain(rt, prior + ([(n, s["new"], s["chain"])
+                                                     for n, s in plan["files"].items()]
+                                                    if done else []))
+            self._finish_manifest(rt, plan if done else {"files": {}, "committed": prior})
         if not conn.execute("SELECT 1 FROM files LIMIT 1").fetchone() and any(
                 self._file_state(n)[0] for n in FILES.values()):
             self._reindex_all(conn, rt)
@@ -280,21 +282,32 @@ class Store:
                 raise IntegrityError("; ".join(problems) or f"{name}: not recorded by ulthar")
             conn.execute("UPDATE files SET mtime_ns=? WHERE name=?", (mtime, name))
 
-    def _finish_manifest(self, rt, committed: list[tuple]) -> None:
+    def _finish_manifest(self, rt, keep: dict) -> None:
         """The manifest goes once the runtime.db chain rows of its committed appends are
-        durable. Inside the caller's open runtime.db transaction they are not yet: the
-        manifest then keeps just those rows (`committed`), so a rollback of that
-        transaction is repaired by the next open (or `finalize`) re-recording them."""
-        if rt is not None and rt.in_transaction and committed:
-            integrity.write_manifest(self.dir, {"files": {}, "committed": [list(r) for r in committed]})
-        else:
+        durable. Inside the caller's open runtime.db transaction they are not yet: then a
+        manifest describing exactly those rows (`keep`) must stay, so a rollback of that
+        transaction is repaired by the next open (or `finalize`) re-recording them. The
+        manifest already on disk is reused when it is that one (no second write)."""
+        has_rows = bool(keep.get("committed")) or bool(keep.get("files"))
+        if rt is None or not rt.in_transaction or not has_rows:
             integrity.clear_manifest(self.dir)
+            self._deferred = None
+            return
+        if integrity.read_manifest(self.dir) != keep:
+            integrity.write_manifest(self.dir, keep)
+        self._deferred = keep
 
     def finalize(self, rt=None) -> None:
         """Called by a caller whose runtime.db transaction (holding chain rows written by
         a store transaction) has just committed: the deferred manifest is resolved."""
         if not (self.dir / integrity.MANIFEST).exists():
             return
+        if self._deferred is not None:
+            with self._lock():  # our own manifest: its rows were in the committed transaction
+                if integrity.read_manifest(self.dir) == self._deferred:
+                    integrity.clear_manifest(self.dir)
+                    self._deferred = None
+                    return
         with self._lock():
             try:
                 conn = self._connect()
@@ -596,12 +609,12 @@ class Tx:
             except sqlite3.Error:
                 pass
             integrity.roll_back(store.dir, plan)
-            store._finish_manifest(rt, [tuple(r) for r in prior])
+            store._finish_manifest(rt, {"files": {}, "committed": prior})
             raise
         rows = [tuple(r) for r in prior] + [(n, s["new"], s["chain"])
                                             for n, s in plan["files"].items()]
         store._record_runtime_chain(rt, rows)
-        store._finish_manifest(rt, rows)
+        store._finish_manifest(rt, plan)  # in an open runtime transaction: the same file stays
 
 
 def _index_record(conn: sqlite3.Connection, kind: str, rec: dict) -> None:
