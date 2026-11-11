@@ -6,8 +6,9 @@
 
 State: a sandbox whose store holds the real transcript's Episodes, 200 decisions (20
 confirmed), and a session transcript that gets one fresh owner line before every call
--- as test_replay does. For PreToolUse (Bash `ls -la`), SubagentStart and
-UserPromptSubmit it reports:
+-- as test_replay does; and (R1-c AC-14) a unit in build with the confirmed scope src/**.
+For PreToolUse (Bash `ls -la`), PreToolUse:Edit (a builder's Edit of src/, the whole unit
+scope check), SubagentStart and UserPromptSubmit it reports:
   * wall time of the production hook command (process start included), p50 of N calls;
   * interpreter start + imports (`-X importtime` of the same command);
   * in-process time per phase of the dispatcher (wrapping its functions), averaged.
@@ -108,6 +109,10 @@ PHASES = [
     ("ulthar.hook", "_run_guards", "v1 guard pipeline (config load + guards)"),
     ("ulthar.hook", "_run_memory", "memory step (protect, L0/L1, prompt, launch)"),
     ("ulthar.memhook", "protect", "store guard (shellwords, realpath)"),
+    ("ulthar.tokens", "runner_request", "runner-token check (R1-c AC-4)"),
+    ("ulthar.product", "check", "unit scope check (R1-c AC-11)"),
+    ("ulthar.product", "scoped_units", "unit scope lookup (index.db reader)"),
+    ("ulthar.product", "forms", "path forms (abspath, realpath)"),
     ("ulthar.memory", "build_l1", "L1 assembly"),
     ("ulthar.memory", "build_l0", "L0 assembly"),
     ("ulthar.extract", "launch", "extractor spawn"),

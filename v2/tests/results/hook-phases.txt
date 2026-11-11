@@ -362,3 +362,249 @@ Summary (profile_hook, 25 calls each, p50 / p95 ms; NOT acceptance):
   SubagentStart      448 / 506    358 / 448    246 / 261    208 / 217
   UserPromptSubmit   473 / 616    393 / 479    247 / 309    215 / 271
 What remains per call is mostly interpreter start + imports (~150-170 ms, as in R1-a).
+
+
+######## R1-c headroom (2026-11-12), feature/v2-r1c -- NOT acceptance ########
+Another heavy python job ran on this PC throughout: absolute times are noisy, and run-to-run
+spread of p95 at 25 calls is +-30 ms. Both trees were profiled from copies in the same temp
+directory (a tree's location alone moved import time by ~20 ms here), with the real
+transcript's Episodes ingested, 200 decisions and the AC-14 unit (build, scope src/**).
+
+What R1-c adds per hook call, against R1-b 329b1fb (cProfile call counts, 20 calls/event,
+and interleaved process-start runs):
+  * imports: two modules (ulthar.product, ulthar.tokens) on every event, ~2-3 ms;
+  * two more knowledge-store files (issues.jsonl, units.jsonl) stat'ed by every settle,
+    ~0.1-0.3 ms each (the tamper check covers them; kept);
+  * PreToolUse Bash: the runner-token parse and the write-target parse, < 0.2 ms;
+  * PreToolUse Edit: the unit scope check, ~2-3 ms (path forms with realpath, the
+    index.db reader that settles before the unit lookup; all kept);
+  * no new SQLite opens, no git or other subprocess, no transcript check on these paths.
+Interleaved R1-b vs R1-c (e0ab754), 40 calls each: p50 +3 ms PreToolUse, +7 ms
+SubagentStart, UserPromptSubmit within noise.
+Change: ulthar.memhook imports product/tokens inside the steps that use them (PreToolUse,
+AskUserQuestion PostToolUse); an import failure raises inside the memory step, which
+blocks a PreToolUse as before.
+
+== BEFORE (e0ab754) profile_hook ==
+store state: real transcript ingested -> {"owner_msg": 570, "ask": 368, "answer": 368, "compact_summary": 10, "agent_report": 470, "lines": 53947, "gaps": [], "seconds": 3.054}
+
+== PreToolUse ==
+wall (process start included), 25 calls: p50 276.7 ms, p95 371.3 ms
+imports (top-level, -X importtime): 178.1 ms; largest: ulthar.hook 109.6, pathlib 46.1, encodings 8.5, encodings.utf_8_sig 2.9, ulthar 2.3, zipimport 1.9
+     46.6 ms  (in-process total)
+     42.0 ms  runtime.db open + journal + transcript catch-up
+     25.4 ms  transcript catch-up (ingest)
+     14.6 ms  runtime.db connect
+     11.6 ms  Store.transaction (enter)
+      8.9 ms  index.db connect
+      4.6 ms  JSONL append + index commit (+ manifest)
+      4.6 ms  Store.transaction (exit)
+      3.0 ms  txn.json write (temp+flush+replace)
+      2.3 ms  v1 guard pipeline (config load + guards)
+      1.4 ms  project resolution (repo root, ulthar.json)
+      1.3 ms  store settle (manifest, mtime check)
+      1.3 ms  events row
+      0.7 ms  store finalize (deferred manifest)
+      0.6 ms  host check
+      0.6 ms  txn.json remove
+      0.1 ms  runtime.db chain rows
+      0.1 ms  store guard (shellwords, realpath)
+      0.1 ms  memory step (protect, L0/L1, prompt, launch)
+      0.0 ms  runner-token check (R1-c AC-4)
+      0.0 ms  unit scope check (R1-c AC-11)
+
+== PreToolUse:Edit ==
+wall (process start included), 25 calls: p50 249.9 ms, p95 296.1 ms
+imports (top-level, -X importtime): 161.4 ms; largest: ulthar.hook 98.3, pathlib 44.4, encodings 7.3, encodings.utf_8_sig 2.7, ulthar 2.4, encodings.cp932 1.9
+     45.2 ms  (in-process total)
+     35.5 ms  runtime.db open + journal + transcript catch-up
+     22.1 ms  transcript catch-up (ingest)
+     11.6 ms  runtime.db connect
+     10.0 ms  Store.transaction (enter)
+      8.2 ms  index.db connect
+      5.4 ms  v1 guard pipeline (config load + guards)
+      3.5 ms  JSONL append + index commit (+ manifest)
+      3.5 ms  Store.transaction (exit)
+      3.3 ms  memory step (protect, L0/L1, prompt, launch)
+      2.2 ms  txn.json write (temp+flush+replace)
+      1.9 ms  unit scope check (R1-c AC-11)
+      1.4 ms  store guard (shellwords, realpath)
+      1.3 ms  project resolution (repo root, ulthar.json)
+      0.8 ms  path forms (abspath, realpath)
+      0.8 ms  unit scope lookup (index.db reader)
+      0.7 ms  Store.reader (enter)
+      0.6 ms  store settle (manifest, mtime check)
+      0.6 ms  txn.json remove
+      0.6 ms  store finalize (deferred manifest)
+      0.5 ms  host check
+      0.4 ms  events row
+      0.1 ms  runtime.db chain rows
+      0.0 ms  runner-token check (R1-c AC-4)
+      0.0 ms  Store.reader (exit)
+
+== SubagentStart ==
+wall (process start included), 25 calls: p50 261.0 ms, p95 291.3 ms
+imports (top-level, -X importtime): 155.6 ms; largest: ulthar.hook 96.2, pathlib 40.4, encodings 7.8, encodings.utf_8_sig 2.7, ulthar 2.3, zipimport 1.9
+     42.8 ms  (in-process total)
+     36.9 ms  runtime.db open + journal + transcript catch-up
+     22.5 ms  transcript catch-up (ingest)
+     12.7 ms  runtime.db connect
+      9.7 ms  Store.transaction (enter)
+      7.8 ms  index.db connect
+      4.3 ms  L1 assembly
+      4.3 ms  memory step (protect, L0/L1, prompt, launch)
+      3.4 ms  JSONL append + index commit (+ manifest)
+      3.4 ms  Store.transaction (exit)
+      2.2 ms  txn.json write (temp+flush+replace)
+      1.2 ms  project resolution (repo root, ulthar.json)
+      1.1 ms  Store.reader (enter)
+      0.7 ms  store settle (manifest, mtime check)
+      0.6 ms  store finalize (deferred manifest)
+      0.5 ms  host check
+      0.5 ms  txn.json remove
+      0.4 ms  v1 guard pipeline (config load + guards)
+      0.4 ms  events row
+      0.1 ms  runtime.db chain rows
+      0.0 ms  Store.reader (exit)
+
+== UserPromptSubmit ==
+wall (process start included), 25 calls: p50 235.5 ms, p95 297.2 ms
+imports (top-level, -X importtime): 174.0 ms; largest: ulthar.hook 107.4, pathlib 46.1, encodings 8.5, encodings.utf_8_sig 2.8, zipimport 2.1, ulthar 2.1
+     52.7 ms  runtime.db connect
+     37.9 ms  (in-process total)
+     25.3 ms  runtime.db open + journal + transcript catch-up
+     19.8 ms  transcript catch-up (ingest)
+     11.2 ms  memory step (protect, L0/L1, prompt, launch)
+      9.7 ms  extractor spawn
+      7.1 ms  Store.transaction (enter)
+      5.3 ms  index.db connect
+      3.7 ms  JSONL append + index commit (+ manifest)
+      3.7 ms  Store.transaction (exit)
+      2.2 ms  txn.json write (temp+flush+replace)
+      1.2 ms  project resolution (repo root, ulthar.json)
+      0.7 ms  store settle (manifest, mtime check)
+      0.6 ms  store finalize (deferred manifest)
+      0.6 ms  Store.reader (enter)
+      0.5 ms  host check
+      0.5 ms  txn.json remove
+      0.3 ms  v1 guard pipeline (config load + guards)
+      0.3 ms  events row
+      0.1 ms  runtime.db chain rows
+      0.0 ms  Store.reader (exit)
+
+== AFTER profile_hook ==
+store state: real transcript ingested -> {"owner_msg": 570, "ask": 368, "answer": 368, "compact_summary": 10, "agent_report": 470, "lines": 53947, "gaps": [], "seconds": 2.785}
+
+== PreToolUse ==
+wall (process start included), 25 calls: p50 239.9 ms, p95 304.0 ms
+imports (top-level, -X importtime): 157.8 ms; largest: ulthar.hook 94.2, pathlib 40.3, encodings 7.6, encodings.utf_8_sig 2.6, zipimport 1.9, ulthar 1.8
+     43.6 ms  (in-process total)
+     40.5 ms  runtime.db open + journal + transcript catch-up
+     21.9 ms  transcript catch-up (ingest)
+     16.9 ms  runtime.db connect
+     10.0 ms  Store.transaction (enter)
+      8.1 ms  index.db connect
+      3.6 ms  Store.transaction (exit)
+      3.5 ms  JSONL append + index commit (+ manifest)
+      2.2 ms  txn.json write (temp+flush+replace)
+      1.7 ms  v1 guard pipeline (config load + guards)
+      1.3 ms  project resolution (repo root, ulthar.json)
+      0.7 ms  store settle (manifest, mtime check)
+      0.6 ms  store finalize (deferred manifest)
+      0.6 ms  events row
+      0.5 ms  txn.json remove
+      0.4 ms  host check
+      0.2 ms  memory step (protect, L0/L1, prompt, launch)
+      0.1 ms  runtime.db chain rows
+      0.1 ms  store guard (shellwords, realpath)
+      0.0 ms  runner-token check (R1-c AC-4)
+      0.0 ms  unit scope check (R1-c AC-11)
+
+== PreToolUse:Edit ==
+wall (process start included), 25 calls: p50 244.5 ms, p95 262.9 ms
+imports (top-level, -X importtime): 156.2 ms; largest: ulthar.hook 93.0, pathlib 41.4, encodings 7.6, encodings.utf_8_sig 2.6, ulthar 2.0, zipimport 2.0
+     43.5 ms  (in-process total)
+     34.1 ms  runtime.db open + journal + transcript catch-up
+     21.5 ms  transcript catch-up (ingest)
+     10.9 ms  runtime.db connect
+      9.9 ms  Store.transaction (enter)
+      8.0 ms  index.db connect
+      5.2 ms  v1 guard pipeline (config load + guards)
+      3.4 ms  JSONL append + index commit (+ manifest)
+      3.4 ms  Store.transaction (exit)
+      3.1 ms  memory step (protect, L0/L1, prompt, launch)
+      2.1 ms  txn.json write (temp+flush+replace)
+      2.0 ms  path forms (abspath, realpath)
+      1.8 ms  unit scope check (R1-c AC-11)
+      1.4 ms  store guard (shellwords, realpath)
+      1.2 ms  project resolution (repo root, ulthar.json)
+      0.8 ms  unit scope lookup (index.db reader)
+      0.7 ms  Store.reader (enter)
+      0.6 ms  store settle (manifest, mtime check)
+      0.6 ms  store finalize (deferred manifest)
+      0.5 ms  host check
+      0.5 ms  txn.json remove
+      0.3 ms  events row
+      0.1 ms  runtime.db chain rows
+      0.0 ms  runner-token check (R1-c AC-4)
+      0.0 ms  Store.reader (exit)
+
+== SubagentStart ==
+wall (process start included), 25 calls: p50 232.8 ms, p95 291.1 ms
+imports (top-level, -X importtime): 159.6 ms; largest: ulthar.hook 98.9, pathlib 42.2, encodings 7.5, encodings.utf_8_sig 2.8, ulthar 2.0, zipimport 1.9
+     51.1 ms  (in-process total)
+     45.0 ms  runtime.db open + journal + transcript catch-up
+     23.5 ms  transcript catch-up (ingest)
+     12.7 ms  runtime.db connect
+     10.1 ms  Store.transaction (enter)
+      8.3 ms  project resolution (repo root, ulthar.json)
+      8.2 ms  index.db connect
+      4.4 ms  L1 assembly
+      4.4 ms  memory step (protect, L0/L1, prompt, launch)
+      3.7 ms  Store.transaction (exit)
+      3.6 ms  JSONL append + index commit (+ manifest)
+      2.2 ms  txn.json write (temp+flush+replace)
+      1.1 ms  Store.reader (enter)
+      0.7 ms  store settle (manifest, mtime check)
+      0.6 ms  txn.json remove
+      0.6 ms  store finalize (deferred manifest)
+      0.5 ms  host check
+      0.4 ms  v1 guard pipeline (config load + guards)
+      0.4 ms  events row
+      0.1 ms  runtime.db chain rows
+      0.0 ms  Store.reader (exit)
+
+== UserPromptSubmit ==
+wall (process start included), 25 calls: p50 233.9 ms, p95 286.0 ms
+imports (top-level, -X importtime): 152.5 ms; largest: ulthar.hook 94.0, pathlib 39.2, encodings 8.2, encodings.utf_8_sig 2.9, zipimport 2.1, ulthar 2.0
+     55.5 ms  runtime.db connect
+     39.1 ms  (in-process total)
+     26.5 ms  runtime.db open + journal + transcript catch-up
+     20.6 ms  transcript catch-up (ingest)
+     11.1 ms  memory step (protect, L0/L1, prompt, launch)
+      9.7 ms  extractor spawn
+      7.5 ms  Store.transaction (enter)
+      5.6 ms  index.db connect
+      4.0 ms  Store.transaction (exit)
+      3.9 ms  JSONL append + index commit (+ manifest)
+      2.3 ms  txn.json write (temp+flush+replace)
+      1.3 ms  project resolution (repo root, ulthar.json)
+      0.7 ms  store settle (manifest, mtime check)
+      0.7 ms  Store.reader (enter)
+      0.6 ms  txn.json remove
+      0.6 ms  store finalize (deferred manifest)
+      0.5 ms  host check
+      0.3 ms  v1 guard pipeline (config load + guards)
+      0.3 ms  events row
+      0.1 ms  runtime.db chain rows
+      0.0 ms  Store.reader (exit)
+
+== Interleaved before/after (same sitting, alternating calls, 60 calls each) ==
+PreToolUse         before   p50  243.0  p95  320.5  min  230.2
+PreToolUse         after    p50  242.4  p95  339.5  min  226.3
+PreToolUse:Edit    before   p50  246.9  p95  323.6  min  236.6
+PreToolUse:Edit    after    p50  245.2  p95  318.8  min  233.9
+SubagentStart      before   p50  236.7  p95  296.4  min  225.6
+SubagentStart      after    p50  230.3  p95  295.1  min  219.7
+UserPromptSubmit   before   p50  241.5  p95  364.4  min  226.0
+UserPromptSubmit   after    p50  236.9  p95  321.0  min  217.7

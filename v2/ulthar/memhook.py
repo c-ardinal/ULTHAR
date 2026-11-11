@@ -29,11 +29,8 @@ from . import decide
 from . import extract
 from . import ingest as ingest_mod
 from . import memory
-from . import product
 from . import shellwords
 from . import store as store_mod
-from . import tokens
-from .product import forms as _forms
 
 WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 SHELL_TOOLS = frozenset({"Bash", "PowerShell"})
@@ -107,6 +104,12 @@ class Project:
 
 
 # ---------------------------------------------------------------------------- AC-4
+
+def _forms(path: str) -> set[str]:
+    from .product import forms  # noqa: PLC0415 -- see run()
+
+    return forms(path)
+
 
 def _protected_roots() -> set[str]:
     roots = set()
@@ -337,6 +340,8 @@ def _subagent_start(payload: dict, project: Project, rt, act: Action) -> None:
 
 
 def _post_ask(payload: dict, project: Project, act: Action) -> None:
+    from . import tokens  # noqa: PLC0415 -- see run()
+
     store = project.store()
 
     def after_insert(rt, event_id: int, detail: dict) -> None:
@@ -361,6 +366,8 @@ def _runner(payload: dict, project: Project, act: Action, request: dict) -> None
     """R1-c AC-4/AC-7: a subagent's `ulthar review record|verify` gets a runner token."""
     if not payload.get("agent_id") or not payload.get("tool_use_id"):
         return  # a main-session call: no token, so the CLI records nothing
+    from . import tokens  # noqa: PLC0415 -- see run()
+
     token_id = os.urandom(16).hex()
     project_id = project.store().project_id
     act.updated_input = tokens.updated_command(payload, token_id)
@@ -377,6 +384,12 @@ def run(event: str, payload: dict, rt, project: Project, detail: dict) -> Action
     act = Action()
     request = None
     if event == "PreToolUse":
+        # R1-c's unit modules load only for the events that use them (PreToolUse and the
+        # AskUserQuestion PostToolUse): hook latency, AC-14. An import failure raises here,
+        # inside the memory step, so a PreToolUse is still blocked (fail-closed).
+        from . import product  # noqa: PLC0415
+        from . import tokens  # noqa: PLC0415
+
         msg = protect(payload)
         if msg:
             act.block, act.guard_id = msg, STORE_GUARD
