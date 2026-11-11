@@ -10,7 +10,13 @@
   SessionStart      L0 injected (startup/resume/compact, AC-11).
   SubagentStart     L1 injected (AC-9; also fires on SendMessage resumes).
   Stop              one reminder per unconfirmed candidate set (AC-13).
-With ULTHAR_EXTRACTOR=1 (the extractor's own session) only the store protection runs.
+R1-c: PreToolUse also blocks `ulthar unit advance` from a subagent, issues the runner
+token of a subagent's `ulthar review record|verify` (ulthar.tokens, answered through
+`updatedInput`), and limits product writes to confirmed unit scopes (ulthar.product,
+GOAL-08); the AskUserQuestion PostToolUse also issues the unit owner tokens
+(CONTRACT-CONFIRM, QUAL-JUDGE, UNIT-RESUME).
+With ULTHAR_EXTRACTOR=1 (the extractor's own session) only the store protection, the
+runner-token check and the product scope run.
 """
 from __future__ import annotations
 
@@ -23,8 +29,11 @@ from . import decide
 from . import extract
 from . import ingest as ingest_mod
 from . import memory
+from . import product
 from . import shellwords
 from . import store as store_mod
+from . import tokens
+from .product import forms as _forms
 
 WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 SHELL_TOOLS = frozenset({"Bash", "PowerShell"})
@@ -65,6 +74,7 @@ class Action:
         self.context: str | None = None
         self.warning: str | None = None
         self.after_insert = None
+        self.updated_input: dict | None = None  # PreToolUse only (the runner token, R1-c AC-4)
 
 
 class Project:
@@ -97,26 +107,6 @@ class Project:
 
 
 # ---------------------------------------------------------------------------- AC-4
-
-def _fold(path: str) -> str:
-    """The comparison form: separators unified, case-insensitive (AC-4 c)."""
-    return path.replace("\\", "/").rstrip("/").casefold()
-
-
-def _resolved(path: str) -> str:
-    """`path` with every existing component's symlinks and junctions resolved -- for a
-    file not created yet, its deepest existing ancestor -- and the rest appended."""
-    existing, rest = Path(path), []
-    while not os.path.lexists(existing) and existing.parent != existing:
-        rest.insert(0, existing.name)
-        existing = existing.parent
-    return os.path.join(os.path.realpath(existing), *rest)
-
-
-def _forms(path: str) -> set[str]:
-    full = os.path.abspath(path)
-    return {_fold(full), _fold(_resolved(full))}
-
 
 def _protected_roots() -> set[str]:
     roots = set()
@@ -191,6 +181,10 @@ def protect(payload: dict) -> str | None:
             return (f"BLOCKED (ulthar memory store): `ulthar {sub}` is an entry point for Claude "
                     "Code's hooks and the extraction worker only (AC-4 a2): a hook event or an "
                     "extraction started from a tool call would be forged evidence.")
+        if sub == "unit" and in_agent and len(args) > 1 and args[1].casefold() == "advance":
+            return ("BLOCKED (ulthar unit process): `ulthar unit advance` is the window's (main "
+                    "session's) command; a subagent never moves a unit (R1-c AC-6). Report to "
+                    "the window instead.")
         if sub != "decide":
             continue
         verb = args[1].casefold() if len(args) > 1 else ""
@@ -353,6 +347,27 @@ def _post_ask(payload: dict, project: Project, act: Action) -> None:
             act.context = (f"[ULTHAR] 決定の確認の回答を受け取り、確定トークン {token} を発行しました。"
                            f"窓口（このメインセッション）が `ulthar decide confirm --token {token}`"
                            " を実行して回答を適用してください（担当からは実行できません）。")
+            return
+        issued, unit_note = tokens.issue_owner_tokens(rt, payload, store, event_id)
+        detail["unit_question"] = unit_note
+        if issued:
+            detail["issued_tokens"] = issued
+            act.context = (f"[ULTHAR] 単位の質問への回答を受け取り、トークンを {len(issued)} 件発行しました"
+                           f"（{unit_note}）。窓口が `ulthar unit advance` で次の状態に進めてください。")
+    act.after_insert = after_insert
+
+
+def _runner(payload: dict, project: Project, act: Action, request: dict) -> None:
+    """R1-c AC-4/AC-7: a subagent's `ulthar review record|verify` gets a runner token."""
+    if not payload.get("agent_id") or not payload.get("tool_use_id"):
+        return  # a main-session call: no token, so the CLI records nothing
+    token_id = os.urandom(16).hex()
+    project_id = project.store().project_id
+    act.updated_input = tokens.updated_command(payload, token_id)
+
+    def after_insert(rt, event_id: int, detail: dict) -> None:
+        tokens.issue_runner(rt, token_id, payload, project_id, request, event_id)
+        detail["issued_runner_token"] = token_id
     act.after_insert = after_insert
 
 
@@ -360,15 +375,26 @@ def run(event: str, payload: dict, rt, project: Project, detail: dict) -> Action
     """The memory step for one call. Raises on internal failure; ulthar.hook turns that
     into a block for PreToolUse and a warning elsewhere."""
     act = Action()
+    request = None
     if event == "PreToolUse":
         msg = protect(payload)
         if msg:
             act.block, act.guard_id = msg, STORE_GUARD
             return act
+        msg, request = tokens.runner_request(payload)
+        if msg:
+            act.block, act.guard_id = msg, tokens.RUNNER_GUARD
+            return act
+        msg = product.check(payload, project.store, rt, detail)
+        if msg:
+            act.block, act.guard_id = msg, product.GUARD_ID
+            return act
     if extract.in_extractor():
         return act
     main_session = not payload.get("agent_id")
     if event == "PreToolUse":
+        if request is not None:
+            _runner(payload, project, act, request)
         _pretool(payload, project, rt, act, detail)
     elif event == "PostToolUse" and payload.get("tool_name") == ASK_TOOL:
         _post_ask(payload, project, act)

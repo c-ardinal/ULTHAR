@@ -223,10 +223,29 @@ def _run_memory(event: str, payload: dict, conn, project: memhook.Project, outco
 
 
 def _with_context(event: str, result: io_mod.Result, act) -> io_mod.Result:
+    if act is not None and act.updated_input is not None and result.exit_code != 2:
+        return io_mod.Result(result.exit_code, _updated_stdout(event, result.stdout, act),
+                             result.stderr)
     if act is None or not act.context or result.exit_code == 2:
         return result
     context = (result.stdout + "\n" + act.context) if result.stdout else act.context
     return io_mod.Result(result.exit_code, memhook.context_stdout(event, context), result.stderr)
+
+
+def _updated_stdout(event: str, stdout: str, act) -> str:
+    """CORE-02: the one place that answers with `updatedInput` (the runner token, R1-c
+    AC-4). Context a guard or the memory step produced rides along in the same object.
+    No permissionDecision: the owner's permission rules still apply to the command."""
+    contexts = [c for c in (stdout, act.context) if c]
+    if stdout:
+        try:
+            contexts[0] = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        except (ValueError, KeyError, TypeError):
+            pass
+    out = {"hookEventName": event, "updatedInput": act.updated_input}
+    if contexts:
+        out["additionalContext"] = "\n".join(contexts)
+    return json.dumps({"hookSpecificOutput": out}, ensure_ascii=False, separators=(",", ":"))
 
 
 def _db_failure(event: str, db_path: Path, exc: BaseException, row: dict,

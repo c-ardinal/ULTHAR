@@ -20,6 +20,8 @@ import re
 
 SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n"})
 REDIRECT = ">"
+INPUT = "<"
+BASH_DQ_ESCAPABLE = '$`"\\\n'
 ULTHAR_EXES = frozenset({"ulthar", "ulthar.exe", "ulthar.cmd", "ulthar.bat"})
 PYTHON_EXE = re.compile(r"^(?:py|python[\d.]*)(?:\.exe)?$", re.I)
 PYTHON_OPTS_WITH_VALUE = frozenset({"-X", "-W", "-Q"})
@@ -30,7 +32,10 @@ NESTED_DEPTH = 2
 COMMAND_OPTIONS = frozenset({"-c", "/c", "/k", "-command", "-commandwithargs"})
 
 
-def tokenize(cmd: str, escape: str | None) -> list[str]:
+def tokenize(cmd: str, escape: str | None, exact: bool = False) -> list[str]:
+    """`exact` (R1-c AC-11, the write-target reading): Bash's own rule inside "..." (a
+    backslash escapes only $ ` " \\ and newline; elsewhere it stays), and an input
+    redirection `<` is its own token INPUT instead of REDIRECT."""
     toks: list[str] = []
     cur: list[str] = []
     started, quote, i = False, None, 0
@@ -49,7 +54,8 @@ def tokenize(cmd: str, escape: str | None) -> list[str]:
             else:
                 cur.append(ch)
         elif quote == '"':
-            if escape and ch == escape and i + 1 < len(cmd):
+            if escape and ch == escape and i + 1 < len(cmd) and not (
+                    exact and escape == "\\" and cmd[i + 1] not in BASH_DQ_ESCAPABLE):
                 i += 1
                 cur.append(cmd[i])
             elif ch == '"':
@@ -72,7 +78,7 @@ def tokenize(cmd: str, escape: str | None) -> list[str]:
                 toks.append(ch)
         elif ch in "<>":
             flush()
-            toks.append(REDIRECT)
+            toks.append(INPUT if exact and ch == "<" else REDIRECT)
             while i + 1 < len(cmd) and cmd[i + 1] in "<>&":
                 i += 1
         elif ch.isspace():
