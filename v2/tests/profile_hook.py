@@ -48,8 +48,13 @@ def append_line(transcript: Path, tag: str) -> None:
 
 
 def wait_idle(sb: Sandbox) -> None:
-    for _ in range(300):
-        if not sb.query("SELECT COUNT(*) FROM extractions WHERE status='pending'")[0][0]:
+    """As test_replay (AC-16): the previous call's extraction has ended -- its row is no
+    longer pending and no worker/extractor process is left."""
+    from helpers import FAKE_EXTRACTOR, processes_matching  # noqa: PLC0415
+
+    for _ in range(600):
+        if not (sb.query("SELECT COUNT(*) FROM extractions WHERE status='pending'")[0][0]
+                or processes_matching(str(sb.root)) or processes_matching(FAKE_EXTRACTOR.name)):
             return
         time.sleep(0.05)
 
@@ -103,7 +108,7 @@ PHASES = [
     ("ulthar.hook", "_record", "events row"),
     ("ulthar.store", "Store.reader", None),
     ("ulthar.store", "Store.finalize", "store finalize (deferred manifest)"),
-    ("ulthar.integrity", "write_manifest", "txn.json write (temp+fsync+replace)"),
+    ("ulthar.integrity", "write_manifest", "txn.json write (temp+flush+replace)"),
     ("ulthar.integrity", "clear_manifest", "txn.json remove"),
     ("ulthar.store", "Store._settle", "store settle (manifest, mtime check)"),
     ("ulthar.store", "Store._record_runtime_chain", "runtime.db chain rows"),

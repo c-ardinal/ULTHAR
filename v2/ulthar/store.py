@@ -179,6 +179,7 @@ class Store:
         self.dir = self.root / STORE_DIRNAME
         self.index_path = self.dir / "index.db"
         self._deferred: dict | None = None  # the manifest this instance left for finalize
+        self._shared: sqlite3.Connection | None = None  # one index connection per instance
 
     # ------------------------------------------------------------------ construction
     @classmethod
@@ -220,6 +221,30 @@ class Store:
         conn.execute("PRAGMA wal_autocheckpoint=0")
         conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
         return conn
+
+    def _acquire(self) -> tuple[sqlite3.Connection, bool]:
+        """(connection, owned). One connection is reused for every reader/transaction
+        of this instance (a hook call opens the index once, not per step). Autocommit
+        reads always see what other processes committed; writes still happen only
+        under the project lock. A use nested inside an open transaction of the shared
+        connection gets a connection of its own (owned: closed after use)."""
+        if self._shared is not None and not self._shared.in_transaction:
+            return self._shared, False
+        conn = self._connect()
+        if self._shared is None:
+            self._shared = conn
+            return conn, False
+        return conn, True
+
+    def _release(self, conn: sqlite3.Connection, owned: bool) -> None:
+        if owned:
+            self._close(conn)
+
+    def close(self) -> None:
+        """Closes the reused connection (end of the hook call / command)."""
+        if self._shared is not None:
+            conn, self._shared = self._shared, None
+            self._close(conn)
 
     def _close(self, conn: sqlite3.Connection) -> None:
         """Closes, first folding a WAL past WAL_TRUNCATE_BYTES back into the index. With
@@ -310,11 +335,11 @@ class Store:
                     return
         with self._lock():
             try:
-                conn = self._connect()
+                conn, owned = self._acquire()
                 try:
                     self._settle(conn, rt)
                 finally:
-                    self._close(conn)
+                    self._release(conn, owned)
             except sqlite3.Error as exc:
                 raise StoreError(f"index {self.index_path}: {exc}") from exc
 
@@ -395,7 +420,7 @@ class Store:
             yield None
             return
         try:
-            conn = self._connect()
+            conn, owned = self._acquire()
         except sqlite3.Error as exc:
             raise StoreError(f"index {self.index_path}: {exc}") from exc
         try:
@@ -407,7 +432,7 @@ class Store:
         except sqlite3.Error as exc:
             raise StoreError(f"index {self.index_path}: {exc}") from exc
         finally:
-            self._close(conn)
+            self._release(conn, owned)
 
     def rebuild(self, rt=None) -> int:
         """`ulthar index rebuild`: regenerates index.db from the JSONL files (strictly)."""
@@ -494,7 +519,7 @@ class Store:
         with self._lock():
             self._check_host()
             try:
-                conn = self._connect()
+                conn, owned = self._acquire()
             except sqlite3.Error as exc:
                 raise StoreError(f"index {self.index_path}: {exc}") from exc
             try:
@@ -510,7 +535,7 @@ class Store:
             except sqlite3.Error as exc:
                 raise StoreError(f"index {self.index_path}: {exc}") from exc
             finally:
-                self._close(conn)
+                self._release(conn, owned)
 
 
 class Tx:

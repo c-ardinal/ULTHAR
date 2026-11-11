@@ -177,3 +177,93 @@ AFTER (committed code):       p50 354.5  p95 431.9 ms
 
 Isolated cost of one txn.json write on this disk (20 writes): temp+flush+os.replace 2 ms p50;
 with fsync 94-95 ms p50. Interpreter start + imports: ~210 ms (unchanged since R1-a).
+
+######## AFTER round 2 (spec 36401e28: no fsync in the txn.json replacement; one index.db
+######## connection reused per Store instance) -- NOT acceptance; CPU load 28% before, 25% after ########
+store state: real transcript ingested -> {"owner_msg": 570, "ask": 368, "answer": 368, "compact_summary": 10, "agent_report": 470, "lines": 53947, "gaps": [], "seconds": 2.845}
+
+== PreToolUse ==
+wall (process start included), 25 calls: p50 242.9 ms, p95 291.6 ms
+imports (top-level, -X importtime): 173.2 ms; largest: ulthar.hook 97.4, pathlib 53.9, encodings 9.6, encodings.utf_8_sig 2.9, zipimport 2.1, encodings.cp932 1.9
+     51.5 ms  (in-process total)
+     47.1 ms  runtime.db open + journal + transcript catch-up
+     34.7 ms  transcript catch-up (ingest)
+     14.2 ms  JSONL append + index commit (+ manifest)
+     14.2 ms  Store.transaction (exit)
+     10.7 ms  runtime.db connect
+     10.3 ms  Store.transaction (enter)
+      7.6 ms  index.db connect
+      2.4 ms  txn.json write (temp+flush+replace)
+      1.9 ms  store finalize (deferred manifest)
+      1.3 ms  v1 guard pipeline (config load + guards)
+      1.2 ms  project resolution (repo root, ulthar.json)
+      0.8 ms  store settle (manifest, mtime check)
+      0.5 ms  host check
+      0.5 ms  txn.json remove
+      0.4 ms  events row
+      0.1 ms  runtime.db chain rows
+      0.1 ms  store guard (shellwords, realpath)
+      0.1 ms  memory step (protect, L0/L1, prompt, launch)
+
+== SubagentStart ==
+wall (process start included), 25 calls: p50 245.8 ms, p95 260.6 ms
+imports (top-level, -X importtime): 135.8 ms; largest: ulthar.hook 78.5, pathlib 38.8, encodings 7.6, encodings.utf_8_sig 3.4, zipimport 2.0, encodings.cp932 1.5
+     59.4 ms  (in-process total)
+     43.5 ms  runtime.db open + journal + transcript catch-up
+     30.5 ms  transcript catch-up (ingest)
+     13.9 ms  L1 assembly
+     13.9 ms  memory step (protect, L0/L1, prompt, launch)
+     11.4 ms  runtime.db connect
+     10.2 ms  Store.transaction (exit)
+     10.1 ms  JSONL append + index commit (+ manifest)
+      9.8 ms  Store.transaction (enter)
+      7.4 ms  index.db connect
+      2.2 ms  txn.json write (temp+flush+replace)
+      1.9 ms  store finalize (deferred manifest)
+      1.2 ms  project resolution (repo root, ulthar.json)
+      0.8 ms  Store.reader (enter)
+      0.7 ms  store settle (manifest, mtime check)
+      0.5 ms  host check
+      0.5 ms  txn.json remove
+      0.4 ms  events row
+      0.3 ms  v1 guard pipeline (config load + guards)
+      0.1 ms  runtime.db chain rows
+      0.0 ms  Store.reader (exit)
+
+== UserPromptSubmit ==
+wall (process start included), 25 calls: p50 247.4 ms, p95 309.2 ms
+imports (top-level, -X importtime): 153.0 ms; largest: ulthar.hook 89.1, pathlib 44.8, encodings 8.3, encodings.utf_8_sig 2.7, zipimport 2.2, encodings.cp932 1.6
+     86.5 ms  runtime.db connect
+     72.4 ms  (in-process total)
+     42.9 ms  runtime.db open + journal + transcript catch-up
+     32.6 ms  transcript catch-up (ingest)
+     21.1 ms  memory step (protect, L0/L1, prompt, launch)
+     16.4 ms  JSONL append + index commit (+ manifest)
+     16.4 ms  Store.transaction (exit)
+      9.7 ms  extractor spawn
+      5.5 ms  Store.transaction (enter)
+      3.0 ms  index.db connect
+      2.1 ms  txn.json write (temp+flush+replace)
+      1.9 ms  store finalize (deferred manifest)
+      1.3 ms  project resolution (repo root, ulthar.json)
+      0.7 ms  store settle (manifest, mtime check)
+      0.5 ms  host check
+      0.5 ms  txn.json remove
+      0.5 ms  Store.reader (enter)
+      0.4 ms  events row
+      0.3 ms  v1 guard pipeline (config load + guards)
+      0.1 ms  runtime.db chain rows
+      0.0 ms  Store.reader (exit)
+
+######## Same-period comparison, PreToolUse Bash `ls -la`, 25 calls ########
+R1-a ea52fab:   p50 206.3  p95 234.1 ms
+round 2 code:   p50 220.0  p95 279.0 ms
+
+Summary (profile_hook, 25 calls each, p50 / p95 ms; NOT acceptance):
+  event              e16f3ee        round 1        round 2
+  PreToolUse         427 / 493      344 / 438      243 / 292
+  SubagentStart      448 / 506      358 / 448      246 / 261
+  UserPromptSubmit   473 / 616      393 / 479      247 / 309
+Note: runtime.db's WAL grows ~48 KB per UserPromptSubmit (events, extraction rows, chain rows)
+until SQLite's 4 MB auto-checkpoint, as in R1-a; truncating it would put a 50-90 ms checkpoint
+on ~1 call in 20 (the p95 tail), so it is left as is.

@@ -284,6 +284,7 @@ def process(event: str, payload: dict, single_guard: str | None = None,
             db_error = exc
         finally:
             conn.close()
+    project.close()
     if db_error is not None:
         return Processed(_db_failure(event, db_path, db_error, row, outcome.result),
                          outcome.guards_run)

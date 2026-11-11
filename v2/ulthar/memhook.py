@@ -87,6 +87,14 @@ class Project:
             raise self._error
         return self._store
 
+    def close(self) -> None:
+        """Releases the store's reused index connection; never raises (end of the call)."""
+        if self._store is not None:
+            try:
+                self._store.close()
+            except Exception:  # noqa: BLE001 -- closing must not change the call's outcome
+                pass
+
 
 # ---------------------------------------------------------------------------- AC-4
 

@@ -8,7 +8,8 @@
   * a runtime.db rollback after a store commit (inside a transcript ingest) is repaired
     from the kept manifest, and a missing chain source is reported (review r1b-2 item 4);
   * txn.json is replaced atomically: a failure during the replacement leaves it whole
-    and the next open recovers (AC-20);
+    and the next open recovers; with no fsync, a replacement lost to an OS crash makes
+    the next open stop with an IntegrityError (AC-20, known limit);
   * AC-20 `ulthar store verify`: an append made outside the CLI, a same-size rewrite and
     a deleted line are each detected (3/3) with the position; the untouched store and a
     restored one report nothing (false positives 0).
@@ -266,6 +267,34 @@ def check_manifest_replacement_atomic(p: Probe) -> None:
         sb.cleanup()
 
 
+def check_lost_manifest_is_loud(p: Probe) -> None:
+    """AC-20 known limit (spec 36401e28, no fsync): an OS crash can lose the txn.json
+    replacement while the appended bytes survive. The next open must stop with an
+    IntegrityError, never continue silently -- for complete lines and for a torn tail."""
+    sb = Sandbox()
+    try:
+        _seed(sb, 1)
+        path = _decisions_path(sb)
+        before = path.read_bytes()
+        rec = json.loads(before.split(b"\n")[0])
+        cases = {
+            "complete appended line": json.dumps(dict(rec, seq=5, id="D-lost", text="lost")).encode() + b"\n",
+            "torn appended line": b'{"seq": 5, "id": "D-lost", "text": "to',
+        }
+        loud = 0
+        for label, extra in cases.items():
+            path.write_bytes(before + extra)  # appended, but its manifest never reached disk
+            err = _read_error(sb)
+            ok = err is not None and not (sb.kr / ".ulthar" / integrity.MANIFEST).exists()
+            loud += ok
+            p.check(f"lost manifest, {label}: the next open stops with an IntegrityError", ok,
+                    str(err))
+            path.write_bytes(before)
+        p.check(f"AC-20 known limit surfaces as an error (not silent): {loud}/2", loud == 2)
+    finally:
+        sb.cleanup()
+
+
 def main() -> int:
     p = Probe()
     print("\n== JSONL integrity (fail closed) ==")
@@ -276,6 +305,7 @@ def main() -> int:
     check_verify(p)
     check_runtime_rollback_recovered(p)
     check_manifest_replacement_atomic(p)
+    check_lost_manifest_is_loud(p)
     return p.result()
 
 
