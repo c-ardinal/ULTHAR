@@ -209,6 +209,10 @@ def ingest(conn: sqlite3.Connection, session_id: str, transcript_path: str,
     except BaseException:
         conn.execute("ROLLBACK")
         raise
+    if found or on_tx is not None:
+        # the store's chain rows were part of the transaction just committed: only now
+        # may its manifest go (a rollback above leaves it, and the next open re-records)
+        store.finalize(conn)
     return counts
 
 

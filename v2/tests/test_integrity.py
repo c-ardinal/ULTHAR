@@ -5,6 +5,8 @@
   * a multi-file transaction is all or nothing: a failure while writing the second file
     cuts the first back; an interrupted one (manifest left, torn bytes) is undone at the
     next open;
+  * a runtime.db rollback after a store commit (inside a transcript ingest) is repaired
+    from the kept manifest, and a missing chain source is reported (review r1b-2 item 4);
   * AC-20 `ulthar store verify`: an append made outside the CLI, a same-size rewrite and
     a deleted line are each detected (3/3) with the position; the untouched store and a
     restored one report nothing (false positives 0).
@@ -168,6 +170,60 @@ def check_verify(p: Probe) -> None:
         sb.cleanup()
 
 
+def check_runtime_rollback_recovered(p: Probe) -> None:
+    """Review r1b-2 item 4: the store committed during a transcript ingest, then the
+    ingest's runtime.db transaction failed (its chain row rolled back). The manifest is
+    kept until that commit, so the next open re-records the row; and a chain source that
+    is simply missing is reported by verify, not skipped."""
+    from ulthar import db as db_mod  # noqa: PLC0415
+    from ulthar import ingest as ingest_mod  # noqa: PLC0415
+
+    sb = Sandbox()
+    try:
+        path = sb.root / "t.jsonl"
+        path.write_text(json.dumps({"type": "user", "uuid": "u1", "message": {
+            "role": "user", "content": "最初の発言"}}, ensure_ascii=False) + "\n", encoding="utf-8")
+        real = ingest_mod._store_episodes
+
+        def then_fail(*a, **k):
+            real(*a, **k)
+            raise RuntimeError("injected: failure before the ingest's runtime.db commit")
+
+        with sb.inproc():
+            ingest_mod._store_episodes = then_fail
+            conn = db_mod.connect(sb.db)
+            try:
+                ingest_mod.ingest(conn, "s", str(path), store=sb.store())
+                err = "no error"
+            except RuntimeError as exc:
+                err = str(exc)
+            finally:
+                ingest_mod._store_episodes = real
+            rows_after_fail = conn.execute("SELECT COUNT(*) FROM store_chain").fetchone()[0]
+            conn.close()
+        manifest = (sb.kr / ".ulthar" / integrity.MANIFEST).exists()
+        pending = _verify(sb)
+        p.check("failure after the store commit, before the ingest's runtime commit: the "
+                "runtime chain row is gone, the manifest is kept, verify reports it",
+                "injected" in err and rows_after_fail == 0 and manifest
+                and pending.returncode != 0, f"{err} rows={rows_after_fail} manifest={manifest}")
+        assert _read_error(sb) is None
+        fixed = _verify(sb)
+        chains = sb.query("SELECT name, size FROM store_chain")
+        size = (sb.kr / ".ulthar" / "episodes.jsonl").stat().st_size
+        p.check("  ... the next open re-records the row from index + manifest; verify is clean",
+                fixed.returncode == 0 and chains == [("episodes.jsonl", size)]
+                and not (sb.kr / ".ulthar" / integrity.MANIFEST).exists(),
+                fixed.stdout[-300:] + str(chains))
+        sb.query("DELETE FROM store_chain")
+        missing = _verify(sb)
+        p.check("a missing runtime.db chain source is reported by verify (never skipped)",
+                missing.returncode != 0 and "runtime.db has no chain record" in missing.stdout,
+                missing.stdout[-300:])
+    finally:
+        sb.cleanup()
+
+
 def main() -> int:
     p = Probe()
     print("\n== JSONL integrity (fail closed) ==")
@@ -176,6 +232,7 @@ def main() -> int:
     check_multi_file_atomicity(p)
     print("\n== AC-20: store verify ==")
     check_verify(p)
+    check_runtime_rollback_recovered(p)
     return p.result()
 
 

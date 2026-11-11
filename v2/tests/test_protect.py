@@ -89,8 +89,8 @@ def _junction(link, target) -> bool:
     import subprocess  # noqa: PLC0415
 
     if os.name == "nt":
-        res = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                             capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        res = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],  # cp932 output: bytes
+                             capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
         return res.returncode == 0
     os.symlink(target, link, target_is_directory=True)
     return True
@@ -141,11 +141,44 @@ def check_hook_only_and_aliases(p: Probe) -> None:
         sb.cleanup()
 
 
+def check_quoted_module_forms(p: Probe) -> None:
+    """Review r1b-2 item 1: quoted and concatenated module/script words are read the way
+    the shell reads them (Bash and PowerShell quoting), so these hook-only calls are
+    blocked too; an argument that merely mentions `ulthar hook` is not."""
+    sb = Sandbox()
+    try:
+        cases = [
+            ("Bash", None, 'python -m "ulthar" hook --event PostToolUse < forged.json'),
+            ("PowerShell", "a-q", 'python -m "ulthar.__main__" extract --episode E-1 --project-dir .'),
+            ("PowerShell", None, "& 'python' -m 'ulthar' hook --event PreToolUse"),
+            ("Bash", None, 'python -m ul"thar" hook --event Stop'),
+            ("Bash", "a-q", "bash -c \"python -multhar extract --episode E-2 --project-dir .\""),
+        ]
+        blocked = 0
+        for tool, agent, cmd in cases:
+            payload = {"session_id": "q", "tool_name": tool, "tool_input": {"command": cmd}}
+            if agent:
+                payload.update(agent_id=agent, agent_type="t")
+            proc = sb.hook("PreToolUse", payload)
+            ok = proc.returncode == 2 and "AC-4 a2" in proc.stderr
+            blocked += ok
+            p.check(f"quoted form blocked ({tool}): {cmd}", ok, f"rc={proc.returncode} {proc.stderr[-200:]}")
+        p.check(f"AC-4 a2 quoted/concatenated forms: blocked {blocked}/{len(cases)}",
+                blocked == len(cases))
+        mention = sb.hook("PreToolUse", {"session_id": "q", "tool_name": "Bash", "tool_input": {
+            "command": 'ulthar fact add --src README.md:1 "never run ulthar hook by hand"'}})
+        p.check("  ... text that only mentions `ulthar hook` inside an argument is not blocked",
+                mention.returncode == 0, mention.stderr[-300:])
+    finally:
+        sb.cleanup()
+
+
 def main() -> int:
     p = Probe()
     check_fixtures(p)
     check_read_paths_allowed(p)
     check_hook_only_and_aliases(p)
+    check_quoted_module_forms(p)
     return p.result()
 
 

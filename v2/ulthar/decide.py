@@ -13,15 +13,18 @@ call it at all, AC-4 a2). The token is bound to (project, batch, sha, tool_use_i
 question and answer event ids, the answer).
 
 Confirming (`ulthar decide confirm --token`, main session or owner): the transcript is
-ingested again and must hold the owner's tool_result for that tool_use_id with the
-bound answer. Then, by stages that each check what is already done -- so a retry after
+ingested again and its tool_result for that tool_use_id must map exactly the bound
+question to exactly the bound answer (`answer_in_result`). Then, by stages that each check what is already done -- so a retry after
 any failure completes the missing stages without reapplying or refusing them:
   全て承認  every reviewed candidate confirmed (binding); what it supersedes ->
            superseded; a global-scope one is also written to the global store;
   全て却下  every reviewed candidate rejected;
   一部修正 (or a free-text answer) candidates stay provisional; the correction is saved
            (once) as an owner_msg Episode that needs extraction, and extracted;
-and last the token is consumed. Every revision carries `op_id` = the token id.
+then the token is consumed, and last the correction's extraction launched. The
+operation's stage is kept in runtime.db confirm_ops, so a retry after a crash at any
+point -- even after the token was consumed -- resumes it (`confirm`). Every revision
+carries `op_id` = the token id.
 Refused: an unknown/forged/used token, an answer not in the transcript, a reviewed
 candidate changed by anything but this operation, a new candidate outside the batch.
 """
@@ -42,6 +45,8 @@ APPROVE, PARTIAL, REJECT = "全て承認", "一部修正", "全て却下"
 ISSUER = "PostToolUse:AskUserQuestion"
 TOKEN_KIND = "decision_confirm"
 CONFIRM_HOOK = "decide-confirm"
+RESULT_PREFIX = "Your questions have been answered: "
+RESULT_SUFFIXES = (". You can now continue with these answers in mind.", "")
 
 
 class ConfirmError(Exception):
@@ -126,10 +131,27 @@ def _asked_in_transcript(conn, session_id: str, tool_use_id: str, review_input: 
         return False
 
 
-def _answered_in_transcript(conn, session_id: str, tool_use_id: str, answer_text: str) -> bool:
-    """The tool_result text reads `..."<question>"="<answer>"...` (Claude Code's format)."""
+def answer_in_result(text: str, question: str) -> str | None:
+    """The owner's answer to `question` in an AskUserQuestion tool_result, read exactly:
+    Claude Code writes `Your questions have been answered: "<question>"="<answer>". You
+    can now continue with these answers in mind.` A review asks one question, so the
+    text must be that one pair and nothing else; the answer is everything between the
+    pair's `="` and the closing `"` (quotes inside it included). None otherwise."""
+    head = f'{RESULT_PREFIX}"{question}"="'
+    if not text.startswith(head):
+        return None
+    rest = text[len(head):]
+    for suffix in RESULT_SUFFIXES:
+        if rest.endswith('"' + suffix):
+            return rest[:len(rest) - len(suffix) - 1]
+    return None
+
+
+def _answered_in_transcript(conn, session_id: str, tool_use_id: str, question: str,
+                            answer_text: str) -> bool:
+    """The transcript's tool_result maps exactly this question to exactly this answer."""
     answer = _transcript_episode(conn, session_id, "answer", tool_use_id)
-    return answer is not None and f'="{answer_text}"' in (answer.get("text") or "")
+    return answer is not None and answer_in_result(answer.get("text") or "", question) == answer_text
 
 
 # ---------------------------------------------------------------------------- hook side
@@ -199,7 +221,7 @@ def issue_token(rt: sqlite3.Connection, payload: dict, store: store_mod.Store,
     kind, correction = classify(answer, notes)
     token_id = os.urandom(16).hex()
     bound = {"project_id": store.project_id, "batch_id": batch_id, "sha": sha,
-             "tool_use_id": tool_use_id, "question_event_id": asked[0],
+             "tool_use_id": tool_use_id, "question": text, "question_event_id": asked[0],
              "answer_event_id": answer_event_id, "session_id": payload.get("session_id"),
              "answer": kind, "answer_text": answer, "correction": correction}
     rt.execute("INSERT INTO tokens (token_id, kind, bound, issued_by_hook, consumed_at)"
@@ -227,7 +249,8 @@ def stop_reminder(store: store_mod.Store, rt: sqlite3.Connection) -> str | None:
 
 # ---------------------------------------------------------------------------- CLI side
 
-def _check_token(rt: sqlite3.Connection, token_id: str, project_id: str) -> dict:
+def _check_token(rt: sqlite3.Connection, token_id: str, project_id: str,
+                 resuming: bool = False) -> dict:
     row = rt.execute("SELECT kind, bound, issued_by_hook, consumed_at FROM tokens WHERE token_id=?",
                      (token_id,)).fetchone()
     if row is None:
@@ -235,7 +258,7 @@ def _check_token(rt: sqlite3.Connection, token_id: str, project_id: str) -> dict
     kind, bound_raw, issuer, consumed = row
     if kind != TOKEN_KIND or issuer != ISSUER:
         raise ConfirmError(f"not a hook-issued {TOKEN_KIND} token")
-    if consumed:
+    if consumed and not resuming:
         raise ConfirmError(f"token already used at {consumed}")
     bound = json.loads(bound_raw or "{}")
     if bound.get("project_id") != project_id:
@@ -269,7 +292,9 @@ def _plan(store: store_mod.Store, rt: sqlite3.Connection, bound: dict, token_id:
         raise ConfirmError(f"batch {bound['batch_id']} is unknown")
     session_id = str(bound.get("session_id") or "(none)")
     with store.reader(rt) as conn:
-        if not _answered_in_transcript(conn, session_id, bound.get("tool_use_id"),
+        question = bound.get("question") or (batch.get("input") or {}).get(
+            "questions", [{}])[0].get("question", "")
+        if not _answered_in_transcript(conn, session_id, bound.get("tool_use_id"), question,
                                        bound.get("answer_text") or ""):
             raise ConfirmError("the owner's answer to this question is not in the session "
                                "transcript")
@@ -355,36 +380,71 @@ def _partial(store: store_mod.Store, rt, bound: dict, token_id: str, writer: dic
     return ep["id"]
 
 
-def confirm(store: store_mod.Store, rt: sqlite3.Connection, token_id: str,
-            project_dir: str) -> dict:
-    """Applies the owner's answer, completing whatever an earlier attempt left undone,
-    then consumes the token. ConfirmError when refused."""
-    bound = _check_token(rt, token_id, store.project_id)
+def _op_stage(rt: sqlite3.Connection, token_id: str) -> tuple[str | None, dict]:
+    row = rt.execute("SELECT stage, detail FROM confirm_ops WHERE token_id=?",
+                     (token_id,)).fetchone()
+    return (row[0], json.loads(row[1] or "{}")) if row else (None, {})
+
+
+def _set_stage(rt: sqlite3.Connection, token_id: str, stage: str, detail: dict) -> None:
+    rt.execute("INSERT INTO confirm_ops VALUES (?,?,?,?) ON CONFLICT(token_id) DO UPDATE SET"
+               " stage=excluded.stage, detail=excluded.detail, ts=excluded.ts",
+               (token_id, stage, json.dumps(detail, ensure_ascii=False), store_mod.now_iso()))
+
+
+def _apply(store: store_mod.Store, rt: sqlite3.Connection, bound: dict, token_id: str) -> dict:
+    """The answer's effect on the stores; every stage checks what is already there."""
     _ingest_session(store, rt, str(bound.get("session_id") or "(none)"))
     plan = _plan(store, rt, bound, token_id)
     writer = {"cli": "decide confirm", "token_id": token_id,
               "session_id": bound.get("session_id")}
-    correction = None
     if bound["answer"] == "approve":
-        result = _approve(store, rt, plan, token_id, writer)
-    elif bound["answer"] == "reject":
+        return _approve(store, rt, plan, token_id, writer)
+    if bound["answer"] == "reject":
         with store.transaction(writer, rt) as tx:
             for c in plan["todo"]:
                 tx.revise("decision", c["id"], status="rejected", binding=False,
                           confirm_token_id=token_id, op_id=token_id)
-        result = {"rejected": len(plan["all"])}
-    else:
-        correction = _partial(store, rt, bound, token_id, writer)
-        result = {"kept_provisional": len(plan["all"])}
-        if correction:
-            result["correction_episode"] = correction
-    cur = rt.execute("UPDATE tokens SET consumed_at=? WHERE token_id=? AND consumed_at IS NULL",
-                     (store_mod.now_iso(), token_id))
-    if cur.rowcount != 1:
-        raise ConfirmError("token was consumed concurrently")
-    if correction is not None:
+        return {"rejected": len(plan["all"])}
+    result = {"kept_provisional": len(plan["all"])}
+    correction = _partial(store, rt, bound, token_id, writer)
+    if correction:
+        result["correction_episode"] = correction
+    return result
+
+
+def confirm(store: store_mod.Store, rt: sqlite3.Connection, token_id: str,
+            project_dir: str) -> dict:
+    """A durable, staged operation in runtime.db confirm_ops:
+      started  -> the stores are being updated (idempotent; a retry re-runs it);
+      consumed -> applied, and the token consumed in the same runtime.db transaction
+                  that records this stage (a retry resumes here, never "already used");
+      done     -> the correction (if any) was sent to extraction.
+    ConfirmError when refused."""
+    stage, detail = _op_stage(rt, token_id)
+    if stage == "done":
+        raise ConfirmError("token already used (operation complete)")
+    bound = _check_token(rt, token_id, store.project_id, resuming=stage == "consumed")
+    if stage != "consumed":
+        _set_stage(rt, token_id, "started", {})
+        result = _apply(store, rt, bound, token_id)
+        rt.execute("BEGIN IMMEDIATE")
+        try:
+            cur = rt.execute("UPDATE tokens SET consumed_at=? WHERE token_id=?"
+                             " AND consumed_at IS NULL", (store_mod.now_iso(), token_id))
+            if cur.rowcount != 1:
+                raise ConfirmError("token was consumed concurrently")
+            _set_stage(rt, token_id, "consumed", result)
+            rt.execute("COMMIT")
+        except BaseException:
+            rt.execute("ROLLBACK")
+            raise
+        detail = result
+    correction = detail.get("correction_episode")
+    if correction:
         row = rt.execute("SELECT status, detail FROM extractions WHERE episode_id=?",
                          (correction,)).fetchone()
         if row and row[0] == "pending" and row[1] is None:
             extract.launch(rt, correction, project_dir)
-    return dict(result, answer=bound["answer"])
+    _set_stage(rt, token_id, "done", detail)
+    return dict(detail, answer=bound["answer"], resumed=stage == "consumed")

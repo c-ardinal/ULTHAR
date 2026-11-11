@@ -28,7 +28,7 @@ import re
 import sqlite3
 import zlib
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -80,6 +80,10 @@ CREATE TABLE IF NOT EXISTS chain (
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def now_iso_ago(seconds: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(timespec="milliseconds")
 
 
 class HostMismatch(StoreError):
@@ -254,13 +258,14 @@ class Store:
         chain does not account for. A same-size, same-content touch only refreshes mtime."""
         plan = integrity.read_manifest(self.dir)
         if plan is not None:
+            confirmed = [tuple(r) for r in plan.get("committed", [])]
             indexed = dict(conn.execute("SELECT name, size FROM files"))
             if all(indexed.get(n) == step["new"] for n, step in plan["files"].items()):
-                self._record_runtime_chain(rt, [(n, s["new"], s["chain"])
-                                                for n, s in plan["files"].items()])
-                integrity.clear_manifest(self.dir)
+                confirmed += [(n, s["new"], s["chain"]) for n, s in plan["files"].items()]
             else:
                 integrity.roll_back(self.dir, plan)
+            self._record_runtime_chain(rt, confirmed)
+            self._finish_manifest(rt, confirmed)
         if not conn.execute("SELECT 1 FROM files LIMIT 1").fetchone() and any(
                 self._file_state(n)[0] for n in FILES.values()):
             self._reindex_all(conn, rt)
@@ -275,12 +280,37 @@ class Store:
                 raise IntegrityError("; ".join(problems) or f"{name}: not recorded by ulthar")
             conn.execute("UPDATE files SET mtime_ns=? WHERE name=?", (mtime, name))
 
+    def _finish_manifest(self, rt, committed: list[tuple]) -> None:
+        """The manifest goes once the runtime.db chain rows of its committed appends are
+        durable. Inside the caller's open runtime.db transaction they are not yet: the
+        manifest then keeps just those rows (`committed`), so a rollback of that
+        transaction is repaired by the next open (or `finalize`) re-recording them."""
+        if rt is not None and rt.in_transaction and committed:
+            integrity.write_manifest(self.dir, {"files": {}, "committed": [list(r) for r in committed]})
+        else:
+            integrity.clear_manifest(self.dir)
+
+    def finalize(self, rt=None) -> None:
+        """Called by a caller whose runtime.db transaction (holding chain rows written by
+        a store transaction) has just committed: the deferred manifest is resolved."""
+        if not (self.dir / integrity.MANIFEST).exists():
+            return
+        with self._lock():
+            try:
+                conn = self._connect()
+                try:
+                    self._settle(conn, rt)
+                finally:
+                    self._close(conn)
+            except sqlite3.Error as exc:
+                raise StoreError(f"index {self.index_path}: {exc}") from exc
+
     def _reindex_all(self, conn: sqlite3.Connection, rt=None) -> int:
         """Regenerates the index from the JSONL files, strictly (any malformed line is an
         IntegrityError), checking each file against runtime.db's chain records. Without
         records (a store older than AC-20) a file counts as one append."""
         recorded = self._runtime_chain(rt)
-        loaded, files = [], []
+        loaded, files, adopted = [], [], []
         for kind, name in FILES.items():
             path = self.dir / name
             data = path.read_bytes() if path.exists() else b""
@@ -292,9 +322,10 @@ class Store:
                 raise IntegrityError("; ".join(problems))
             if rows:
                 final, named = rows[-1][1], [(name, s, c) for s, c in rows]
-            elif data:
+            elif data:  # adopted as one append, in index.db and runtime.db alike
                 final = integrity.chain_next(integrity.CHAIN_START, data)
                 named = [(name, len(data), final)]
+                adopted.append((name, len(data), final))
             else:
                 final, named = integrity.CHAIN_START, []
             files.append((name, len(data), self._file_state(name)[1], final, named))
@@ -311,6 +342,8 @@ class Store:
         except BaseException:
             conn.execute("ROLLBACK")
             raise
+        if adopted:
+            self._record_runtime_chain(rt, adopted)
         return len(loaded)
 
     # ------------------------------------------------------------------ runtime.db chain
@@ -402,9 +435,11 @@ class Store:
             for name in FILES.values():
                 path = self.dir / name
                 data = path.read_bytes() if path.exists() else b""
-                if data and not index_rows.get(name) and not runtime_rows.get(name):
-                    problems.append(f"{name}: {len(data)} bytes with no chain record at all")
-                    continue
+                missing = [src for src, rows in (("index.db", index_rows.get(name)),
+                                                 ("runtime.db", runtime_rows.get(name))) if not rows]
+                if data and missing:  # a chain source with nothing is a finding, never skipped
+                    problems += [f"{name}: {len(data)} bytes but {src} has no chain record for "
+                                 "this file" for src in missing]
                 problems += integrity.verify_file(
                     data, name, {"index.db": index_rows.get(name, []),
                                  "runtime.db": runtime_rows.get(name, [])})
@@ -532,7 +567,8 @@ class Tx:
             self.conn.execute("COMMIT")
             return
         store = self.store
-        plan = {"files": {}}
+        prior = (integrity.read_manifest(store.dir) or {}).get("committed", [])  # deferred rows
+        plan = {"files": {}, "committed": prior}
         for name, lines in self.pending.items():
             data = b"".join(lines)
             old = self.conn.execute("SELECT size, chain FROM files WHERE name=?",
@@ -560,9 +596,12 @@ class Tx:
             except sqlite3.Error:
                 pass
             integrity.roll_back(store.dir, plan)
+            store._finish_manifest(rt, [tuple(r) for r in prior])
             raise
-        store._record_runtime_chain(rt, [(n, s["new"], s["chain"]) for n, s in plan["files"].items()])
-        integrity.clear_manifest(store.dir)
+        rows = [tuple(r) for r in prior] + [(n, s["new"], s["chain"])
+                                            for n, s in plan["files"].items()]
+        store._record_runtime_chain(rt, rows)
+        store._finish_manifest(rt, rows)
 
 
 def _index_record(conn: sqlite3.Connection, kind: str, rec: dict) -> None:

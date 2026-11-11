@@ -23,6 +23,7 @@ from . import decide
 from . import extract
 from . import ingest as ingest_mod
 from . import memory
+from . import shellwords
 from . import store as store_mod
 
 WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
@@ -35,18 +36,14 @@ BUDGET_GUARD = "memory_budget"
 DECIDE_GUARD = "memory_decide"
 ERROR_GUARD = "memory-error"
 REPAIR_PER_PROMPT = 3  # lost registrations re-sent to extraction per owner prompt
+REPAIR_AFTER_SEC = 60  # a pending, unclaimed extraction this old was never started
 
-_ULTHAR_CALL = (r"(?:(?<![\w.\-])ulthar(?:\.exe|\.cmd|\.bat)?|-m\s+ulthar(?:\.__main__)?"
-                r"|ulthar[\\/]+__main__\.py)[\"']?")
-DECIDE_CALL = re.compile(_ULTHAR_CALL + r"\s+decide(?:\s+([\w\-]+))?", re.I)
-HOOK_ONLY_CALL = re.compile(_ULTHAR_CALL + r"\s+(hook|extract)\b", re.I)
+HOOK_ONLY = frozenset({"hook", "extract"})
 DECIDE_READ_ONLY = frozenset({"list", "review", "-h", "--help"})
 PROTECTED_IN_CMD = re.compile(
     r"\.claude[\\/]+ulthar(?![\w.\-])|\.claude[\\/]+ulthar\.json"
     r"|(?:^|[\\/\s\"'=:])\.ulthar(?=[\\/\s\"';|&)]|$)", re.I)
 PROJECT_CONFIG_TAIL = "/.claude/ulthar.json"  # <repo>/.claude/ulthar.json, edited by the owner only
-SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&\n]")
-PYTHON_EXE = re.compile(r"^(?:py|python[\d.]*)(?:\.exe)?$", re.I)
 READ_ONLY_CMDS = frozenset({
     "ls", "dir", "cat", "head", "tail", "grep", "rg", "pwd", "echo", "wc", "which", "where",
     "stat", "file", "less", "more", "type", "tree", "date", "get-childitem", "get-content",
@@ -128,28 +125,6 @@ def _is_protected_path(raw: str, cwd: str) -> bool:
     return False
 
 
-def _first_words(segment: str) -> list[str]:
-    words = segment.strip().split()
-    while words and re.match(r"^\w+=", words[0]):
-        words = words[1:]  # VAR=value prefixes
-    return [w.strip("\"'") for w in words]
-
-
-def _is_ulthar_invocation(segment: str) -> bool:
-    words = _first_words(segment)
-    if not words or ">" in segment:
-        return False
-    exe = re.split(r"[\\/]", words[0])[-1].lower()
-    if exe in ("ulthar", "ulthar.exe", "ulthar.cmd", "ulthar.bat"):
-        return True
-    if not PYTHON_EXE.match(exe):
-        return False
-    args = words[1:]
-    if any(a == "-m" and b == "ulthar" for a, b in zip(args, args[1:])):
-        return True
-    return any(w.replace("\\", "/").endswith("ulthar/__main__.py") for w in args[:4])
-
-
 def _shell_command(payload: dict) -> str:
     return str((payload.get("tool_input") or {}).get("command") or "")
 
@@ -176,46 +151,50 @@ def protect(payload: dict) -> str | None:
     if tool not in SHELL_TOOLS:
         return None
     command = _shell_command(payload)
-    hook_only = HOOK_ONLY_CALL.search(command)
-    if hook_only:
-        return (f"BLOCKED (ulthar memory store): `ulthar {hook_only.group(1).lower()}` is an entry "
-                "point for Claude Code's hooks and the extraction worker only (AC-4 a2): a hook "
-                "event or an extraction started from a tool call would be forged evidence.")
     in_agent = bool(payload.get("agent_id"))
-    for m in DECIDE_CALL.finditer(command):
-        sub = (m.group(1) or "").lower()
-        if not sub or sub in DECIDE_READ_ONLY or (sub == "confirm" and not in_agent):
+    for args in shellwords.ulthar_calls(command, tool):
+        sub = args[0].casefold() if args else ""
+        if sub in HOOK_ONLY:
+            return (f"BLOCKED (ulthar memory store): `ulthar {sub}` is an entry point for Claude "
+                    "Code's hooks and the extraction worker only (AC-4 a2): a hook event or an "
+                    "extraction started from a tool call would be forged evidence.")
+        if sub != "decide":
+            continue
+        verb = args[1].casefold() if len(args) > 1 else ""
+        if not verb or verb in DECIDE_READ_ONLY or (verb == "confirm" and not in_agent):
             continue  # confirm only consumes a hook-issued token: the main session may run it
-        who = "a subagent" if sub == "confirm" else "Claude"
-        return (f"BLOCKED (ulthar memory store): `ulthar decide {sub}` from {who} -- decisions "
+        who = "a subagent" if verb == "confirm" else "Claude"
+        return (f"BLOCKED (ulthar memory store): `ulthar decide {verb}` from {who} -- decisions "
                 "come only from the owner's messages (extraction) and are confirmed only "
                 "with the token the hook issues when the owner answers the `ulthar decide "
                 "review` question; the main session runs `ulthar decide confirm --token`, "
                 "a subagent never does. Allowed everywhere: `ulthar decide list|review`.")
-    for segment in SEGMENT_SPLIT.split(command):
-        if PROTECTED_IN_CMD.search(segment) and not _is_ulthar_invocation(segment):
-            return (f"BLOCKED (ulthar memory store): this command touches the knowledge store "
-                    f"({segment.strip()[:120]}) without the ulthar CLI. Read and write it only "
-                    "through `ulthar` (decide list/review, fact add/list, inject, index rebuild).")
+    for toks in shellwords.variants(command, tool):
+        for seg in shellwords.segments(toks):
+            text = " ".join(seg)
+            if PROTECTED_IN_CMD.search(text) and not shellwords.leading_ulthar(seg):
+                return (f"BLOCKED (ulthar memory store): this command touches the knowledge "
+                        f"store or the project config ({text[:120]}) without the ulthar CLI. "
+                        "Read and write the store only through `ulthar` (decide list/review, "
+                        "fact add/list, inject, index rebuild); the config is the owner's.")
     return None
 
 
 # ---------------------------------------------------------------------------- AC-10
 
-def _is_read_only_shell(command: str) -> bool:
-    if ">" in command:
-        return False
-    for segment in SEGMENT_SPLIT.split(command):
-        words = _first_words(segment)
-        if not words:
-            continue
-        exe = re.split(r"[\\/]", words[0])[-1].lower()
-        if exe == "git":
-            sub = next((w for w in words[1:] if not w.startswith("-")), "")
-            if sub not in GIT_READ_ONLY:
-                return False
-        elif not (exe in READ_ONLY_CMDS or _is_ulthar_invocation(segment)):
+def _is_read_only_shell(command: str, tool: str | None) -> bool:
+    for toks in shellwords.variants(command, tool):
+        if shellwords.REDIRECT in toks:
             return False
+        for seg in shellwords.segments(toks):
+            words = [w for w in seg if not re.match(r"^\w+=", w)] or seg
+            exe = shellwords.basename(words[0])
+            if exe == "git":
+                sub = next((w for w in words[1:] if not w.startswith("-")), "")
+                if sub not in GIT_READ_ONLY:
+                    return False
+            elif not (exe in READ_ONLY_CMDS or shellwords.leading_ulthar(seg)):
+                return False
     return True
 
 
@@ -240,7 +219,7 @@ def _pretool(payload: dict, project: Project, rt, act: Action, detail: dict) -> 
     if payload.get("agent_id"):
         return
     is_write = tool in WRITE_TOOLS or (
-        tool in SHELL_TOOLS and not _is_read_only_shell(_shell_command(payload)))
+        tool in SHELL_TOOLS and not _is_read_only_shell(_shell_command(payload), tool))
     if is_write:
         packed, _ = memory.build_l0(project.store(), rt, required_only=True)
         if packed.over:
@@ -303,6 +282,14 @@ def _user_prompt(payload: dict, project: Project, rt, detail: dict) -> None:
     for e in todo:
         extract.register(rt, store.project_id, e.get("session_id"), e["id"])
         extract.launch(rt, e["id"], project.cwd)
+    # ... and those registered but never started (a crash between registering and
+    # launching, e.g. a confirm correction): pending, unclaimed, older than the grace
+    stale = store_mod.now_iso_ago(REPAIR_AFTER_SEC)
+    for (episode_id,) in rt.execute(
+            "SELECT episode_id FROM extractions WHERE project_id=? AND status='pending'"
+            " AND detail IS NULL AND started < ? AND episode_id != ? LIMIT ?",
+            (store.project_id, stale, ep["id"], REPAIR_PER_PROMPT)).fetchall():
+        extract.launch(rt, episode_id, project.cwd)
 
 
 def _session_start(payload: dict, project: Project, rt, act: Action) -> None:
