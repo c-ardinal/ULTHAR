@@ -9,14 +9,26 @@ The hook path is guarded here, stdlib-only: if the package itself cannot be impo
 a PreToolUse is BLOCKED (exit 2) with the reason and recovery steps instead of
 crashing with exit 1, which Claude Code would treat as "allow".
 """
+import os
 import sys
 from pathlib import Path
 
+
+def _is_dir(entry: str, target: os.stat_result) -> bool:
+    try:
+        return os.path.samestat(os.stat(entry or "."), target)
+    except OSError:
+        return False
+
+
 if not __package__:
     # Run as a file: make the package importable by its own name, and keep this
-    # directory off sys.path so ulthar's `lib`/`guards` never shadow anything.
+    # directory off sys.path so ulthar's `lib`/`guards` never shadow anything. The
+    # entries are compared by file identity (a stat each), not resolve(): a realpath
+    # per sys.path entry cost ~2 ms of every hook call.
     _here = Path(__file__).resolve().parent
-    sys.path = [p for p in sys.path if Path(p or ".").resolve() != _here]
+    _here_stat = os.stat(_here)
+    sys.path = [p for p in sys.path if not _is_dir(p, _here_stat)]
     sys.path.insert(0, str(_here.parent))
 
 

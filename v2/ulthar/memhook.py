@@ -105,23 +105,23 @@ class Project:
 
 # ---------------------------------------------------------------------------- AC-4
 
-def _forms(path: str) -> set[str]:
+def _forms(path: str, memo: dict | None) -> frozenset[str]:
     from .product import forms  # noqa: PLC0415 -- see run()
 
-    return forms(path)
+    return forms(path, memo)
 
 
-def _protected_roots() -> set[str]:
-    roots = set()
+def _protected_roots(memo: dict | None) -> set[str]:
+    roots: set[str] = set()
     for root in (Path.home() / ".claude" / "ulthar", store_mod.state_dir()):
-        roots |= _forms(str(root))
+        roots |= _forms(str(root), memo)
     return roots
 
 
-def _is_protected_path(raw: str, cwd: str) -> bool:
+def _is_protected_path(raw: str, cwd: str, memo: dict | None = None) -> bool:
     p = Path(raw)
-    roots = _protected_roots()
-    for form in _forms(str(p if p.is_absolute() else Path(cwd) / p)):
+    roots = _protected_roots(memo)
+    for form in _forms(str(p if p.is_absolute() else Path(cwd) / p), memo):
         if store_mod.STORE_DIRNAME in form.split("/") or form.endswith(PROJECT_CONFIG_TAIL):
             return True
         if any(form == r or form.startswith(r + "/") for r in roots):
@@ -152,19 +152,19 @@ def _shell_command(payload: dict) -> str:
     return str((payload.get("tool_input") or {}).get("command") or "")
 
 
-def protect(payload: dict) -> str | None:
+def protect(payload: dict, memo: dict | None = None) -> str | None:
     """AC-4: the block message, or None. (a) `ulthar decide` write subcommands (add,
     ingest, ...) from any Claude tool, and `decide confirm` from a subagent -- the main
     session may confirm, as the token it consumes only the hook issues; (c) write tools
     into a store; (d) shell commands naming a store path that are not ulthar CLI calls.
-    (b) `ulthar fact add` stays allowed."""
+    (b) `ulthar fact add` stays allowed. `memo`: see product.forms."""
     tool = payload.get("tool_name")
     cwd = str(payload.get("cwd") or os.getcwd())
     if tool in WRITE_TOOLS:
         ti = payload.get("tool_input") or {}
         for key in ("file_path", "notebook_path"):
             raw = ti.get(key)
-            if isinstance(raw, str) and raw and _is_protected_path(raw, cwd):
+            if isinstance(raw, str) and raw and _is_protected_path(raw, cwd, memo):
                 return (f"BLOCKED (ulthar memory store): {tool} into {raw} -- the knowledge store "
                         "(<knowledge_root>/.ulthar/, ~/.claude/ulthar/) is written only by the "
                         "ulthar CLI and hooks (TRUST-02), and the project config "
@@ -390,7 +390,8 @@ def run(event: str, payload: dict, rt, project: Project, detail: dict) -> Action
         from . import product  # noqa: PLC0415
         from . import tokens  # noqa: PLC0415
 
-        msg = protect(payload)
+        memo: dict = {}  # path forms, shared by the store guard and the scope check
+        msg = protect(payload, memo)
         if msg:
             act.block, act.guard_id = msg, STORE_GUARD
             return act
@@ -398,7 +399,7 @@ def run(event: str, payload: dict, rt, project: Project, detail: dict) -> Action
         if msg:
             act.block, act.guard_id = msg, tokens.RUNNER_GUARD
             return act
-        msg = product.check(payload, project.store, rt, detail)
+        msg = product.check(payload, project.store, rt, detail, memo)
         if msg:
             act.block, act.guard_id = msg, product.GUARD_ID
             return act

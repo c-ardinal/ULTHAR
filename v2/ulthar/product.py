@@ -70,9 +70,16 @@ def resolved(path: str) -> str:
     return os.path.join(os.path.realpath(existing), *rest)
 
 
-def forms(path: str) -> set[str]:
+def forms(path: str, memo: dict | None = None) -> frozenset[str]:
+    """`memo`: one hook call's results by absolute path, so the store guard and the
+    scope check resolve a path once (a realpath is ~0.3 ms)."""
     full = os.path.abspath(path)
-    return {fold(full), fold(resolved(full))}
+    if memo is not None and full in memo:
+        return memo[full]
+    out = frozenset({fold(full), fold(resolved(full))})
+    if memo is not None:
+        memo[full] = out
+    return out
 
 
 # ---------------------------------------------------------------------------- targets
@@ -179,11 +186,12 @@ def _absolute(raw: str, cwd: str) -> str:
     return str(p if p.is_absolute() else Path(cwd) / p)
 
 
-def _product_forms(path: str, roots: set[str], globs: list[str]) -> list[str]:
+def _product_forms(path: str, roots: frozenset[str], globs: list[str],
+                   memo: dict | None) -> list[str]:
     """The repository-relative forms of the absolute `path` that are product paths
     ("" = the repository root itself); [] = none is."""
     rels = []
-    for form in forms(path):
+    for form in forms(path, memo):
         for root in roots:
             if form == root or form.startswith(root + "/"):
                 rel = form[len(root) + 1:]
@@ -255,9 +263,10 @@ def scoped_units(store: store_mod.Store, rt) -> list[tuple[str, list[str]]]:
     return out
 
 
-def check(payload: dict, store_of, rt, detail: dict) -> str | None:
+def check(payload: dict, store_of, rt, detail: dict, memo: dict | None = None) -> str | None:
     """The block message, or None. `store_of()` gives the project's store (opened only
-    when a product file is written). Raises on an unreadable config or store."""
+    when a product file is written). Raises on an unreadable config or store. `memo`:
+    see forms."""
     found = targets(payload)
     if not found:
         return None
@@ -266,11 +275,11 @@ def check(payload: dict, store_of, rt, detail: dict) -> str | None:
         return None
     globs = _non_product_globs(store.config)
     cwd = str(payload.get("cwd") or os.getcwd())
-    roots = forms(str(store.repo))
+    roots = forms(str(store.repo), memo)
     product = []
     for raw, sources in found:
         for label, path, tree, known in _outputs(raw, sources, cwd):
-            rels = _product_forms(path, roots, globs)
+            rels = _product_forms(path, roots, globs, memo)
             if rels:
                 product.append((label, rels, tree or not known))
     if not product:

@@ -20,6 +20,7 @@ from pathlib import Path
 
 SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 5000
+WAL_AUTOCHECKPOINT_PAGES = 256  # 1 MB of 4 KB pages; see connect()
 DB_ENV = "ULTHAR_RUNTIME_DB"
 
 DESIGN_TABLES: dict[str, tuple[str, ...]] = {
@@ -138,5 +139,10 @@ def connect(path: Path) -> sqlite3.Connection:
     # Hook latency (AC-9): WAL commits without fsync, and no checkpoint+WAL delete
     # on every close -- the WAL auto-checkpoints at its page threshold instead.
     conn.execute("PRAGMA synchronous=NORMAL")
+    # A fresh process's first read costs ~1.4 ms per MB of un-checkpointed WAL, and
+    # every hook call is a fresh process (~25 KB of WAL per call): a 1 MB bound instead
+    # of SQLite's 4 MB default saves ~2 ms per call on average. Same PASSIVE checkpoint
+    # (it never waits for other connections), just ~4x as often (about every 40 calls).
+    conn.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT_PAGES}")
     conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
     return conn

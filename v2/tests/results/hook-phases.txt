@@ -608,3 +608,55 @@ SubagentStart      before   p50  236.7  p95  296.4  min  225.6
 SubagentStart      after    p50  230.3  p95  295.1  min  219.7
 UserPromptSubmit   before   p50  241.5  p95  364.4  min  226.0
 UserPromptSubmit   after    p50  236.9  p95  321.0  min  217.7
+
+
+######## R1-c headroom round 2 (2026-11-12), against e529293 -- NOT acceptance ########
+The PC was saturated by another session's jobs during this round (hook p50 270-575 ms, twice
+the quiet level), so whole-call wall A/Bs could not resolve a few ms. Each change is therefore
+quantified by its own component, measured where it runs (cProfile of the real hook process,
+production argv, 15 calls per event, call counts deterministic), plus raw interleaved A/Bs.
+
+1. runtime.db WAL bound (ulthar.db: wal_autocheckpoint 1000 -> 256 pages).
+   The first read in a fresh process grows with the WAL that is not checkpointed: in the
+   profile state, runtime.db open+first query measured 1.9 ms (WAL 0) / 3.2 (1 MB) / 4.6
+   (2 MB) / 6.1 (3.1 MB) ms, and back to 2.2 ms after SQLite's 4 MB auto-checkpoint. A hook
+   call adds ~25 KB to the WAL. With the 1 MB bound: 1.7-3.0 ms throughout (calls 0-160).
+   Saving: ~2 ms per call on average, ~4 ms at the top of the old 4 MB cycle. The checkpoint
+   is the same PASSIVE one (never waits on other connections), about every 40 calls
+   instead of every ~150; synchronous, the txn.json path and the AC-20 rows are unchanged.
+   Separately: the FIRST open of a file another process has just modified costs ~6 ms
+   more on this PC for any file (plain file: 6.7 ms vs 0.4 ms on the next open; Defender
+   real-time protection is on). That part does not depend on the WAL and was not changed.
+2. __main__.py: sys.path entries compared by file identity (os.stat) instead of
+   Path.resolve(): realpath calls per hook call 10 -> 4 on every event, ~1.3-1.7 ms.
+3. Edit path: product.forms takes a per-call memo shared by the store guard and the scope
+   check (target path resolved once): realpath per Edit call 23 -> 15 together with (2).
+   ~0.3 ms.
+4. Store.exists(): a missing store directory (e.g. no global store) is one stat instead
+   of seven: SubagentStart path exists() 21 -> 15 per call, ~0.3 ms.
+
+Not changed (owner decision pending): lib/ctx.py imports shutil at module level, which
+pulls in 11 modules (shutil, bz2, _bz2, lzma, _lzma, compression, compression._common,
+compression._common._streams, compression.zstd, compression.zstd._zstdfile, _zstd). Their
+-X importtime self total was ~23 ms on the saturated PC, and the p50 marginal process-start
+cost was ~10 ms in the quieter interleaved A/B earlier today.
+
+== Interleaved e529293 (base) vs round 2, 100 calls/event, run 1 (saturated PC) ==
+PreToolUse         base     p50  285.6  p95  566.8  p99  714.9  min  242.5  max  855.7
+PreToolUse         round2   p50  288.9  p95  505.6  p99  680.4  min  236.0  max  798.9
+PreToolUse:Edit    base     p50  295.4  p95  455.0  p99  527.3  min  239.8  max  678.1
+PreToolUse:Edit    round2   p50  290.4  p95  577.5  p99  650.4  min  235.5  max  664.8
+SubagentStart      base     p50  333.8  p95  564.3  p99  794.7  min  223.4  max  889.1
+SubagentStart      round2   p50  345.3  p95  706.9  p99  813.7  min  224.9  max  841.0
+UserPromptSubmit   base     p50  282.6  p95  551.2  p99  613.3  min  233.0  max  891.5
+UserPromptSubmit   round2   p50  259.8  p95  543.2  p99  697.3  min  225.7  max 1397.8
+
+== run 2 (more saturated) ==
+PreToolUse         base     p50  575.1  p95  828.9  p99 1016.9  min  276.4  max 1131.2
+PreToolUse         round2   p50  535.8  p95  922.5  p99 1312.9  min  245.0  max 1643.2
+PreToolUse:Edit    base     p50  269.0  p95  701.8  p99  944.5  min  229.3  max 1039.0
+PreToolUse:Edit    round2   p50  265.3  p95  712.8  p99  873.1  min  227.1  max  988.7
+SubagentStart      base     p50  357.1  p95  665.0  p99  721.6  min  234.1  max  912.7
+SubagentStart      round2   p50  373.9  p95  660.7  p99  807.7  min  224.8  max  864.2
+UserPromptSubmit   base     p50  281.3  p95  565.9  p99  792.0  min  223.7  max  846.9
+UserPromptSubmit   round2   p50  298.3  p95  564.1  p99  667.1  min  228.4  max 1471.4

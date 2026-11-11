@@ -202,7 +202,8 @@ class Store:
         return cls(state_dir() / "global", GLOBAL_PROJECT_ID)
 
     def exists(self) -> bool:
-        return self.index_path.exists() or any((self.dir / f).exists() for f in FILES.values())
+        return self.index_path.exists() or (self.dir.is_dir() and any(
+            (self.dir / f).exists() for f in FILES.values()))  # no dir (e.g. no global store): 1 stat
 
     @property
     def chain_key(self) -> str:
