@@ -125,9 +125,11 @@ def _shell_command(payload: dict) -> str:
 
 
 def protect(payload: dict) -> str | None:
-    """AC-4: the block message, or None. (a) `ulthar decide` write subcommands from any
-    Claude tool; (c) write tools into a store; (d) shell commands naming a store path
-    that are not ulthar CLI calls. (b) `ulthar fact add` stays allowed."""
+    """AC-4: the block message, or None. (a) `ulthar decide` write subcommands (add,
+    ingest, ...) from any Claude tool, and `decide confirm` from a subagent -- the main
+    session may confirm, as the token it consumes only the hook issues; (c) write tools
+    into a store; (d) shell commands naming a store path that are not ulthar CLI calls.
+    (b) `ulthar fact add` stays allowed."""
     tool = payload.get("tool_name")
     cwd = str(payload.get("cwd") or os.getcwd())
     if tool in WRITE_TOOLS:
@@ -143,14 +145,17 @@ def protect(payload: dict) -> str | None:
     if tool not in SHELL_TOOLS:
         return None
     command = _shell_command(payload)
+    in_agent = bool(payload.get("agent_id"))
     for m in DECIDE_CALL.finditer(command):
         sub = (m.group(1) or "").lower()
-        if sub and sub not in DECIDE_READ_ONLY:
-            return (f"BLOCKED (ulthar memory store): `ulthar decide {sub}` changes decisions; "
-                    "decisions are added only by the owner's messages (extraction) and "
-                    "confirmed only by the owner (`ulthar decide confirm --token` run by the "
-                    "owner after answering the `ulthar decide review` question). Claude may "
-                    "run `ulthar decide list` and `ulthar decide review`.")
+        if not sub or sub in DECIDE_READ_ONLY or (sub == "confirm" and not in_agent):
+            continue  # confirm only consumes a hook-issued token: the main session may run it
+        who = "a subagent" if sub == "confirm" else "Claude"
+        return (f"BLOCKED (ulthar memory store): `ulthar decide {sub}` from {who} -- decisions "
+                "come only from the owner's messages (extraction) and are confirmed only "
+                "with the token the hook issues when the owner answers the `ulthar decide "
+                "review` question; the main session runs `ulthar decide confirm --token`, "
+                "a subagent never does. Allowed everywhere: `ulthar decide list|review`.")
     for segment in SEGMENT_SPLIT.split(command):
         if PROTECTED_IN_CMD.search(segment) and not _is_ulthar_invocation(segment):
             return (f"BLOCKED (ulthar memory store): this command touches the knowledge store "
@@ -285,7 +290,8 @@ def _post_ask(payload: dict, project: Project, act: Action) -> None:
         if token:
             detail["issued_token"] = token
             act.context = (f"[ULTHAR] 決定の確認の回答を受け取り、確定トークン {token} を発行しました。"
-                           f"オーナーが端末で `ulthar decide confirm --token {token}` を実行すると適用されます。")
+                           f"窓口（このメインセッション）が `ulthar decide confirm --token {token}`"
+                           " を実行して回答を適用してください（担当からは実行できません）。")
     act.after_insert = after_insert
 
 

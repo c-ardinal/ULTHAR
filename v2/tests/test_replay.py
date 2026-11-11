@@ -19,6 +19,10 @@ R1-b AC-16: under the same conditions (one fresh line appended before every time
       200 calls each, process start included): SubagentStart with 200 decisions in
       the store (L1 assembly), and UserPromptSubmit (prompt saved, extraction launched
       detached; the fake extractor, never the real claude) -- each p95 <= 300 ms.
+      Before each timed UserPromptSubmit the extractor the previous call launched
+      has ended; that wait is not measured (spec AC-16).
+$ULTHAR_SKIP_PERF=1 runs only the replay counts (correctness runs): the timed stages
+are skipped, not judged, and no perf record is written.
 The measured values are written to v2/tests/results/replay-latest.json and appended
 to replay-runs.jsonl (AC-9 / AC-16 are judged on 3 consecutive full runs).
 """
@@ -36,7 +40,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from helpers import HOOK_ARGV, TESTS_DIR, Probe, Sandbox
+from helpers import FAKE_EXTRACTOR, HOOK_ARGV, TESTS_DIR, Probe, Sandbox, processes_matching
 
 ENV = "ULTHAR_REPLAY_TRANSCRIPT"
 SHA_PREFIX = "48a2d2d5afe28ea0"
@@ -44,6 +48,8 @@ EXPECTED = {"compact_summary": 10, "owner_msg": 570}
 FULL_INGEST_LIMIT_SEC = 120.0
 P95_LIMIT_MS = 300.0
 CALLS = 200
+EXTRACTION_WAIT_SEC = 60
+SKIP_PERF_ENV = "ULTHAR_SKIP_PERF"  # "1": only the replay counts, no timed stages (not judged)
 DECISIONS = 200  # R1-b AC-16: SubagentStart is measured with 200 decisions in the store
 CONFIRMED = 20
 RESULTS = TESTS_DIR / "results" / "replay-latest.json"
@@ -102,9 +108,10 @@ def _full_ingest(p: Probe, sb: Sandbox, session: str, transcript: Path, record: 
     return counts.get("lines", 0)
 
 
-def _timed(sb: Sandbox, transcript: Path, event: str, payload_for, check_call) -> tuple[list, list]:
-    """CALLS times: append one fresh owner line (untimed), then time one hook call of
-    `event` (process start included). Returns (times_ms, bad calls)."""
+def _timed(sb: Sandbox, transcript: Path, event: str, payload_for, check_call,
+           before=None) -> tuple[list, list]:
+    """CALLS times: append one fresh owner line and run `before(i)` (both untimed), then
+    time one hook call of `event` (process start included). Returns (times_ms, bad)."""
     env = sb.env()
     run_tag = os.urandom(4).hex()
     times, bad = [], []
@@ -113,6 +120,8 @@ def _timed(sb: Sandbox, transcript: Path, event: str, payload_for, check_call) -
         with open(transcript, "ab") as fh:
             fh.write(owner_line(uuid, f"timing probe {event} {run_tag} #{i}"))
         body = json.dumps(payload_for(i, run_tag))
+        if before is not None:
+            before(i)
         t0 = time.perf_counter()
         call = subprocess.run(HOOK_ARGV + ["--event", event], input=body,
                               capture_output=True, text=True, encoding="utf-8", env=env)
@@ -214,13 +223,26 @@ def _timed_user_prompt(p: Probe, sb: Sandbox, session: str, transcript: Path,
             return f"episodes={rows} extraction={launched}"
         return None
 
-    times, bad = _timed(sb, transcript, "UserPromptSubmit", payload, check)
+    waited = []
+
+    def previous_extraction_done(i):
+        """AC-16: before each timed call, the extractor the previous call launched has
+        ended (its row is no longer pending and no worker/extractor process is left);
+        this wait is not part of the measured time."""
+        started = time.monotonic()
+        deadline = started + EXTRACTION_WAIT_SEC
+        while time.monotonic() < deadline and (
+                sb.query("SELECT COUNT(*) FROM extractions WHERE status='pending'")[0][0]
+                or processes_matching(str(sb.root)) or processes_matching(FAKE_EXTRACTOR.name)):
+            time.sleep(0.05)
+        waited.append(time.monotonic() - started)
+
+    times, bad = _timed(sb, transcript, "UserPromptSubmit", payload, check,
+                        before=previous_extraction_done)
+    previous_extraction_done(CALLS)  # the last call's extraction, before counting
     stats = record.setdefault("events", {})["UserPromptSubmit"] = _stats(times)
-    deadline = time.monotonic() + 120
-    while sb.query("SELECT COUNT(*) FROM extractions WHERE status='pending'")[0][0]:
-        if time.monotonic() > deadline:
-            break
-        time.sleep(0.5)
+    stats["wait_before_call_s"] = {"total": round(sum(waited), 1),
+                                   "max": round(max(waited), 2)}
     statuses = dict(sb.query("SELECT status, COUNT(*) FROM extractions GROUP BY status"))
     record["extractions"] = statuses
     p.check(f"each UserPromptSubmit saved its prompt and launched an extraction "
@@ -249,6 +271,10 @@ def run_replay(p: Probe, transcript: Path) -> dict:
     try:
         session = transcript.stem
         lines = _full_ingest(p, sb, session, transcript, record)
+        if os.environ.get(SKIP_PERF_ENV) == "1":
+            print(f"SKIP timed stages: ${SKIP_PERF_ENV}=1 -- AC-9 / AC-16 p95 NOT measured or judged")
+            record["perf_skipped"] = True
+            return record
         synthetic = sb.root / "synthetic-transcript.jsonl"
         synthetic_transcript(synthetic, lines, transcript.stat().st_size)
         record["synthetic_bytes"] = synthetic.stat().st_size
@@ -276,6 +302,8 @@ def main() -> int:
     if prefix != SHA_PREFIX:
         return p.result()
     record = run_replay(p, transcript)
+    if record.get("perf_skipped"):
+        return p.result()  # a correctness-only run leaves the perf records alone
     record.update(measured_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                   sha256_prefix=prefix, python=sys.version.split()[0],
                   platform=platform.platform(), passed=p.passed, failed=p.failed)
