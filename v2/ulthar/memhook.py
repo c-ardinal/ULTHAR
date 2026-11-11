@@ -42,7 +42,9 @@ DECIDE_CALL = re.compile(_ULTHAR_CALL + r"\s+decide(?:\s+([\w\-]+))?", re.I)
 HOOK_ONLY_CALL = re.compile(_ULTHAR_CALL + r"\s+(hook|extract)\b", re.I)
 DECIDE_READ_ONLY = frozenset({"list", "review", "-h", "--help"})
 PROTECTED_IN_CMD = re.compile(
-    r"\.claude[\\/]+ulthar(?![\w.\-])|(?:^|[\\/\s\"'=:])\.ulthar(?=[\\/\s\"';|&)]|$)", re.I)
+    r"\.claude[\\/]+ulthar(?![\w.\-])|\.claude[\\/]+ulthar\.json"
+    r"|(?:^|[\\/\s\"'=:])\.ulthar(?=[\\/\s\"';|&)]|$)", re.I)
+PROJECT_CONFIG_TAIL = "/.claude/ulthar.json"  # <repo>/.claude/ulthar.json, edited by the owner only
 SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&\n]")
 PYTHON_EXE = re.compile(r"^(?:py|python[\d.]*)(?:\.exe)?$", re.I)
 READ_ONLY_CMDS = frozenset({
@@ -119,7 +121,7 @@ def _is_protected_path(raw: str, cwd: str) -> bool:
     p = Path(raw)
     roots = _protected_roots()
     for form in _forms(str(p if p.is_absolute() else Path(cwd) / p)):
-        if store_mod.STORE_DIRNAME in form.split("/"):
+        if store_mod.STORE_DIRNAME in form.split("/") or form.endswith(PROJECT_CONFIG_TAIL):
             return True
         if any(form == r or form.startswith(r + "/") for r in roots):
             return True
@@ -167,8 +169,9 @@ def protect(payload: dict) -> str | None:
             if isinstance(raw, str) and raw and _is_protected_path(raw, cwd):
                 return (f"BLOCKED (ulthar memory store): {tool} into {raw} -- the knowledge store "
                         "(<knowledge_root>/.ulthar/, ~/.claude/ulthar/) is written only by the "
-                        "ulthar CLI and hooks (TRUST-02). Use `ulthar fact add` for facts; "
-                        "decisions come from the owner via `ulthar decide review`.")
+                        "ulthar CLI and hooks (TRUST-02), and the project config "
+                        "<repo>/.claude/ulthar.json only by the owner, by hand. Use `ulthar fact "
+                        "add` for facts; decisions come from the owner via `ulthar decide review`.")
         return None
     if tool not in SHELL_TOOLS:
         return None

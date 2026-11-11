@@ -8,7 +8,8 @@ production hook, main session and subagent alike):
       -- 4 blocked;
   (d) shell commands naming those paths that are not ulthar CLI calls -- 2 blocked.
 Also AC-4 a2 (`ulthar hook`, `ulthar extract`, `__main__.py hook`) and c's resolution
-(a junction alias and a case variant): blocked 5/5. Shell-side path assembly
+(a junction alias and a case variant) and the project config (Write, Bash write):
+blocked 7/7. Shell-side path assembly
 (Join-Path etc.) is the spec's known limit, detected later through AC-20's record.
 Each block must come from the memory-store guard itself (memhook.protect), not only
 from some other rule, so the guard is also checked directly on every fixture.
@@ -96,8 +97,9 @@ def _junction(link, target) -> bool:
 
 
 def check_hook_only_and_aliases(p: Probe) -> None:
-    """AC-4 a2 (hook-only entry points, main and subagent) and c (a junction alias and a
-    case variant of a store path): blocked 5/5."""
+    """AC-4 a2 (hook-only entry points, main and subagent), c (a junction alias and a
+    case variant of a store path) and the project config .claude/ulthar.json (a Write
+    and a Bash write): blocked 7/7."""
     sb = Sandbox()
     try:
         main_py = str(Path(memhook.__file__).with_name("__main__.py")).replace("\\", "/")
@@ -117,6 +119,11 @@ def check_hook_only_and_aliases(p: Probe) -> None:
                 "file_path": str(alias / "decisions.jsonl"), "content": "x"}}),
             ("c Edit with a case variant (.ULTHAR)", {"tool_name": "Edit", "tool_input": {
                 "file_path": upper, "old_string": "a", "new_string": "b"}}),
+            ("c Write to the project config .claude/ulthar.json", {"tool_name": "Write",
+                                                                   "tool_input": {
+                "file_path": str(sb.work / ".claude" / "ulthar.json"), "content": "{}"}}),
+            ("d Bash write to the project config", {"tool_name": "Bash", "tool_input": {
+                "command": f"cp forged.json {str(sb.work).replace(chr(92), '/')}/.claude/ulthar.json"}}),
         ]
         blocked = 0
         for label, payload in cases:
@@ -125,7 +132,7 @@ def check_hook_only_and_aliases(p: Probe) -> None:
             blocked += ok
             p.check(f"{label}: blocked", ok, f"rc={proc.returncode} {proc.stderr[-300:]}")
         p.check("the junction alias was created for the test", made)
-        p.check(f"AC-4 a2 + c aliases: blocked {blocked}/5", blocked == 5)
+        p.check(f"AC-4 a2 + c aliases + project config: blocked {blocked}/7", blocked == 7)
         free = sb.hook("PreToolUse", {"session_id": "prot2", "tool_name": "Write", "tool_input": {
             "file_path": str(sb.work / "notes" / "ok.txt"), "content": "x"}})
         p.check("  ... an ordinary new file next to it is not blocked", free.returncode == 0,
