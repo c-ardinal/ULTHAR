@@ -46,8 +46,8 @@ STATE_ENV = "ULTHAR_STATE_DIR"
 PROJECT_CONFIG = Path(".claude") / "ulthar.json"
 STORE_DIRNAME = ".ulthar"
 FILES = {"decision": "decisions.jsonl", "fact": "facts.jsonl", "term": "terms.jsonl",
-         "episode": "episodes.jsonl"}
-ID_PREFIX = {"decision": "D", "fact": "F", "term": "T", "episode": "E"}
+         "episode": "episodes.jsonl", "issue": "issues.jsonl", "unit": "units.jsonl"}
+ID_PREFIX = {"decision": "D", "fact": "F", "term": "T", "episode": "E", "issue": "I", "unit": "U"}
 COMMON_FIELDS = ("id", "seq", "project_id", "writer", "ts", "supersedes")
 KIND_FIELDS = {
     "decision": ("status", "text", "raw_episode_id", "scope", "tags", "paths", "binding",
@@ -55,9 +55,11 @@ KIND_FIELDS = {
     "fact": ("text", "src_path", "src_line", "src_blob", "status", "valid_from", "invalid_at"),
     "term": ("term", "preferred", "forbidden", "decision_id"),
     "episode": ("session_id", "kind", "unit_id", "text", "transcript_ref"),
+    "issue": ("title", "status", "priority", "labels", "links"),
+    "unit": ("unit_id", "issue_id", "state", "contract_ref", "history"),
 }
 DEFAULTS = {"supersedes": [], "tags": [], "paths": [], "forbidden": [], "binding": False,
-            "scope": "project"}
+            "scope": "project", "labels": [], "links": [], "history": []}
 GLOBAL_PROJECT_ID = "(global)"
 INDEX_VERSION = 3
 WAL_TRUNCATE_BYTES = 4 << 20  # ~90 calls apart (~44 KB per append): a checkpoint fsync stays out of the p95
@@ -371,7 +373,7 @@ class Store:
                 named = [(name, len(data), final)]
                 adopted.append((name, len(data), final))
             else:
-                final, named = integrity.CHAIN_START, []
+                continue  # never written: no row, as an incremental index has none
             files.append((name, len(data), self._file_state(name)[1], final, named))
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -562,7 +564,12 @@ class Store:
                 except BaseException:
                     conn.execute("ROLLBACK")
                     raise
-                tx.commit(rt)
+                try:
+                    tx.commit(rt)
+                except BaseException:
+                    if conn.in_transaction:  # e.g. the manifest could not be written
+                        conn.execute("ROLLBACK")
+                    raise
             except sqlite3.Error as exc:
                 raise StoreError(f"index {self.index_path}: {exc}") from exc
             finally:
@@ -682,6 +689,7 @@ class Tx:
 
 
 def _index_record(conn: sqlite3.Connection, kind: str, rec: dict) -> None:
+    status = rec.get("state") if kind == "unit" else rec.get("status")  # a unit's status is its state
     try:
         conn.execute("INSERT INTO records VALUES (?,?,?,?,?,?)",
                      (rec["seq"], kind, rec["id"], rec.get("session_id"),
@@ -692,7 +700,7 @@ def _index_record(conn: sqlite3.Connection, kind: str, rec: dict) -> None:
         "INSERT INTO current VALUES (?,?,?,?,?) ON CONFLICT(kind, id) DO UPDATE SET"
         " seq=excluded.seq, status=excluded.status, json=excluded.json"
         " WHERE excluded.seq > current.seq",
-        (kind, rec["id"], rec["seq"], rec.get("status"), json.dumps(rec, ensure_ascii=False)))
+        (kind, rec["id"], rec["seq"], status, json.dumps(rec, ensure_ascii=False)))
 
 
 def current(conn: sqlite3.Connection | None, kind: str,
