@@ -1,0 +1,35 @@
+# ULTHAR unit process (design §7; R1-c: intake .. accepted, the returns, halted).
+# Read by the CLI only (`ulthar unit advance`, `ulthar verify`); never by a hook.
+# A transition's `requires` names preconditions; their checks live in ulthar/flow.py
+# (PRECONDITIONS), looked up by name -- an unknown name refuses the transition.
+# `by: cli` = `ulthar unit advance` (the window only); `by: verify` = taken by
+# `ulthar verify --self` itself (AC-8), never by `unit advance`.
+# `to: previous` = the state the unit was in when it was halted.
+
+states:
+  - intake
+  - contract_draft
+  - contract_confirmed
+  - build
+  - quant_verified
+  - owner_review
+  - accepted
+  - halted
+
+transitions:
+  - {from: intake, to: contract_draft, by: submit, requires: [issue_exists]}
+  - {from: contract_draft, to: contract_confirmed, by: cli,
+     requires: [lint_passed, contract_review_passed, contract_confirm_token]}
+  - {from: contract_confirmed, to: build, by: cli, requires: [budget_loops_set]}
+  - {from: build, to: quant_verified, by: cli, requires: [self_verify_all_quant_passed]}
+  - {from: quant_verified, to: owner_review, by: cli,
+     requires: [reviewer_verify_all_quant_passed, reviewer_independent,
+                verify_review_passed_no_blockers, evidence_tree_matches, no_unmapped_changes]}
+  - {from: owner_review, to: accepted, by: cli, requires: [qual_judgements_passed]}
+  # returns
+  - {from: quant_verified, to: build, by: cli, requires: [reason_given]}
+  - {from: quant_verified, to: contract_draft, by: cli, requires: [reason_given]}
+  - {from: owner_review, to: build, by: cli, requires: [reason_given]}
+  # halted (AC-8) and the way back
+  - {from: build, to: halted, by: verify, requires: [loops_exhausted_or_stalled]}
+  - {from: halted, to: previous, by: cli, requires: [halt_cause_classified, resume_authorized]}
