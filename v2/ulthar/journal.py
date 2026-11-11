@@ -81,7 +81,8 @@ def file_lock(lock: Path, posix: bool | None = None):
     polled: a stalled holder makes this raise OSError after LOCK_TIMEOUT_SEC (read per
     call), which the caller reports -- never an indefinite hang. `posix` overrides the
     platform choice (tests only). Also the knowledge store's project lock (ulthar.store)."""
-    lock.parent.mkdir(parents=True, exist_ok=True)
+    if not lock.parent.is_dir():
+        lock.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT)
     try:
         try_lock, unlock = _lock_ops(fd, os.name != "nt" if posix is None else posix)

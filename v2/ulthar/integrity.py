@@ -112,6 +112,8 @@ def write_manifest(store_dir: Path, plan: dict) -> None:
 
 def read_manifest(store_dir: Path) -> dict | None:
     path = store_dir / MANIFEST
+    if not path.exists():  # the usual case; a stat is far cheaper than a failing open
+        return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:

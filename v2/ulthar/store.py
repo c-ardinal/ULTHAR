@@ -27,7 +27,7 @@ import os
 import re
 import sqlite3
 import zlib
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -59,8 +59,8 @@ KIND_FIELDS = {
 DEFAULTS = {"supersedes": [], "tags": [], "paths": [], "forbidden": [], "binding": False,
             "scope": "project"}
 GLOBAL_PROJECT_ID = "(global)"
-INDEX_VERSION = 2
-WAL_TRUNCATE_BYTES = 1 << 20
+INDEX_VERSION = 3
+WAL_TRUNCATE_BYTES = 4 << 20  # ~90 calls apart (~44 KB per append): a checkpoint fsync stays out of the p95
 
 _INDEX_DDL = """
 CREATE TABLE IF NOT EXISTS records (
@@ -71,6 +71,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS records_dedupe ON records(kind, session_id, de
 CREATE TABLE IF NOT EXISTS current (
   kind TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, status TEXT, json TEXT NOT NULL,
   PRIMARY KEY (kind, id));
+CREATE INDEX IF NOT EXISTS current_status ON current(kind, status);
 CREATE TABLE IF NOT EXISTS files (
   name TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, chain TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS chain (
@@ -180,6 +181,7 @@ class Store:
         self.index_path = self.dir / "index.db"
         self._deferred: dict | None = None  # the manifest this instance left for finalize
         self._shared: sqlite3.Connection | None = None  # one index connection per instance
+        self._held: ExitStack | None = None  # the project lock, kept while a manifest is deferred
 
     # ------------------------------------------------------------------ construction
     @classmethod
@@ -241,7 +243,8 @@ class Store:
             self._close(conn)
 
     def close(self) -> None:
-        """Closes the reused connection (end of the hook call / command)."""
+        """Closes the reused connection and lets go of any kept lock (end of the call)."""
+        self.release()
         if self._shared is not None:
             conn, self._shared = self._shared, None
             self._close(conn)
@@ -292,7 +295,8 @@ class Store:
             self._record_runtime_chain(rt, prior + ([(n, s["new"], s["chain"])
                                                      for n, s in plan["files"].items()]
                                                     if done else []))
-            self._finish_manifest(rt, plan if done else {"files": {}, "committed": prior})
+            self._finish_manifest(rt, plan if done else {"files": {}, "committed": prior},
+                                  on_disk=done)
         if not conn.execute("SELECT 1 FROM files LIMIT 1").fetchone() and any(
                 self._file_state(n)[0] for n in FILES.values()):
             self._reindex_all(conn, rt)
@@ -307,7 +311,7 @@ class Store:
                 raise IntegrityError("; ".join(problems) or f"{name}: not recorded by ulthar")
             conn.execute("UPDATE files SET mtime_ns=? WHERE name=?", (mtime, name))
 
-    def _finish_manifest(self, rt, keep: dict) -> None:
+    def _finish_manifest(self, rt, keep: dict, on_disk: bool = False) -> None:
         """The manifest goes once the runtime.db chain rows of its committed appends are
         durable. Inside the caller's open runtime.db transaction they are not yet: then a
         manifest describing exactly those rows (`keep`) must stay, so a rollback of that
@@ -318,21 +322,23 @@ class Store:
             integrity.clear_manifest(self.dir)
             self._deferred = None
             return
-        if integrity.read_manifest(self.dir) != keep:
+        if not on_disk and integrity.read_manifest(self.dir) != keep:
             integrity.write_manifest(self.dir, keep)
         self._deferred = keep
 
     def finalize(self, rt=None) -> None:
         """Called by a caller whose runtime.db transaction (holding chain rows written by
         a store transaction) has just committed: the deferred manifest is resolved."""
+        if self._held is not None:
+            # the lock was kept since our commit: the manifest is ours, and its rows were in
+            # the runtime.db transaction that has just committed
+            try:
+                integrity.clear_manifest(self.dir)
+            finally:
+                self.release()
+            return
         if not (self.dir / integrity.MANIFEST).exists():
             return
-        if self._deferred is not None:
-            with self._lock():  # our own manifest: its rows were in the committed transaction
-                if integrity.read_manifest(self.dir) == self._deferred:
-                    integrity.clear_manifest(self.dir)
-                    self._deferred = None
-                    return
         with self._lock():
             try:
                 conn, owned = self._acquire()
@@ -436,7 +442,8 @@ class Store:
 
     def rebuild(self, rt=None) -> int:
         """`ulthar index rebuild`: regenerates index.db from the JSONL files (strictly)."""
-        self.dir.mkdir(parents=True, exist_ok=True)
+        if not self.dir.is_dir():
+            self.dir.mkdir(parents=True, exist_ok=True)
         with self._lock():
             try:
                 conn = self._connect()
@@ -486,11 +493,30 @@ class Store:
     # ------------------------------------------------------------------ writing
     @contextmanager
     def _lock(self):
+        if self._held is not None:  # this instance still holds it (a deferred manifest)
+            yield
+            return
         try:
             with journal.file_lock(self.dir / "lock"):
                 yield
         except OSError as exc:
             raise StoreError(f"project lock {self.dir / 'lock'}: {exc}") from exc
+
+    def _hold_lock(self) -> ExitStack:
+        stack = ExitStack()
+        try:
+            stack.enter_context(journal.file_lock(self.dir / "lock"))
+        except OSError as exc:
+            raise StoreError(f"project lock {self.dir / 'lock'}: {exc}") from exc
+        return stack
+
+    def release(self) -> None:
+        """Lets go of a lock kept for a deferred manifest (the caller's runtime.db
+        transaction failed): the manifest stays, the next open re-records its rows."""
+        held, self._held = self._held, None
+        self._deferred = None
+        if held is not None:
+            held.close()
 
     def _check_host(self) -> None:
         mine = local_host_id()
@@ -515,8 +541,13 @@ class Store:
         values (index.db and runtime.db) are written as one recoverable unit. Nothing is
         written if the body raises. `rt`: the caller's runtime.db connection (needed when
         the caller holds a runtime.db write transaction; else one is opened)."""
-        self.dir.mkdir(parents=True, exist_ok=True)
-        with self._lock():
+        if not self.dir.is_dir():
+            self.dir.mkdir(parents=True, exist_ok=True)
+        if self._held is not None:
+            raise StoreError("a deferred store transaction is not finalized yet")
+        lock = self._hold_lock()
+        self._deferred = None  # decided afresh by this transaction's settle and commit
+        try:
             self._check_host()
             try:
                 conn, owned = self._acquire()
@@ -536,6 +567,11 @@ class Store:
                 raise StoreError(f"index {self.index_path}: {exc}") from exc
             finally:
                 self._release(conn, owned)
+        finally:
+            if self._deferred is not None and self._held is None:
+                self._held = lock  # kept until finalize / release: the manifest stays ours
+            else:
+                lock.close()
 
 
 class Tx:
@@ -639,7 +675,7 @@ class Tx:
         rows = [tuple(r) for r in prior] + [(n, s["new"], s["chain"])
                                             for n, s in plan["files"].items()]
         store._record_runtime_chain(rt, rows)
-        store._finish_manifest(rt, plan)  # in an open runtime transaction: the same file stays
+        store._finish_manifest(rt, plan, on_disk=True)  # in an open runtime transaction: kept
 
 
 def _index_record(conn: sqlite3.Connection, kind: str, rec: dict) -> None:
