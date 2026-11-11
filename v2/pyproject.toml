@@ -1,7 +1,7 @@
 [project]
 name = "ulthar"
 version = "2.0.0a1"
-description = "ULTHAR v2 R1-a foundation: runtime.db, single hook dispatcher, transcript ingestion"
+description = "ULTHAR v2 R1: runtime.db, single hook dispatcher, transcript ingestion, memory and decisions"
 requires-python = ">=3.12"
 dependencies = ["psutil"]
 

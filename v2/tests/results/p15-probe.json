@@ -1,0 +1,167 @@
+{
+  "results": [
+    {
+      "label": "指摘",
+      "expected_kind": "decision",
+      "message": "さっきの設定画面、ボタンの角丸がページごとにバラバラだった。全部 4px に揃えて。",
+      "argv": [
+        "claude.EXE",
+        "-p",
+        "--model",
+        "haiku"
+      ],
+      "raw": "[{\"kind\": \"decision\", \"text\": \"ボタンの角丸は全ページで 4px に揃える\", \"scope\": \"project\", \"tags\": [\"UI\", \"ボタン\", \"角丸\", \"デザイン\"], \"paths\": [], \"supersedes\": [\"D-p15sample01\"], \"conflicts_with\": []}]\n",
+      "parsed": true,
+      "kinds": [
+        "decision"
+      ],
+      "items": [
+        {
+          "kind": "decision",
+          "text": "ボタンの角丸は全ページで 4px に揃える",
+          "scope": "project",
+          "tags": [
+            "UI",
+            "ボタン",
+            "角丸",
+            "デザイン"
+          ],
+          "paths": [],
+          "supersedes": [
+            "D-p15sample01"
+          ],
+          "conflicts_with": []
+        }
+      ],
+      "seconds": 12.6
+    },
+    {
+      "label": "禁止",
+      "expected_kind": "decision",
+      "message": "本番ブランチへの force push は絶対にしないで。",
+      "argv": [
+        "claude.EXE",
+        "-p",
+        "--model",
+        "haiku"
+      ],
+      "raw": "[{\"kind\": \"decision\", \"text\": \"本番ブランチへの force push は絶対にしないこと。\", \"scope\": \"project\", \"tags\": [\"git\", \"force-push\", \"本番ブランチ\"], \"paths\": [], \"supersedes\": [], \"conflicts_with\": []}]\n",
+      "parsed": true,
+      "kinds": [
+        "decision"
+      ],
+      "items": [
+        {
+          "kind": "decision",
+          "text": "本番ブランチへの force push は絶対にしないこと。",
+          "scope": "project",
+          "tags": [
+            "git",
+            "force-push",
+            "本番ブランチ"
+          ],
+          "paths": [],
+          "supersedes": [],
+          "conflicts_with": []
+        }
+      ],
+      "seconds": 12.6
+    },
+    {
+      "label": "好み",
+      "expected_kind": "decision",
+      "message": "コミットメッセージは英語より日本語のほうが好き。今後は日本語で書いて。",
+      "argv": [
+        "claude.EXE",
+        "-p",
+        "--model",
+        "haiku"
+      ],
+      "raw": "[{\"kind\": \"decision\", \"text\": \"コミットメッセージは英語より日本語のほうが好みなので、今後は日本語で書く。\", \"scope\": \"project\", \"tags\": [\"コミットメッセージ\", \"commit\", \"言語\"], \"paths\": [], \"supersedes\": [], \"conflicts_with\": []}]\n",
+      "parsed": true,
+      "kinds": [
+        "decision"
+      ],
+      "items": [
+        {
+          "kind": "decision",
+          "text": "コミットメッセージは英語より日本語のほうが好みなので、今後は日本語で書く。",
+          "scope": "project",
+          "tags": [
+            "コミットメッセージ",
+            "commit",
+            "言語"
+          ],
+          "paths": [],
+          "supersedes": [],
+          "conflicts_with": []
+        }
+      ],
+      "seconds": 12.7
+    },
+    {
+      "label": "用語",
+      "expected_kind": "term",
+      "message": "画面や文書では「ユーザー」ではなく「利用者」と書いて。",
+      "argv": [
+        "claude.EXE",
+        "-p",
+        "--model",
+        "haiku"
+      ],
+      "raw": "[{\"kind\": \"term\", \"text\": \"画面や文書では「ユーザー」ではなく「利用者」と書く。\", \"scope\": \"project\", \"tags\": [\"用語\", \"画面\", \"文書\"], \"paths\": [], \"supersedes\": [], \"conflicts_with\": [], \"term\": \"利用者\", \"preferred\": \"利用者\", \"forbidden\": [\"ユーザー\"]}]\n",
+      "parsed": true,
+      "kinds": [
+        "term"
+      ],
+      "items": [
+        {
+          "kind": "term",
+          "text": "画面や文書では「ユーザー」ではなく「利用者」と書く。",
+          "scope": "project",
+          "tags": [
+            "用語",
+            "画面",
+            "文書"
+          ],
+          "paths": [],
+          "supersedes": [],
+          "conflicts_with": [],
+          "term": "利用者",
+          "preferred": "利用者",
+          "forbidden": [
+            "ユーザー"
+          ]
+        }
+      ],
+      "seconds": 12.4
+    },
+    {
+      "label": "該当なし",
+      "expected_kind": "none",
+      "message": "今日の進み具合はどう？",
+      "argv": [
+        "claude.EXE",
+        "-p",
+        "--model",
+        "haiku"
+      ],
+      "raw": "[{\"kind\": \"none\"}]\n",
+      "parsed": true,
+      "kinds": [
+        "none"
+      ],
+      "items": [
+        {
+          "kind": "none"
+        }
+      ],
+      "seconds": 11.3
+    }
+  ],
+  "summary": {
+    "parsed": 5,
+    "of": 5,
+    "kind_matches": 5
+  }
+}

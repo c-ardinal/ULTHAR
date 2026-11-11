@@ -1,10 +1,15 @@
 """runtime.db -- local SQLite (WAL) state (design §6.2, CORE-03).
 
 The ten §6.2 tables carry exactly the design's column names; list/dict columns
-(paths[], post_hashes{}, bound{}, skill_hashes) are JSON text. Four support
-tables (episodes, ingest_cursors, tool_names, journal_replayed) hold the CORE-07 transcript
-ingestion state until the knowledge_root JSONL store lands in R1-b; journal_replayed
-makes the fallback journal's replay idempotent (ulthar.journal).
+(paths[], post_hashes{}, bound{}, skill_hashes) are JSON text. Support tables:
+ingest_cursors, tool_names (CORE-07 transcript ingestion), journal_replayed (makes
+the fallback journal's replay idempotent, ulthar.journal), extractions (decision
+extraction state per owner_msg Episode: pending/done/failed, DEC-01), injections
+(the last Episode seq shown by L0, per project) and reminders (candidate sets the
+Stop hook already asked about), store_chain (the chain value of every knowledge-store
+append, AC-20, a second copy of index.db's) and confirm_ops (progress of a decide
+confirm, so a retry completes it). Episodes themselves live in the knowledge store
+(ulthar.store), not here (R1-b AC-2).
 """
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 BUSY_TIMEOUT_MS = 5000
 DB_ENV = "ULTHAR_RUNTIME_DB"
 
@@ -70,12 +75,6 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE TABLE IF NOT EXISTS suspicions (
   id INTEGER PRIMARY KEY, block_event_id INTEGER, allow_event_id INTEGER, intent_key TEXT,
   notified INTEGER);
-CREATE TABLE IF NOT EXISTS episodes (
-  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('owner_msg','ask','answer','compact_summary',
-                                     'agent_report')),
-  text TEXT NOT NULL, transcript_ref TEXT NOT NULL, ts TEXT, dedupe_key TEXT NOT NULL,
-  UNIQUE (session_id, dedupe_key));
 CREATE TABLE IF NOT EXISTS ingest_cursors (
   session_id TEXT NOT NULL, transcript_path TEXT NOT NULL, byte_offset INTEGER NOT NULL,
   line_no INTEGER NOT NULL, tail_len INTEGER NOT NULL, tail_sha TEXT NOT NULL,
@@ -85,6 +84,22 @@ CREATE TABLE IF NOT EXISTS journal_replayed (
 CREATE TABLE IF NOT EXISTS tool_names (
   session_id TEXT NOT NULL, tool_use_id TEXT NOT NULL, name TEXT NOT NULL,
   PRIMARY KEY (session_id, tool_use_id));
+CREATE TABLE IF NOT EXISTS extractions (
+  episode_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT,
+  status TEXT NOT NULL CHECK (status IN ('pending','done','failed')),
+  started TEXT, finished TEXT, detail TEXT);
+CREATE INDEX IF NOT EXISTS extractions_project ON extractions(project_id, status);
+CREATE TABLE IF NOT EXISTS injections (
+  project_id TEXT NOT NULL, layer TEXT NOT NULL, last_seq INTEGER NOT NULL, ts TEXT,
+  PRIMARY KEY (project_id, layer));
+CREATE TABLE IF NOT EXISTS store_chain (
+  store_dir TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL, chain TEXT NOT NULL,
+  ts TEXT, PRIMARY KEY (store_dir, name, size));
+CREATE TABLE IF NOT EXISTS confirm_ops (
+  token_id TEXT PRIMARY KEY, stage TEXT NOT NULL, detail TEXT, ts TEXT);
+CREATE TABLE IF NOT EXISTS reminders (
+  project_id TEXT NOT NULL, candidates_sha TEXT NOT NULL, ts TEXT,
+  PRIMARY KEY (project_id, candidates_sha));
 """
 
 

@@ -3,12 +3,17 @@
 
     C:/Python314/python.exe -X utf8 v2/tests/run_all.py
 
-  * v2 tests: test_*.py here (AC-1..4, 7, 8, 11; AC-6/AC-9 replay in test_replay.py,
-    which skips with a message when $ULTHAR_REPLAY_TRANSCRIPT is unset);
+  * v2 tests: test_*.py here -- R1-a AC-1..4, 7, 8, 11 and R1-b AC-1, 3..6, 8..15,
+    17..20 (test_store, test_integrity, test_protect, test_extract, test_memory,
+    test_decide, test_cli_r1b, test_spawn, test_imports); the real-transcript replay
+    test_replay.py (R1-a AC-6/AC-9, R1-b AC-2/AC-16) skips with a message when
+    $ULTHAR_REPLAY_TRANSCRIPT is unset, and runs only its counts (no timed stage, not
+    judged, no perf record) with ULTHAR_SKIP_PERF=1;
   * the four v1 guard suites (git discipline, tool discipline, commander, grants:
     464 checks at 971632f) from v1/, run against the v2 dispatcher.
 Each module exposes main() -> int (no pytest). A crash in one module is one failure
-and the loop continues. runtime.db and HOME used by the tests live in temp dirs.
+and the loop continues. runtime.db, HOME and the ulthar state dir used by the
+tests live in temp dirs; no test launches the real `claude` (tests/fake_extractor.py).
 """
 from __future__ import annotations
 
@@ -85,9 +90,35 @@ def _report_split(report: dict, want: int) -> bool:
     return entry + unit == want
 
 
+LEFTOVER_GRACE_SEC = 5
+
+
+def _report_leftovers() -> bool:
+    """R1-b AC-19: no extractor process (or descendant) a test started is still alive:
+    processes whose command line names a test sandbox (the worker's --project-dir, the
+    fake extractor's arguments) or the fake extractor. A short grace lets a worker that
+    has just recorded its result exit."""
+    from helpers import FAKE_EXTRACTOR, SANDBOX_PREFIX, processes_matching  # noqa: PLC0415
+
+    deadline = time.monotonic() + LEFTOVER_GRACE_SEC
+    while True:
+        left = processes_matching(SANDBOX_PREFIX) + processes_matching(FAKE_EXTRACTOR.name)
+        left = list(dict(left).items())
+        if not left or time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+    print(f"\nAC-19: extractor processes left after the run: {len(left)}")
+    for pid, cmd in left:
+        print(f"  pid {pid}: {cmd}")
+    return not left
+
+
 def main() -> int:
-    os.environ.setdefault("ULTHAR_RUNTIME_DB",
-                          str(Path(tempfile.mkdtemp(prefix="ulthar-runall-")) / "runtime.db"))
+    scratch = Path(tempfile.mkdtemp(prefix="ulthar-runall-"))
+    os.environ.setdefault("ULTHAR_RUNTIME_DB", str(scratch / "runtime.db"))
+    # in-process hook calls (the v1 suites) write knowledge stores, the host id and the
+    # global store under here, never under the real ~/.claude/ulthar
+    os.environ.setdefault("ULTHAR_STATE_DIR", str(scratch / "state"))
     sys.path[:0] = [str(TESTS_DIR), str(V1_DIR)]
     ok = True
     print("=" * 70 + "\nV2 TESTS\n" + "=" * 70)
@@ -109,6 +140,7 @@ def main() -> int:
     print(f"\nAC-5: v1 checks passed {v1_total}/{want}")
     ok = ok and v1_total >= want
     ok = _report_split(v1_compat.split_report(), want) and ok
+    ok = _report_leftovers() and ok
     print("\n" + "=" * 70 + "\nRUN_ALL: " + ("PASS" if ok else "FAIL") + "\n" + "=" * 70)
     return 0 if ok else 1
 

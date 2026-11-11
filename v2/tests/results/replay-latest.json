@@ -1,6 +1,6 @@
 {
   "calls": 200,
-  "full_ingest_sec": 3.14,
+  "full_ingest_sec": 4.49,
   "counts": {
     "owner_msg": 570,
     "ask": 368,
@@ -9,18 +9,140 @@
     "agent_report": 470,
     "lines": 53947,
     "gaps": [],
-    "seconds": 1.782
+    "seconds": 2.691
   },
   "transcript_lines": 53947,
+  "jsonl_counts": {
+    "owner_msg": 570,
+    "ask": 368,
+    "answer": 368,
+    "agent_report": 470,
+    "compact_summary": 10
+  },
   "synthetic_bytes": 216298383,
-  "p50_ms": 179.2,
-  "p95_ms": 229.6,
-  "max_ms": 255.4,
-  "min_ms": 171.0,
-  "measured_at": "2026-11-10T15:17:50+00:00",
+  "p50_ms": 195.8,
+  "p95_ms": 244.1,
+  "max_ms": 280.7,
+  "min_ms": 187.2,
+  "slowest": [
+    [
+      0,
+      280.7
+    ],
+    [
+      96,
+      273.9
+    ],
+    [
+      148,
+      260.5
+    ],
+    [
+      140,
+      259.3
+    ],
+    [
+      154,
+      255.0
+    ]
+  ],
+  "events": {
+    "PreToolUse": {
+      "p50_ms": 195.8,
+      "p95_ms": 244.1,
+      "max_ms": 280.7,
+      "min_ms": 187.2,
+      "slowest": [
+        [
+          0,
+          280.7
+        ],
+        [
+          96,
+          273.9
+        ],
+        [
+          148,
+          260.5
+        ],
+        [
+          140,
+          259.3
+        ],
+        [
+          154,
+          255.0
+        ]
+      ]
+    },
+    "SubagentStart": {
+      "p50_ms": 205.5,
+      "p95_ms": 249.2,
+      "max_ms": 318.5,
+      "min_ms": 198.1,
+      "slowest": [
+        [
+          86,
+          318.5
+        ],
+        [
+          85,
+          307.8
+        ],
+        [
+          46,
+          285.0
+        ],
+        [
+          50,
+          266.2
+        ],
+        [
+          84,
+          265.7
+        ]
+      ]
+    },
+    "UserPromptSubmit": {
+      "p50_ms": 204.6,
+      "p95_ms": 238.9,
+      "max_ms": 366.9,
+      "min_ms": 194.7,
+      "slowest": [
+        [
+          93,
+          366.9
+        ],
+        [
+          167,
+          324.2
+        ],
+        [
+          57,
+          294.7
+        ],
+        [
+          128,
+          279.5
+        ],
+        [
+          17,
+          275.2
+        ]
+      ],
+      "wait_before_call_s": {
+        "total": 85.7,
+        "max": 0.57
+      }
+    }
+  },
+  "extractions": {
+    "done": 200
+  },
+  "measured_at": "2026-11-11T10:59:49+00:00",
   "sha256_prefix": "48a2d2d5afe28ea0",
   "python": "3.14.2",
   "platform": "Windows-11-10.0.26300-SP0",
-  "passed": 10,
+  "passed": 16,
   "failed": 0
 }

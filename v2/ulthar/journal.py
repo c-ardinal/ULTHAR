@@ -71,14 +71,18 @@ def _lock_ops(fd: int, posix: bool):
     return try_lock, unlock
 
 
-@contextmanager
 def _locked(db_path: Path, posix: bool | None = None):
-    """Exclusive inter-process lock, both platforms non-blocking and polled: a stalled
-    holder makes this raise OSError after LOCK_TIMEOUT_SEC (read per call), which the
-    caller reports as "NOT recorded" -- never an indefinite hang. `posix` overrides
-    the platform choice (tests only)."""
-    lock = db_path.with_name(db_path.name + LOCK_SUFFIX)
-    lock.parent.mkdir(parents=True, exist_ok=True)
+    return file_lock(db_path.with_name(db_path.name + LOCK_SUFFIX), posix)
+
+
+@contextmanager
+def file_lock(lock: Path, posix: bool | None = None):
+    """Exclusive inter-process lock on the file `lock`, both platforms non-blocking and
+    polled: a stalled holder makes this raise OSError after LOCK_TIMEOUT_SEC (read per
+    call), which the caller reports -- never an indefinite hang. `posix` overrides the
+    platform choice (tests only). Also the knowledge store's project lock (ulthar.store)."""
+    if not lock.parent.is_dir():
+        lock.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT)
     try:
         try_lock, unlock = _lock_ops(fd, os.name != "nt" if posix is None else posix)
@@ -91,7 +95,7 @@ def _locked(db_path: Path, posix: bool | None = None):
                 if exc.errno not in LOCK_CONTENTION_ERRNOS:
                     raise  # not "someone else holds it": waiting cannot help
                 if time.monotonic() >= deadline:
-                    raise OSError(f"journal lock {lock} not acquired within "
+                    raise OSError(f"lock {lock} not acquired within "
                                   f"{LOCK_TIMEOUT_SEC} s: {exc}") from exc
                 time.sleep(LOCK_POLL_SEC)
         try:
