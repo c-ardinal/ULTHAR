@@ -1,6 +1,12 @@
 """Shared helpers for the v2 tests: a temp home + runtime.db per test, the hook and
 CLI as subprocesses (process start included, as in production), and a Probe that
-counts checks like the v1 suites do."""
+counts checks like the v1 suites do.
+
+Every Sandbox's work/ is a project whose `.claude/ulthar.json` points knowledge_root
+at <sandbox>/knowledge and the extractor at tests/fake_extractor.py: no test ever
+launches the real `claude`. ULTHAR_STATE_DIR (host id, global store) is
+<sandbox>/home/.claude/ulthar for the hook and CLI subprocesses and, inside
+`with sb.inproc():`, for in-process calls too."""
 from __future__ import annotations
 
 import json
@@ -9,12 +15,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
 V2_ROOT = TESTS_DIR.parent
 MAIN_PY = V2_ROOT / "ulthar" / "__main__.py"
 HOOK_ARGV = [sys.executable, "-S", str(MAIN_PY), "hook"]
+FAKE_EXTRACTOR = TESTS_DIR / "fake_extractor.py"
 if str(V2_ROOT) not in sys.path:
     sys.path.insert(0, str(V2_ROOT))
 
@@ -40,21 +49,70 @@ class Probe:
 class Sandbox:
     """A temp root with home/, work/ and runtime.db; removed by cleanup()."""
 
-    def __init__(self) -> None:
-        self.root = Path(tempfile.mkdtemp(prefix="ulthar-v2-test-"))
+    def __init__(self, extractor: list[str] | None = None) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix=SANDBOX_PREFIX))
         self.home = self.root / "home"
         self.work = self.root / "work"
         self.home.mkdir()
         self.work.mkdir()
         self.db = self.root / "runtime.db"
+        self.state = self.home / ".claude" / "ulthar"
+        self.kr = self.root / "knowledge"
+        self.configure(extractor or ["none"])
+
+    def configure(self, extractor: list[str], work: Path | None = None, **extra) -> None:
+        """(Re)writes the project's .claude/ulthar.json; `extractor` = fake_extractor args."""
+        work = work or self.work
+        cfg = {"knowledge_root": str(self.kr if work == self.work else work / "knowledge"),
+               "extractor": {"cmd": [sys.executable, "-S", str(FAKE_EXTRACTOR), *extractor]},
+               **extra}
+        (work / ".claude").mkdir(parents=True, exist_ok=True)
+        (work / ".claude" / "ulthar.json").write_text(json.dumps(cfg), encoding="utf-8")
 
     def env(self, **extra: str) -> dict:
         env = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home),
-                   ULTHAR_RUNTIME_DB=str(self.db))
+                   ULTHAR_RUNTIME_DB=str(self.db), ULTHAR_STATE_DIR=str(self.state))
         env.pop("ULTHAR_CONFIG", None)
         env.pop("ULTHAR_GUARDS_DIR", None)
+        env.pop("ULTHAR_EXTRACTOR", None)
         env.update(extra)
         return env
+
+    @contextmanager
+    def inproc(self):
+        """In-process calls see this sandbox's state dir and runtime.db."""
+        saved = {k: os.environ.get(k) for k in ("ULTHAR_STATE_DIR", "ULTHAR_RUNTIME_DB")}
+        os.environ.update(ULTHAR_STATE_DIR=str(self.state), ULTHAR_RUNTIME_DB=str(self.db))
+        try:
+            yield
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def store(self, work: Path | None = None):
+        from ulthar import store as store_mod  # noqa: PLC0415
+
+        return store_mod.Store.for_cwd(work or self.work)
+
+    def kquery(self, sql: str, params: tuple = (), work: Path | None = None) -> list[tuple]:
+        """A query on the project's knowledge index (caught up with the JSONL first)."""
+        with self.inproc(), self.store(work).reader() as conn:
+            return conn.execute(sql, params).fetchall() if conn is not None else []
+
+    def episodes(self, kind: str | None = None, session: str | None = None) -> list[dict]:
+        rows = self.kquery("SELECT json FROM records WHERE kind='episode' ORDER BY seq")
+        eps = [json.loads(r[0]) for r in rows]
+        return [e for e in eps if (kind is None or e["kind"] == kind)
+                and (session is None or e["session_id"] == session)]
+
+    def jsonl(self, name: str, work: Path | None = None) -> list[dict]:
+        path = (self.kr if work is None else work / "knowledge") / ".ulthar" / name
+        if not path.exists():
+            return []
+        return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
     def hook(self, event: str, payload: dict, **extra_env: str) -> subprocess.CompletedProcess:
         body = dict(payload, hook_event_name=event)
@@ -63,10 +121,10 @@ class Sandbox:
                               capture_output=True, text=True, encoding="utf-8",
                               errors="replace", env=self.env(**extra_env), timeout=60)
 
-    def cli(self, *args: str) -> subprocess.CompletedProcess:
+    def cli(self, *args: str, cwd: Path | None = None, **extra_env: str) -> subprocess.CompletedProcess:
         return subprocess.run([sys.executable, str(MAIN_PY), *args], capture_output=True,
                               text=True, encoding="utf-8", errors="replace",
-                              env=self.env(), timeout=600)
+                              env=self.env(**extra_env), timeout=600, cwd=str(cwd or self.work))
 
     def query(self, sql: str, params: tuple = ()) -> list[tuple]:
         """Through ulthar.db.connect, i.e. with the production connection settings: a
@@ -81,7 +139,41 @@ class Sandbox:
             conn.close()
 
     def cleanup(self) -> None:
+        """Waits (bounded) for this sandbox's background extractions and their processes
+        to end before removing it, so no test leaves an extractor behind (R1-b AC-19)."""
+        deadline = time.monotonic() + CLEANUP_WAIT_SEC
+        while time.monotonic() < deadline:
+            pending = 0
+            if self.db.exists():
+                try:
+                    pending = self.query("SELECT COUNT(*) FROM extractions WHERE status='pending'")[0][0]
+                except Exception:  # noqa: BLE001 -- a broken db has nothing to wait for
+                    pending = 0
+            if not pending and not processes_matching(str(self.root)):
+                break
+            time.sleep(0.2)
         shutil.rmtree(self.root, ignore_errors=True)
+
+
+CLEANUP_WAIT_SEC = 30
+SANDBOX_PREFIX = "ulthar-v2-test-"
+
+
+def processes_matching(marker: str) -> list[tuple[int, str]]:
+    """(pid, command line) of every live process whose command line contains `marker`
+    (case-insensitive), this process excluded."""
+    import psutil  # noqa: PLC0415 -- tests only (v2/ulthar itself stays psutil-free here)
+
+    needle = marker.lower().replace("\\", "/")
+    out = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmd = " ".join(proc.info["cmdline"] or [])
+        except (psutil.Error, TypeError):
+            continue
+        if proc.info["pid"] != os.getpid() and needle in cmd.lower().replace("\\", "/"):
+            out.append((proc.info["pid"], cmd[:200]))
+    return out
 
 
 def write_jsonl(path: Path, records: list[dict], mode: str = "w") -> None:

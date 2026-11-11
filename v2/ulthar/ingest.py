@@ -9,14 +9,23 @@ offset is no longer the one consumed ("discontinuous"); ingestion then restarts 
 byte 0 and the per-line dedupe key keeps already stored Episodes from repeating.
 Only complete ('\\n'-terminated) lines are consumed, so a line still being written
 is picked up by the next call.
+
+Episodes go to the project's knowledge store (`<knowledge_root>/.ulthar/episodes.jsonl`,
+ulthar.store; R1-b AC-2), written in one locked store transaction before the cursor
+commits: a store failure leaves the cursor where it was, so the lines are re-read. The
+dedupe key (session, line uuid, kind, part) lives in the store's index. An owner_msg
+already saved from the UserPromptSubmit payload (ulthar.memhook) is recognised by
+its promptId and text and not written twice.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
 import zlib
-from datetime import datetime, timezone
 from pathlib import Path
+
+from . import store as store_mod
+from .store import now_iso  # noqa: F401 -- ulthar.hook and others use ingest.now_iso
 
 OWNER_MSG_EXCLUDED_PREFIXES = (
     "<task-notification", "<system-reminder", "[Request interrupted", "Caveat:",
@@ -29,10 +38,6 @@ ASYNC_LAUNCH_MARKER = "Async agent launched"
 INGEST_GUARD_ID = "ingest"
 NO_TOOL = "(none)"
 KINDS = ("owner_msg", "ask", "answer", "compact_summary", "agent_report")
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _texts(content) -> list[str]:
@@ -139,16 +144,29 @@ def _detect_gap(fh, cursor: tuple, size: int) -> str | None:
     return None
 
 
+def prompt_dedupe_key(prompt_id: str, text: str) -> str:
+    """The key of an owner_msg saved from the UserPromptSubmit payload; the same message
+    read later from the transcript (its record carries `promptId`) matches it."""
+    return f"prompt:{prompt_id}:{store_mod.text_key(text)}"
+
+
+def is_owner_text(text: str) -> bool:
+    return not text.startswith(TASK_NOTIFICATION_PREFIX) and not text.startswith(
+        OWNER_MSG_EXCLUDED_PREFIXES)
+
+
 def ingest(conn: sqlite3.Connection, session_id: str, transcript_path: str,
-           hook: str = "ingest") -> dict:
+           hook: str = "ingest", *, store: store_mod.Store, on_tx=None) -> dict:
     """Ingests new complete lines; returns counts of new Episodes by kind, plus
-    'lines' consumed and 'gaps' detected. A missing transcript is a no-op."""
+    'lines' consumed and 'gaps' detected. A missing transcript is a no-op. `on_tx(tx)`,
+    if given, also runs inside the store transaction (after this call's Episodes)."""
     path = Path(transcript_path)
     counts = {k: 0 for k in KINDS} | {"lines": 0, "gaps": []}
     if not path.is_file():
         return counts
     key = str(path)
     extractor = _Extractor(conn, session_id)
+    found: list[tuple] = []
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
@@ -174,7 +192,9 @@ def ingest(conn: sqlite3.Connection, session_id: str, transcript_path: str,
                     offset += len(raw)
                     tail_len, tail_sha = len(raw), _line_sig(raw)
                     counts["lines"] += 1
-                    _store_line(conn, extractor, session_id, key, raw, line_no, counts)
+                    found += _line_episodes(extractor, key, raw, line_no)
+        if found or on_tx is not None:
+            _store_episodes(store, session_id, hook, found, counts, on_tx)
         conn.execute(
             "INSERT INTO ingest_cursors VALUES (?,?,?,?,?,?) "
             "ON CONFLICT(session_id, transcript_path) DO UPDATE SET byte_offset=excluded.byte_offset,"
@@ -187,20 +207,32 @@ def ingest(conn: sqlite3.Connection, session_id: str, transcript_path: str,
     return counts
 
 
-def _store_line(conn, extractor: _Extractor, session_id: str, key: str, raw: bytes,
-                line_no: int, counts: dict) -> None:
+def _line_episodes(extractor: _Extractor, key: str, raw: bytes, line_no: int) -> list[tuple]:
     try:
         rec = json.loads(raw)
     except ValueError:
-        return
+        return []
     episodes = extractor.extract(rec)
     if not episodes:
-        return
+        return []
     ident = rec.get("uuid") or "L" + _line_sig(raw)
-    for kind, text, part in episodes:
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO episodes (session_id, kind, text, transcript_ref, ts, dedupe_key)"
-            " VALUES (?,?,?,?,?,?)",
-            (session_id, kind, text, f"{key}:{line_no}", rec.get("timestamp"),
-             f"{ident}:{kind}:{part}"))
-        counts[kind] += cur.rowcount
+    return [(kind, text, f"{ident}:{kind}:{part}", f"{key}:{line_no}", rec)
+            for kind, text, part in episodes]
+
+
+def _store_episodes(store: store_mod.Store, session_id: str, hook: str, found: list[tuple],
+                    counts: dict, on_tx=None) -> None:
+    with store.transaction({"session_id": session_id, "hook": hook}) as tx:
+        for kind, text, dedupe, ref, rec in found:
+            if tx.has_dedupe("episode", session_id, dedupe):
+                continue
+            prompt_id = rec.get("promptId")
+            if kind == "owner_msg" and isinstance(prompt_id, str) and tx.has_dedupe(
+                    "episode", session_id, prompt_dedupe_key(prompt_id, text)):
+                continue
+            tx.add("episode", {"session_id": session_id, "kind": kind, "unit_id": None,
+                               "text": text, "transcript_ref": ref,
+                               "event_ts": rec.get("timestamp")}, dedupe_key=dedupe)
+            counts[kind] += 1
+        if on_tx is not None:
+            on_tx(tx)

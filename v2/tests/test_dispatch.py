@@ -66,7 +66,12 @@ def check_every_event_writes_a_row(p: Probe) -> None:
             p.check(f"{fx['event']}: rc=0, {len(rows)} row(s), blank required columns={blanks}",
                     ok, proc.stderr[-400:])
         p.check(f"AC-2: rows written for {written}/9 events", written == 9)
-        kinds = dict(sb.query("SELECT kind, COUNT(*) FROM episodes GROUP BY kind"))
+        kinds = {}
+        for ep in sb.episodes():
+            kinds[ep["kind"]] = kinds.get(ep["kind"], 0) + 1
+        hook_prompt = [e for e in sb.episodes("owner_msg") if e.get("prompt_id") is not None
+                       or e.get("transcript_ref") is None]
+        kinds["owner_msg"] -= len(hook_prompt)  # UserPromptSubmit's own prompt (R1-b AC-6)
         p.check("the first hook call ingested the transcript (Episodes by kind)",
                 kinds == expected, f"{kinds} != {expected}")
         sessions = sb.query("SELECT session_id, transcript_path, \"offset\" FROM sessions")

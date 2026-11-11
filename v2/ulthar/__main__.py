@@ -44,6 +44,13 @@ def _hook(argv: list) -> int:
 
 if sys.argv[1:2] == ["hook"]:
     sys.exit(_hook(sys.argv[2:]))
+if sys.argv[1:2] == ["extract"] and len(sys.argv) == 6 and sys.argv[2:5:2] == ["--episode",
+                                                                             "--project-dir"]:
+    # the detached worker the UserPromptSubmit hook starts (ulthar.extract.launch): it
+    # skips the CLI's imports, as it runs alongside the session's next hook calls
+    from ulthar import worker as _worker
+
+    sys.exit(_worker.run_worker(sys.argv[3], sys.argv[5]))
 
 from ulthar.cli import main  # noqa: E402
 
