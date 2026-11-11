@@ -41,6 +41,18 @@ def check_scope(p: Probe) -> None:
         ok = r.returncode == 2 and "unit scope" in r.stderr
         blocked += ok
         p.check("AC-11: no unit -> a product write is blocked", ok, r.stderr[-300:])
+        outside = sb.root / "from-outside.txt"
+        outside.write_text("x\n", encoding="utf-8")
+        (sb.work / "existing").mkdir()
+        for label, command in (("cp <outside file> . (the repository root)",
+                                f"cp {outside.as_posix()} ."),
+                               ("mv <outside file> <existing directory>",
+                                f"mv {outside.as_posix()} existing")):
+            r = shell(sb, "Bash", command)
+            ok = r.returncode == 2 and "unit scope" in r.stderr
+            blocked += ok
+            p.check(f"AC-11: no unit -> {label} is blocked (judged by the child it writes)", ok,
+                    r.stderr[-300:])
         draft = make_unit(sb)
         cli(sb, "contract", "submit", draft, "--file", str(write_contract(sb, contract())))
         r = edit(sb, "bld-1", "src/app.txt")
@@ -57,7 +69,7 @@ def check_scope(p: Probe) -> None:
         ok = r.returncode == 2 and "unit scope" in r.stderr
         blocked += ok
         p.check("AC-11: Bash redirection outside the scope -> blocked", ok, r.stderr[-300:])
-        p.check(f"AC-11: blocked {blocked}/4", blocked == 4)
+        p.check(f"AC-11: blocked {blocked}/6", blocked == 6)
 
         allowed = 0
         r = edit(sb, "bld-1", "src/app.txt")
@@ -93,6 +105,17 @@ def check_scope(p: Probe) -> None:
             "writing outside the repository is not a product write":
                 shell(sb, "Bash", f"echo x > {(sb.root / 'outside.txt').as_posix()}").returncode == 0,
             "the main session is held to the same rule": scoped(edit(sb, None, "lib/main.py")),
+            "cp <outside file> src/ (the child src/<name> is in scope) is allowed":
+                shell(sb, "Bash", f"cp {outside.as_posix()} src/").returncode == 0,
+            "cp <outside file> . with a src/** unit is still blocked (child at the root)":
+                scoped(shell(sb, "Bash", f"cp {outside.as_posix()} .")),
+            "cp -r <outside dir> src/ needs src/** to cover the copied tree (allowed)":
+                shell(sb, "Bash", f"cp -r {sb.root.as_posix()}/knowledge src/").returncode == 0,
+            # (the v1 delete rule may still stop rm; AC-11 must not be what blocks it)
+            "rm -r src (the whole directory, src/** covers it) passes the scope check":
+                "unit scope" not in shell(sb, "Bash", "rm -r src").stderr,
+            "mv src lib (moving the scope's directory out) is blocked":
+                scoped(shell(sb, "Bash", "mv src lib")),
         }
         (sb.work / "lib-real").mkdir()
         made = _junction(sb.work / "src" / "lnk", sb.work / "lib-real")

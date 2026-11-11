@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 
 from helpers import Probe
@@ -101,7 +102,7 @@ def check_confirm_token(p: Probe) -> None:
         doc2 = contract(non_goals=["配色は変えない", "文言は変えない"])
         cli(sb, "contract", "submit", unit_id, "--file", str(write_contract(sb, doc2, "c2.yaml")))
         d = answer(sb, stale, ["確定"], "stale")
-        not_issued += len(_tokens(sb, "contract_confirm")) == 1 and "sha mismatch" in d.get(
+        not_issued += len(_tokens(sb, "contract_confirm")) == 1 and "not issued" in d.get(
             "unit_question", "")
         fresh = json.loads(cli(sb, "contract", "show", unit_id).stdout)
         d = answer(sb, fresh, ["確定"], "fake", in_transcript=False)
@@ -112,14 +113,21 @@ def check_confirm_token(p: Probe) -> None:
         runner(sb, "rev-1", ["review", "record", "--unit", unit_id, "--kind", "contract",
                              "--result", "pass"])
         fresh = json.loads(cli(sb, "contract", "show", unit_id).stdout)
+        qid = sb.query("SELECT qid FROM questions ORDER BY rowid DESC LIMIT 1")[0][0]
         answer(sb, fresh, ["確定"], "lie", transcript_answers=["修正"])
+        status = sb.query("SELECT status FROM questions WHERE qid=?", (qid,))[0][0]
         before = units_lines(sb)
         adv = cli(sb, "unit", "advance", unit_id, "contract_confirmed")
-        unused = [r for r in _tokens(sb, "contract_confirm") if r[2] is None]
-        p.check("AC-5: a PostToolUse claiming 確定 while the transcript says 修正 -> the token "
-                "is unusable: advance refused, nothing written (not issued 4/4)",
+        p.check("AC-5: a PostToolUse claiming 確定 while the transcript says 修正 -> refused at "
+                "the transition, nothing written; the question stays `asked` (refused 4/4)",
                 adv.returncode != 0 and "not in the session transcript" in adv.stderr
-                and units_lines(sb) == before and len(unused) == 2, adv.stderr[-400:])
+                and units_lines(sb) == before and status == "asked", adv.stderr[-400:] + status)
+        answer(sb, fresh, ["確定"], "genuine")
+        adv = cli(sb, "unit", "advance", unit_id, "contract_confirmed")
+        p.check("AC-5: ... the owner's genuine 確定 to the same question afterwards -> the "
+                "transition succeeds 1/1 (the forged one did not block it)",
+                adv.returncode == 0 and unit(sb, unit_id)["state"] == "contract_confirmed",
+                adv.stderr[-400:])
     finally:
         sb.cleanup()
 
@@ -240,12 +248,55 @@ def check_owner_review_return(p: Probe) -> None:
         sb.cleanup()
 
 
-def check_atomic(p: Probe) -> None:
-    """Injected failures inside a transition: nothing is written -- no units.jsonl
-    line, no history, the token unconsumed."""
+class _FailCommit:
+    """A runtime.db connection whose next COMMIT fails (the injected crash point)."""
+
+    def __init__(self, conn):
+        self._conn, self.armed = conn, False  # armed by flow.atomic (see _inject)
+
+    def execute(self, sql, *args):
+        if self.armed and sql.strip().upper() == "COMMIT":
+            self.armed = False
+            raise sqlite3.OperationalError("injected: runtime.db COMMIT failed")
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def _inject(sb, unit_id: str, to: str, name: str, wrap=None) -> str:
     from ulthar import db as db_mod  # noqa: PLC0415
     from ulthar import flow  # noqa: PLC0415
+
+    real_atomic = flow.atomic
+
+    def arming_atomic(store, rt, writer, body):
+        rt.armed = True  # the transition's own runtime.db COMMIT, not an earlier one
+        return real_atomic(store, rt, writer, body)
+
+    with sb.inproc():
+        conn = db_mod.connect(sb.db)
+        rt = wrap(conn) if wrap else conn
+        if wrap:
+            flow.atomic = arming_atomic
+        try:
+            flow.advance(sb.store(), rt, unit_id, to, reason=None, cause=None,
+                         actor={"test": name})
+            return "no error"
+        except Exception as exc:  # noqa: BLE001 -- the injected failure
+            return str(exc)
+        finally:
+            flow.atomic = real_atomic
+            conn.close()
+
+
+def check_atomic(p: Probe) -> None:
+    """AC-6: failures injected at the 3 points -- before the store commit, at the
+    runtime.db COMMIT, at the store's finalize -- leave, once the unit is opened again,
+    either everything applied (record, history, token consumed) or nothing; never half."""
+    from ulthar import flow  # noqa: PLC0415
     from ulthar import integrity  # noqa: PLC0415
+    from ulthar import store as store_mod  # noqa: PLC0415
 
     sb = new_sandbox()
     try:
@@ -253,44 +304,67 @@ def check_atomic(p: Probe) -> None:
         cli(sb, "contract", "submit", unit_id, "--file", str(write_contract(sb, contract())))
         confirm_contract(sb, unit_id)
         before_lines = units_lines(sb)
-        injections = {}
-        real_consume, real_manifest = flow.consume_tokens, integrity.write_manifest
+        real_apply, real_manifest = flow.apply_op, integrity.write_manifest
 
-        def after_consume(rt, ids):
-            real_consume(rt, ids)
-            raise RuntimeError("injected: crash after the token was consumed")
+        def after_consume(rt, project_id, uid, op, strict):
+            real_apply(rt, project_id, uid, op, strict)
+            if strict:
+                raise RuntimeError("injected: crash after the token was consumed")
 
         def no_manifest(*a, **k):
             raise OSError("injected: the store's write-ahead manifest cannot be written")
 
-        for name, patch in (("after token consumption", ("consume_tokens", after_consume)),
-                            ("at the store commit", ("write_manifest", no_manifest))):
-            target = flow if patch[0] == "consume_tokens" else integrity
-            setattr(target, patch[0], patch[1])
-            try:
-                with sb.inproc():
-                    rt = db_mod.connect(sb.db)
-                    try:
-                        flow.advance(sb.store(), rt, unit_id, "contract_confirmed", reason=None,
-                                     cause=None, actor={"test": name})
-                        injections[name] = "no error"
-                    except Exception as exc:  # noqa: BLE001 -- the injected failure
-                        injections[name] = str(exc)
-                    finally:
-                        rt.close()
-            finally:
-                flow.consume_tokens, integrity.write_manifest = real_consume, real_manifest
-        state = unit(sb, unit_id)
+        errors = {}
+        flow.apply_op = after_consume
+        try:
+            errors["inside the operation"] = _inject(sb, unit_id, "contract_confirmed", "a1")
+        finally:
+            flow.apply_op = real_apply
+        integrity.write_manifest = no_manifest
+        try:
+            errors["at the store commit"] = _inject(sb, unit_id, "contract_confirmed", "a2")
+        finally:
+            integrity.write_manifest = real_manifest
+        state = unit(sb, unit_id)  # the next open
         unconsumed = [t for t in _tokens(sb, "contract_confirm") if t[2] is None]
-        p.check("AC-6: injected failures (after the token consumption, at the store commit) "
-                "-> records written 0, state and history unchanged, token unconsumed",
-                all("injected" in v for v in injections.values()) and len(injections) == 2
+        p.check("AC-6: failures before the store commit (inside the operation, at the store "
+                "commit) -> after the next open nothing is applied: no record, token unused",
+                all("injected" in v for v in errors.values())
                 and units_lines(sb) == before_lines and state["state"] == "contract_draft"
                 and len(unconsumed) == 1 and cli(sb, "store", "verify").returncode == 0,
-                f"{injections} lines {units_lines(sb)}/{before_lines} {state['state']}")
-        r = _advance(sb, unit_id, "contract_confirmed")
-        p.check("  ... and the same transition then succeeds once",
-                r.returncode == 0 and units_lines(sb) == before_lines + 1, r.stderr[-300:])
+                f"{errors} lines {units_lines(sb)}/{before_lines} {state['state']}")
+
+        err = _inject(sb, unit_id, "contract_confirmed", "b", wrap=_FailCommit)
+        half = (units_lines(sb) == before_lines + 1  # the store committed, runtime.db did not
+                and len([t for t in _tokens(sb, "contract_confirm") if t[2] is None]) == 1)
+        reopened = unit(sb, unit_id)  # `unit show`: the next open recovers
+        token = reopened["history"][-1].get("tokens") or ["-"]
+        consumed = sb.query("SELECT consumed_at FROM tokens WHERE token_id=?", (token[0],))
+        p.check("AC-6: failure at the runtime.db COMMIT -> after the next open everything is "
+                "applied (state, history, the token consumed), store chain intact",
+                "injected" in err and half and reopened["state"] == "contract_confirmed"
+                and units_lines(sb) == before_lines + 1 and consumed and consumed[0][0]
+                and cli(sb, "store", "verify").returncode == 0
+                and not (sb.kr / ".ulthar" / "txn.json").exists(),
+                f"{err} {reopened['state']} {consumed}")
+
+        real_finalize = store_mod.Store.finalize
+
+        def no_finalize(self, rt=None):
+            raise OSError("injected: finalize failed")
+
+        store_mod.Store.finalize = no_finalize
+        try:
+            err = _inject(sb, unit_id, "build", "c")
+        finally:
+            store_mod.Store.finalize = real_finalize
+        reopened = unit(sb, unit_id)
+        p.check("AC-6: failure at the store's finalize -> after the next open the transition is "
+                "applied whole (state build, chain verified, no manifest left)",
+                "injected" in err and reopened["state"] == "build"
+                and units_lines(sb) == before_lines + 2
+                and cli(sb, "store", "verify").returncode == 0
+                and not (sb.kr / ".ulthar" / "txn.json").exists(), f"{err} {reopened['state']}")
     finally:
         sb.cleanup()
 

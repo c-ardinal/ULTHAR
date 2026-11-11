@@ -63,15 +63,29 @@ def _resume(p: Probe, sb, by_owner: str, by_contract: str) -> None:
     p.check("AC-6: halted -> build refused with a cause but no owner resume / new contract",
             r.returncode != 0 and "resume_authorized" in r.stderr, r.stderr[-300:])
     question = json.loads(cli(sb, "unit", "show", by_owner, "--ask", "resume").stdout)
+    answer(sb, question, ["再開"], "resume-lie", transcript_answers=["再開しない"])
+    forged = cli(sb, "unit", "advance", by_owner, "build", "--cause", "implementation")
+    p.check("AC-10: a forged UNIT-RESUME (PostToolUse 再開, transcript 再開しない) -> refused",
+            forged.returncode != 0 and "resume_authorized" in forged.stderr, forged.stderr[-300:])
     answer(sb, question, ["再開"], "resume")
     r = cli(sb, "unit", "advance", by_owner, "build", "--cause", "implementation")
     rec = unit(sb, by_owner)
-    p.check("AC-6: halted -> build (the state before) with the cause and the owner's "
-            "UNIT-RESUME; the loop count starts again",
+    p.check("AC-6/AC-10: halted -> build (the state before) with the cause and the owner's "
+            "genuine UNIT-RESUME after the forged one; the loop count starts again",
             r.returncode == 0 and rec["state"] == "build" and rec["loops"] == []
             and rec["history"][-1]["cause"] == "implementation", r.stderr[-300:])
+    old_question = json.loads(cli(sb, "unit", "show", by_contract, "--ask", "resume").stdout)
+    answer(sb, old_question, ["再開"], "resume-v1")
     new_doc = contract(acs=[quant_ac(hi=12)])
     cli(sb, "contract", "submit", by_contract, "--file", str(write_contract(sb, new_doc, "v2.yaml")))
+    stale = cli(sb, "unit", "advance", by_contract, "build", "--cause", "requirement")
+    voided = sb.query("SELECT consumed_at FROM tokens WHERE kind='unit_resume'"
+                      " AND json_extract(bound, '$.unit_id')=?", (by_contract,))
+    p.check("AC-10: a UNIT-RESUME token of contract v1, after v2 was submitted, is refused (and "
+            "was voided by the submission)",
+            stale.returncode != 0 and "resume_authorized" in stale.stderr and voided
+            and all(str(v[0]).startswith("invalidated") for v in voided),
+            stale.stderr[-300:] + str(voided))
     confirm_contract(sb, by_contract)
     r = cli(sb, "unit", "advance", by_contract, "build", "--cause", "requirement")
     rec = unit(sb, by_contract)
@@ -130,7 +144,8 @@ def check_qualitative(p: Probe) -> None:
         doc = contract(acs=[quant_ac("AC-1"), quant_ac("AC-2"), quant_ac("AC-3"), qual_ac()])
         for ac in ("AC-2", "AC-3"):
             set_value(sb, ac, "1")
-        cases = {"pass": (["合格"], None), "fail": (["不合格"], None), "forged": (["合格"], ["不合格"])}
+        cases = {"pass": (["合格"], None), "fail": (["不合格"], None),
+                 "forged": (["合格"], ["不合格"])}
         for case, (said, real) in cases.items():
             unit_id = to_owner_review(sb, doc, builder=f"bld-q{case}")
             question = json.loads(cli(sb, "unit", "show", unit_id, "--ask", "qual").stdout)
@@ -146,12 +161,17 @@ def check_qualitative(p: Probe) -> None:
                       and unit(sb, unit_id)["state"] == "build")
                 label = "one 不合格 -> accepted refused; owner_review -> build allowed"
             else:
+                answer(sb, question, ["合格"], "qual-genuine")
+                genuine = cli(sb, "unit", "advance", unit_id, "accepted")
                 ok = (r.returncode != 0 and "not in the session transcript" in r.stderr
-                      and state == "owner_review")
-                label = "a PostToolUse claiming 合格 while the transcript says 不合格 -> refused"
+                      and state == "owner_review" and genuine.returncode == 0
+                      and unit(sb, unit_id)["state"] == "accepted")
+                label = ("a PostToolUse claiming 合格 while the transcript says 不合格 -> refused; "
+                         "the genuine 合格 afterwards -> accepted")
             expected += ok
             p.check(f"AC-10: {label}", ok, r.stderr[-400:])
-        p.check(f"AC-10: as expected {expected}/4", expected == 4)
+        p.check(f"AC-10: as expected {expected}/4 here (+ the stale-version resume above = 5)",
+                expected == 4)
     finally:
         sb.cleanup()
 

@@ -113,6 +113,17 @@ def check_runs(p: Probe) -> None:
                 "recorded apart with their runners",
                 adv.returncode == 0 and rev is not None and rev.returncode == 0
                 and rows[-1] == ("rev-1", 0) and rows[0] == ("bld-1", 1), f"{rows} {adv.stderr[-200:]}")
+        runner(sb, "rev-1", ["review", "record", "--unit", unit_id, "--kind", "verify",
+                             "--result", "pass"])
+        confirmed = sb.kr / ".ulthar" / "contracts" / unit_id / "v1.yaml"
+        original = confirmed.read_bytes()
+        confirmed.write_bytes(original + b"# edited after the confirmation\n")
+        tampered = cli(sb, "unit", "advance", unit_id, "owner_review")
+        confirmed.write_bytes(original)
+        p.check("AC-7: the confirmed contract file changed on disk -> the transition is refused "
+                "(its sha256 no longer equals the confirmed / evidence contract sha)",
+                tampered.returncode != 0 and "confirmed_contract_intact" in tampered.stderr,
+                tampered.stderr[-300:])
         main_run = runner(sb, None, ["verify", unit_id])[1]
         p.check("AC-7: a main-session `ulthar verify` runs nothing (no runner token)",
                 main_run is not None and main_run.returncode != 0
