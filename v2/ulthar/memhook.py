@@ -39,6 +39,9 @@ REPAIR_PER_PROMPT = 3  # lost registrations re-sent to extraction per owner prom
 REPAIR_AFTER_SEC = 60  # a pending, unclaimed extraction this old was never started
 
 HOOK_ONLY = frozenset({"hook", "extract"})
+HOOK_ONLY_LAUNCHERS = ("ulthar", "ulthar.__main__", "__main__.py")
+HOOK_ONLY_CONTEXT = re.compile(r"\$\(|`|\$'")  # command substitution / ANSI-C quoting
+HOOK_ONLY_STRIP = re.compile(r"\$'|\$\(|['\"`\\(){}]")
 DECIDE_READ_ONLY = frozenset({"list", "review", "-h", "--help"})
 PROTECTED_IN_CMD = re.compile(
     r"\.claude[\\/]+ulthar(?![\w.\-])|\.claude[\\/]+ulthar\.json"
@@ -125,6 +128,25 @@ def _is_protected_path(raw: str, cwd: str) -> bool:
     return False
 
 
+def _hook_only_broad(command: str) -> str | None:
+    """AC-4 a2, the fail-closed layer over shellwords' parsing (spec: 判定は安全側に倒す).
+    (1) Any command that has a command substitution ($(...) or a backtick) or ANSI-C
+    quoting ($'...') and mentions ulthar anywhere. (2) With quotes, backslashes, $', $(,
+    parentheses and braces stripped, a word ending in ulthar / ulthar.__main__ /
+    __main__.py followed within 3 words by `hook` or `extract`. Over-blocks on purpose
+    (e.g. a commit message built with $(cat ...) inside this repository)."""
+    reason = ("BLOCKED (ulthar memory store): this command may start ulthar's hook-only entry "
+              "point (`ulthar hook` / `ulthar extract`, AC-4 a2), {why}. Run it without "
+              "command substitution or ANSI-C quoting, or keep `ulthar` out of it.")
+    if HOOK_ONLY_CONTEXT.search(command) and "ulthar" in command.casefold():
+        return reason.format(why="through command substitution or ANSI-C quoting")
+    words = HOOK_ONLY_STRIP.sub(" ", command).casefold().split()
+    for i, word in enumerate(words):
+        if word.endswith(HOOK_ONLY_LAUNCHERS) and HOOK_ONLY & set(words[i + 1:i + 4]):
+            return reason.format(why=f"`{' '.join(words[i:i + 4])}`")
+    return None
+
+
 def _shell_command(payload: dict) -> str:
     return str((payload.get("tool_input") or {}).get("command") or "")
 
@@ -151,6 +173,9 @@ def protect(payload: dict) -> str | None:
     if tool not in SHELL_TOOLS:
         return None
     command = _shell_command(payload)
+    broad = _hook_only_broad(command)
+    if broad:
+        return broad
     in_agent = bool(payload.get("agent_id"))
     for args in shellwords.ulthar_calls(command, tool):
         sub = args[0].casefold() if args else ""

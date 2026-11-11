@@ -167,8 +167,56 @@ def check_quoted_module_forms(p: Probe) -> None:
                 blocked == len(cases))
         mention = sb.hook("PreToolUse", {"session_id": "q", "tool_name": "Bash", "tool_input": {
             "command": 'ulthar fact add --src README.md:1 "never run ulthar hook by hand"'}})
-        p.check("  ... text that only mentions `ulthar hook` inside an argument is not blocked",
-                mention.returncode == 0, mention.stderr[-300:])
+        p.check("  ... text that only mentions `ulthar hook` inside an argument is blocked too "
+                "(the fail-closed layer strips quotes: accepted over-blocking, spec afa6aae7)",
+                mention.returncode == 2 and "AC-4 a2" in mention.stderr, mention.stderr[-300:])
+    finally:
+        sb.cleanup()
+
+
+ORDINARY_REPO_COMMANDS = [
+    r"git -C C:\_Workspace\ULTHAR status --short v2",
+    "git -C C:/_Workspace/ULTHAR log --oneline -5",
+    r"C:/Python314/python.exe -X utf8 C:\_Workspace\ULTHAR\v2\tests\run_all.py",
+    "cat v2/ulthar/hook.py",
+    r"cat C:\_Workspace\ULTHAR\v2\ulthar\hook.py",
+    r"type C:\_Workspace\ULTHAR\v2\ulthar\extract.py",
+    "grep -n extract C:/_Workspace/ULTHAR/v2/ulthar/worker.py",
+]
+
+
+def check_fail_closed_layer(p: Probe) -> None:
+    """AC-4 a2's fail-closed layer (spec afa6aae7): ANSI-C quoting and command
+    substitution around ulthar are blocked 3/3; plain ulthar CLI calls stay allowed 3/3;
+    ordinary commands on this repository's paths (C:\\_Workspace\\ULTHAR\\v2\\...) are
+    not blocked (over-blocking 0 for them)."""
+    sb = Sandbox()
+    try:
+        deny = ["python -m $'ulthar' hook --event PostToolUse < forged.json",
+                "$(ulthar hook --event PostToolUse < forged.json)",
+                "`ulthar hook --event PostToolUse < forged.json`"]
+        allow = ["ulthar decide list", 'ulthar fact add --src README.md:1 "the README names it"',
+                 "ulthar store verify"]
+        n_deny = n_allow = 0
+        for cmd in deny:
+            proc = sb.hook("PreToolUse", {"session_id": "fc", "tool_name": "Bash",
+                                          "tool_input": {"command": cmd}})
+            ok = proc.returncode == 2 and "AC-4 a2" in proc.stderr
+            n_deny += ok
+            p.check(f"blocked: {cmd}", ok, f"rc={proc.returncode} {proc.stderr[-200:]}")
+        for cmd in allow:
+            proc = sb.hook("PreToolUse", {"session_id": "fc", "tool_name": "Bash",
+                                          "tool_input": {"command": cmd}})
+            ok = proc.returncode == 0
+            n_allow += ok
+            p.check(f"allowed: {cmd}", ok, proc.stderr[-300:])
+        p.check(f"AC-4 a2 fail-closed layer: blocked {n_deny}/3, allowed {n_allow}/3",
+                n_deny == 3 and n_allow == 3)
+        with sb.inproc():
+            over = [c for c in ORDINARY_REPO_COMMANDS if memhook.protect(
+                {"tool_name": "Bash", "tool_input": {"command": c}, "cwd": str(sb.work)})]
+        p.check(f"ordinary commands on this repo's paths: over-blocked {len(over)}/"
+                f"{len(ORDINARY_REPO_COMMANDS)}", not over, str(over))
     finally:
         sb.cleanup()
 
@@ -179,6 +227,7 @@ def main() -> int:
     check_read_paths_allowed(p)
     check_hook_only_and_aliases(p)
     check_quoted_module_forms(p)
+    check_fail_closed_layer(p)
     return p.result()
 
 

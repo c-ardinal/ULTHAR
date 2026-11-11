@@ -7,6 +7,8 @@
     next open;
   * a runtime.db rollback after a store commit (inside a transcript ingest) is repaired
     from the kept manifest, and a missing chain source is reported (review r1b-2 item 4);
+  * txn.json is replaced atomically: a failure during the replacement leaves it whole
+    and the next open recovers (AC-20);
   * AC-20 `ulthar store verify`: an append made outside the CLI, a same-size rewrite and
     a deleted line are each detected (3/3) with the position; the untouched store and a
     restored one report nothing (false positives 0).
@@ -224,6 +226,46 @@ def check_runtime_rollback_recovered(p: Probe) -> None:
         sb.cleanup()
 
 
+def check_manifest_replacement_atomic(p: Probe) -> None:
+    """AC-20 (spec afa6aae7): txn.json is replaced atomically. A failure injected during
+    the replacement leaves the previous manifest whole, and the next open recovers 1/1."""
+    sb = Sandbox()
+    try:
+        _seed(sb, 1)
+        store_dir = sb.kr / ".ulthar"
+        path = _decisions_path(sb)
+        before = path.read_bytes()
+        with open(path, "ab") as fh:  # an interrupted transaction: torn bytes + its manifest
+            fh.write(b'{"seq": 9, "id": "D-torn", "text": "half')
+        integrity.write_manifest(store_dir, {"files": {"decisions.jsonl": {
+            "old": len(before), "new": len(before) + 300, "chain": "0" * 64}}})
+        original = (store_dir / integrity.MANIFEST).read_bytes()
+        real = integrity.os.replace
+
+        def dies(*a, **k):
+            raise SystemExit("injected: process died while replacing txn.json")
+
+        integrity.os.replace = dies
+        try:
+            integrity.write_manifest(store_dir, {"files": {}, "committed": [["x", 1, "y"]]})
+            died = False
+        except SystemExit:
+            died = True
+        finally:
+            integrity.os.replace = real
+        intact = (store_dir / integrity.MANIFEST).read_bytes() == original
+        no_temp = not list(store_dir.glob(integrity.MANIFEST + ".*.tmp"))
+        err = _read_error(sb)
+        recovered = (err is None and path.read_bytes() == before
+                     and not (store_dir / integrity.MANIFEST).exists())
+        p.check("failure during the txn.json replacement: the previous manifest is intact "
+                "(not truncated) and no temp file is left", died and intact and no_temp)
+        p.check(f"AC-20: the next open recovers the interrupted transaction "
+                f"{int(recovered)}/1", recovered, str(err))
+    finally:
+        sb.cleanup()
+
+
 def main() -> int:
     p = Probe()
     print("\n== JSONL integrity (fail closed) ==")
@@ -233,6 +275,7 @@ def main() -> int:
     print("\n== AC-20: store verify ==")
     check_verify(p)
     check_runtime_rollback_recovered(p)
+    check_manifest_replacement_atomic(p)
     return p.result()
 
 

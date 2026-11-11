@@ -13,7 +13,9 @@
   the new sizes it committed (only the runtime.db chain rows may be missing), else
   every file is cut back to its size before -- so no half-applied multi-file write
   (a decision without its term) and no torn final line survive.
-  ponytail: no fsync -- this covers a crashed process, not a lost OS write cache.
+  The manifest itself is replaced atomically (temp file, fsync, os.replace).
+  ponytail: the JSONL appends are not fsynced -- they survive a crashed process, not a
+  lost OS write cache (fsync per hook call would cost tens of ms on Windows).
 """
 from __future__ import annotations
 
@@ -87,7 +89,37 @@ def chains_at(data: bytes, sizes: list[int]) -> dict[int, str | None]:
 
 
 def write_manifest(store_dir: Path, plan: dict) -> None:
-    (store_dir / MANIFEST).write_text(json.dumps(plan), encoding="utf-8")
+    """Replaces the manifest atomically (AC-20): written to a temp file, flushed and
+    fsynced, then os.replace'd over it, then the directory fsynced where the OS allows.
+    A failure at any point leaves the previous manifest whole -- never truncated in place."""
+    target = store_dir / MANIFEST
+    temp = store_dir / f"{MANIFEST}.{os.getpid()}.tmp"
+    try:
+        with open(temp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(plan))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp, target)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
+    _fsync_dir(store_dir)
+
+
+def _fsync_dir(path: Path) -> None:
+    try:  # POSIX; Windows cannot open a directory for fsync, and NTFS orders the rename
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def read_manifest(store_dir: Path) -> dict | None:
