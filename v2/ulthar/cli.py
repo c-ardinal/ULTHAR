@@ -234,8 +234,10 @@ def cmd_unit_new(args) -> int:
 
 
 def cmd_unit_list(args) -> int:
-    with _store(args).reader() as conn:
-        units = store_mod.current(conn, "unit")
+    store = _store(args)
+    with store.reader() as conn:
+        ids = [u["id"] for u in store_mod.current(conn, "unit")]
+    units = _with_rt(args, lambda rt: [flow_mod.recover(store, rt, i) for i in ids])
     for u in units:
         print(f"{u['id']}\t{u.get('state')}\tissue {u.get('issue_id')}"
               f"\tcontract v{(u.get('contract') or {}).get('version') or '-'}")
@@ -249,8 +251,7 @@ def cmd_unit_show(args) -> int:
         ask = flow_mod.qual_question if args.ask == "qual" else flow_mod.resume_question
         _print_json(_with_rt(args, lambda rt: ask(store, rt, args.unit)))
         return 0
-    with store.reader() as conn:
-        _print_json(flow_mod.read_unit(conn, args.unit))
+    _print_json(_with_rt(args, lambda rt: flow_mod.recover(store, rt, args.unit)))
     return 0
 
 

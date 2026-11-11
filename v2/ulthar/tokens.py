@@ -20,7 +20,11 @@ only for exactly the recorded input, only when the session's transcript holds th
 tool_use, and only for the issuing answer. Consuming one (`ulthar unit advance`)
 requires the transcript's tool_result to map exactly every bound question to its bound
 answer -- so a PostToolUse whose claimed answer differs from the owner's is refused
-there, and nothing is written.
+there, and nothing is written. Issuing never changes the question's status, so such a
+forged PostToolUse cannot keep the owner's genuine answer from issuing a usable token.
+Every question and its tokens are bound to the unit's contract version and sha when it
+was asked; a newer contract submission voids the unanswered questions and the unused
+qual_judgement / unit_resume tokens (R1-c AC-10), and consumption checks the binding.
 """
 from __future__ import annotations
 
@@ -187,11 +191,15 @@ def _unit(conn, unit_id: str) -> dict:
 
 
 def _still_open(kind: str, unit: dict, q: dict) -> str | None:
-    """Why the recorded question no longer applies to the unit (None: it does)."""
+    """Why the recorded question no longer applies to the unit (None: it does). Every
+    question is bound to the unit's contract version and sha when it was asked; a newer
+    contract submission invalidates it (R1-c AC-10)."""
+    cur = unit.get("contract") or {}
+    if q.get("invalidated"):
+        return f"the question was invalidated ({q['invalidated']})"
+    if (cur.get("sha"), cur.get("version")) != (q.get("sha"), q.get("version")):
+        return "the unit's current contract version or sha differs (sha mismatch)"
     if kind == "contract_confirm":
-        cur = unit.get("contract") or {}
-        if (cur.get("sha"), cur.get("version")) != (q.get("sha"), q.get("version")):
-            return "the unit's current contract version or sha differs (sha mismatch)"
         if unit.get("state") not in ("contract_draft", "halted"):
             return f"the unit is {unit.get('state')}, not awaiting a contract confirmation"
     elif kind == "qual_judgement":
@@ -205,7 +213,7 @@ def _still_open(kind: str, unit: dict, q: dict) -> str | None:
 def _verdicts(kind: str, answers: list[str], q: dict) -> list[tuple[dict, str]]:
     """(extra binding, verdict) for each token to issue."""
     if kind == "contract_confirm":
-        return [({"version": q.get("version")}, "confirm")] if answers[0] == CONFIRM else []
+        return [({}, "confirm")] if answers[0] == CONFIRM else []
     if kind == "unit_resume":
         return [({"halt_id": q.get("halt_id")}, "resume")] if answers[0] == RESUME else []
     verdict = {PASS: "pass", FAIL: "fail"}
@@ -254,14 +262,16 @@ def issue_owner_tokens(rt: sqlite3.Connection, payload: dict, store: store_mod.S
     for extra, verdict in _verdicts(kind, answers, q):
         token_id = os.urandom(16).hex()
         bound = {"project_id": store.project_id, "unit_id": unit_id, "contract_sha": q.get("sha"),
-                 "qid": qid, "tool_use_id": tool_use_id, "session_id": payload.get("session_id"),
+                 "version": q.get("version"), "qid": qid, "tool_use_id": tool_use_id,
+                 "session_id": payload.get("session_id"),
                  "question_event_id": asked[0], "answer_event_id": answer_event_id,
                  "questions": questions, "answers": answers, "verdict": verdict, **extra}
         rt.execute("INSERT INTO tokens (token_id, kind, bound, issued_by_hook, consumed_at)"
                    " VALUES (?, ?, ?, ?, NULL)",
                    (token_id, kind, json.dumps(bound, ensure_ascii=False), decide.ISSUER))
         issued.append(token_id)
-    rt.execute("UPDATE questions SET status='answered' WHERE qid=?", (qid,))
+    # the question stays `asked`: a PostToolUse whose answer the transcript later belies
+    # (checked at consumption) must not keep the owner's genuine answer from counting
     return issued, (f"{kind}: {len(issued)} token(s) issued" if issued
                      else f"{kind}: the answer issues no token ({', '.join(answers)})")
 
@@ -273,6 +283,22 @@ def expected_results(questions: list[str], answers: list[str]) -> list[str]:
     are joined with ", ", as the real transcripts show)."""
     pairs = ", ".join(f'"{q}"="{a}"' for q, a in zip(questions, answers))
     return [f"{decide.RESULT_PREFIX}{pairs}{suffix}" for suffix in decide.RESULT_SUFFIXES]
+
+
+def invalidate_for_new_contract(rt: sqlite3.Connection, project_id: str, unit_id: str,
+                                version: int) -> None:
+    """R1-c AC-10: a new contract version voids the unit's unanswered questions and its
+    unused qual_judgement / unit_resume tokens. Idempotent (re-run by recovery)."""
+    note = f"contract v{version} submitted"
+    rt.execute("UPDATE questions SET payload=json_set(payload, '$.invalidated', ?)"
+               " WHERE project_id=? AND unit_id=? AND status='asked'"
+               " AND json_extract(payload, '$.invalidated') IS NULL"
+               " AND COALESCE(json_extract(payload, '$.version'), 0) < ?",
+               (note, project_id, unit_id, version))
+    rt.execute("UPDATE tokens SET consumed_at=? WHERE consumed_at IS NULL AND kind IN"
+               " ('qual_judgement', 'unit_resume') AND json_extract(bound, '$.unit_id')=?"
+               " AND COALESCE(json_extract(bound, '$.version'), 0) < ?",
+               (f"invalidated {store_mod.now_iso()}: {note}", unit_id, version))
 
 
 def owner_sessions(rt: sqlite3.Connection, unit_id: str) -> set[str]:

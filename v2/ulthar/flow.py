@@ -80,6 +80,12 @@ def contract_doc(store: store_mod.Store, ref: dict | None) -> dict:
     return contract_mod.parse(data)
 
 
+def _current(unit: dict) -> tuple:
+    """(sha, version) of the unit's latest submitted contract."""
+    cur = unit.get("contract") or {}
+    return cur.get("sha"), cur.get("version")
+
+
 def _spent(unit: dict) -> set[str]:
     return {t for entry in unit.get("history") or [] for t in entry.get("tokens") or []}
 
@@ -131,6 +137,7 @@ class Ctx:
         self.fields: dict = {}
         self.refs: list = []
         self._reviewer = None
+        self.op_parts: dict = {}  # other runtime.db effects of the operation (apply_op)
 
     def reviewer(self):
         if self._reviewer is None:
@@ -252,7 +259,8 @@ def _qual_judgements_passed(c: Ctx) -> str | None:
     problems = []
     for ac in qual:
         mine = [(t, b) for t, b in good if b.get("ac_id") == ac
-                and b.get("contract_sha") == confirmed.get("sha")]
+                and (b.get("contract_sha"), b.get("version")) == _current(c.unit)
+                == (confirmed.get("sha"), confirmed.get("version"))]
         if not mine or mine[0][1].get("verdict") != "pass":
             problems.append(f"{ac}: {'不合格' if mine else 'no owner judgement'}")
         else:
@@ -276,8 +284,11 @@ def _halt_cause_classified(c: Ctx) -> str | None:
 def _resume_authorized(c: Ctx) -> str | None:
     good, _ = tokens.valid_owner_tokens(c.rt, c.conn, c.store.project_id, c.unit["id"],
                                         "unit_resume", _spent(c.unit))
+    conf = c.unit.get("confirmed") or {}
     good = [(t, b) for t, b in good if b.get("halt_id") == c.unit.get("halt_id")
-            and b.get("verdict") == "resume"]
+            and b.get("verdict") == "resume"
+            and (b.get("contract_sha"), b.get("version")) == _current(c.unit)
+            == (conf.get("sha"), conf.get("version"))]
     if good:
         c.consume.append(good[0][0])
         return None
@@ -312,8 +323,11 @@ PRECONDITIONS = {
 # ---------------------------------------------------------------------------- applying
 
 def atomic(store: store_mod.Store, rt: sqlite3.Connection, writer: dict, body):
-    """body(tx) inside a runtime.db write transaction around one store transaction:
-    both commit, or neither writes anything (a raise anywhere before the commits)."""
+    """body(tx) inside a runtime.db write transaction around one store transaction.
+    The store's commit is the commit point: a raise before it writes nothing. The unit
+    record it commits carries the operation's runtime.db effects (`op`), so a failure of
+    the runtime.db COMMIT or of the store's finalize after it is completed by the next
+    open of the unit (`recover`): all applied, never half."""
     rt.execute("BEGIN IMMEDIATE")
     try:
         with store.transaction(writer, rt) as tx:
@@ -329,29 +343,83 @@ def atomic(store: store_mod.Store, rt: sqlite3.Connection, writer: dict, body):
     return result
 
 
-def consume_tokens(rt, token_ids: list[str]) -> None:
+def apply_op(rt, project_id: str, unit_id: str, op: dict | None, strict: bool) -> None:
+    """A unit record's runtime.db effects: tokens consumed, evidence rows, invalidated
+    questions and tokens. `strict` (the operation itself): a token already consumed is a
+    refusal; otherwise (recovery) every step is idempotent."""
+    if not op:
+        return
     now = store_mod.now_iso()
-    for token_id in token_ids:
+    for token_id in op.get("consume") or []:
         cur = rt.execute("UPDATE tokens SET consumed_at=? WHERE token_id=? AND consumed_at IS NULL",
                          (now, token_id))
-        if cur.rowcount != 1:
+        if strict and cur.rowcount != 1:
             raise FlowError(f"token {token_id[:8]} was used concurrently")
+    for ev in op.get("evidence") or []:
+        if not rt.execute("SELECT 1 FROM evidence WHERE unit_id=? AND"
+                          " json_extract(result, '$.run_id')=?",
+                          (unit_id, ev["result"]["run_id"])).fetchone():
+            rt.execute("INSERT INTO evidence (unit_id, manifest_path, tree_hash, contract_sha,"
+                       " runner_agent_id, result) VALUES (?,?,?,?,?,?)",
+                       (unit_id, ev["manifest_path"], ev["tree_hash"], ev["contract_sha"],
+                        ev["runner_agent_id"], json.dumps(ev["result"], ensure_ascii=False)))
+    if op.get("invalidate_below"):
+        tokens.invalidate_for_new_contract(rt, project_id, unit_id, op["invalidate_below"])
+
+
+def recover(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str) -> dict:
+    """Opens the unit -- the store settles an unfinished transaction of its own -- and
+    re-applies the latest record's runtime.db effects: a no-op unless an earlier
+    operation stopped between the store's commit and the runtime.db commit. Returns
+    the unit."""
+    with store.reader(rt) as conn:
+        unit = read_unit(conn, unit_id)
+    rt.execute("BEGIN IMMEDIATE")
+    try:
+        apply_op(rt, store.project_id, unit_id, unit.get("op"), strict=False)
+        rt.execute("COMMIT")
+    except BaseException:
+        rt.execute("ROLLBACK")
+        raise
+    return unit
+
+
+def _new_op(**parts) -> dict:
+    return {"id": os.urandom(6).hex(), **{k: v for k, v in parts.items() if v}}
+
+
+def _contract_intact(ctx) -> str | None:
+    """R1-c AC-7: every transition re-reads the confirmed contract file; its sha256 must
+    still be the confirmed sha, which is the sha the evidence is selected by."""
+    conf = ctx.unit.get("confirmed")
+    if not conf:
+        return None
+    try:
+        data = (ctx.store.dir / conf["path"]).read_bytes()
+    except OSError as exc:
+        return f"the confirmed contract {conf['path']} cannot be read ({exc})"
+    if evidence_mod.sha256_bytes(data) != conf["sha"]:
+        return (f"the confirmed contract {conf['path']} changed since it was confirmed "
+                "(its sha256 is no longer the confirmed / evidence contract sha)")
+    return None
 
 
 def take(tx, ctx: Ctx, t: dict, to: str, actor: dict, extra: dict | None = None) -> dict:
     """Checks every precondition of `t` and writes the transition; FlowError otherwise."""
-    failed = [f"{name}: {why}" for name in t.get("requires") or []
-              if (why := PRECONDITIONS[name](ctx))]
+    failed = [f"confirmed_contract_intact: {why}"] if (why := _contract_intact(ctx)) else []
+    failed += [f"{name}: {why}" for name in t.get("requires") or []
+               if (why := PRECONDITIONS[name](ctx))]
     if failed:
         raise FlowError(f"{t['from']} -> {to} refused:\n  " + "\n  ".join(failed))
-    consume_tokens(ctx.rt, ctx.consume)
+    op = _new_op(consume=list(ctx.consume), **ctx.op_parts)
+    apply_op(ctx.rt, ctx.store.project_id, ctx.unit["id"], op, strict=True)
     unit = ctx.unit
     entry = {"from": unit["state"], "to": to, "actor": actor, "ts": store_mod.now_iso(),
              "reason": ctx.reason or ctx.halt_reason, "evidence_ref": ctx.refs,
              "tokens": ctx.consume}
     if ctx.cause:
         entry["cause"] = ctx.cause
-    fields = dict(ctx.fields, state=to, history=(unit.get("history") or []) + [entry],
+    fields = dict(ctx.fields, state=to, history=(unit.get("history") or []) + [entry], op=op,
                   **(extra or {}))
     if to == "build":
         fields["loops"] = []
@@ -370,8 +438,7 @@ def _writer(actor: dict, what: str) -> dict:
 def advance(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, to: str, *,
             reason: str | None, cause: str | None, actor: dict) -> dict:
     proc = load_process()
-    with store.reader(rt) as conn:
-        unit = read_unit(conn, unit_id)
+    unit = recover(store, rt, unit_id)
     t = find_transition(proc, unit, to, "cli")
     needs = set(t.get("requires") or [])
     for session_id in tokens.owner_sessions(rt, unit_id) if needs & TOKEN_CHECKS else ():
@@ -435,10 +502,14 @@ def submit(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, data: b
         ref = {"version": version, "sha": sha, "path": rel}
         if unit["state"] == "intake":
             ctx = Ctx(store, rt, tx.conn, unit)
+            ctx.op_parts["invalidate_below"] = version
             t = find_transition(proc, unit, "contract_draft", "submit")
             return take(tx, ctx, t, "contract_draft", actor, extra={"contract": ref,
                                                                    "contract_ref": rel})
-        return tx.revise("unit", unit_id, contract=ref, contract_ref=rel)
+        op = _new_op(invalidate_below=version)  # AC-10: older questions and tokens void
+        apply_op(rt, store.project_id, unit_id, op, strict=True)
+        return tx.revise("unit", unit_id, contract=ref, contract_ref=rel, op=op)
+    recover(store, rt, unit_id)
     try:
         return atomic(store, rt, _writer(actor, "contract submit"), body)
     except BaseException:
@@ -478,7 +549,8 @@ def record_review(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, 
         review = {"kind": kind, "result": result, "blockers": blockers,
                   "unmapped_changes": unmapped, "agent_id": bound["agent_id"],
                   "contract_sha": ref["sha"], "ts": store_mod.now_iso(), "token": token}
-        return tx.revise("unit", unit_id, reviews=(unit.get("reviews") or []) + [review])
+        return tx.revise("unit", unit_id, reviews=(unit.get("reviews") or []) + [review], op=None)
+    recover(store, rt, unit_id)
     return atomic(store, rt, {"cli": "review record", "runner_token": token}, body)
 
 
@@ -529,8 +601,7 @@ def verify(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, self_ch
     """AC-7/AC-8: runs the confirmed contract's verify_cmd of every AC. Returns (the
     manifest, the unit's record after the run)."""
     bound = spend_runner(rt, token, "verify", unit_id, store.project_id)
-    with store.reader(rt) as conn:
-        unit = read_unit(conn, unit_id)
+    unit = recover(store, rt, unit_id)
     want = "build" if self_check else "quant_verified"
     if unit["state"] != want:
         raise FlowError(f"unit {unit_id} is {unit['state']}: `verify{' --self' if self_check else ''}`"
@@ -547,8 +618,9 @@ def verify(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, self_ch
             raise FlowError(f"unit {unit_id} changed while verifying; evidence not recorded")
         result = {"self": self_check, "all_quant_passed": manifest["all_quant_passed"],
                   "acs": acs, "manifest_sha256": manifest_sha, "run_id": manifest["run_id"]}
-        if not self_check:
-            _insert_evidence(rt, unit_id, path, manifest, result)
+        if not self_check:  # runtime.db only: its own transaction is the whole operation
+            apply_op(rt, store.project_id, unit_id,
+                     {"evidence": [_evidence_row(path, manifest, result)]}, strict=True)
             return fresh
         loops = (fresh.get("loops") or []) + [{
             "n": len(fresh.get("loops") or []) + 1, "run_id": manifest["run_id"],
@@ -556,24 +628,25 @@ def verify(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, self_ch
             "passed": {k: v["passed"] for k, v in acs.items() if v["kind"] == "quant"},
             "all_quant_passed": manifest["all_quant_passed"]}]
         result["loop"] = len(loops)
-        row_id = _insert_evidence(rt, unit_id, path, manifest, result)
+        row = _evidence_row(path, manifest, result)
         why = halt_reason(doc, loops, fresh["confirmed"]["loops"])
         if why is None:
-            return tx.revise("unit", unit_id, loops=loops)
+            op = _new_op(evidence=[row])
+            apply_op(rt, store.project_id, unit_id, op, strict=True)
+            return tx.revise("unit", unit_id, loops=loops, op=op)
         ctx = Ctx(store, rt, tx.conn, fresh, halt_reason=why)
-        ctx.refs.append({"evidence_id": row_id, "manifest": manifest["run_id"]})
+        ctx.op_parts["evidence"] = [row]
+        ctx.refs.append({"run_id": manifest["run_id"]})
         return take(tx, ctx, find_transition(proc, fresh, "halted", "verify"), "halted",
                     {"cli": "verify --self", "agent_id": bound["agent_id"]}, extra={"loops": loops})
     rec = atomic(store, rt, {"cli": "verify", "agent_id": bound["agent_id"]}, body)
     return manifest, rec
 
 
-def _insert_evidence(rt, unit_id: str, path: Path, manifest: dict, result: dict) -> int:
-    cur = rt.execute("INSERT INTO evidence (unit_id, manifest_path, tree_hash, contract_sha,"
-                     " runner_agent_id, result) VALUES (?,?,?,?,?,?)",
-                     (unit_id, str(path), manifest["tree_hash"], manifest["contract_sha"],
-                      manifest["runner_agent_id"], json.dumps(result, ensure_ascii=False)))
-    return cur.lastrowid
+def _evidence_row(path: Path, manifest: dict, result: dict) -> dict:
+    return {"manifest_path": str(path), "tree_hash": manifest["tree_hash"],
+            "contract_sha": manifest["contract_sha"],
+            "runner_agent_id": manifest["runner_agent_id"], "result": result}
 
 
 # ---------------------------------------------------------------------------- owner questions
@@ -613,7 +686,7 @@ def qual_question(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str) 
     if len(qual) > MAX_QUESTIONS:
         raise FlowError(f"{len(qual)} qualitative ACs: one AskUserQuestion holds at most "
                         f"{MAX_QUESTIONS}")
-    sha = unit["confirmed"]["sha"]
+    sha, version = _bound_contract(unit)
     asks = []
     for ac in qual:
         rubric = ac.get("rubric") or {}
@@ -623,7 +696,7 @@ def qual_question(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str) 
                                    (tokens.FAIL, f"{ac['id']} は不合格（build に戻す）")]))
     payload = tokens.ask_input(asks)
     tokens.record_question(rt, store.project_id, unit_id, "qual_judgement", payload, sha=sha,
-                           acs=[ac["id"] for ac in qual])
+                           version=version, acs=[ac["id"] for ac in qual])
     return payload
 
 
@@ -632,7 +705,7 @@ def resume_question(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str
         unit = read_unit(conn, unit_id)
     if unit["state"] != "halted":
         raise FlowError(f"unit {unit_id} is {unit['state']}, not halted")
-    sha = (unit.get("confirmed") or {}).get("sha") or ""
+    sha, version = _bound_contract(unit)
     question = (f"UNIT-RESUME:{unit_id} sha:{sha[:12]}\n\n単位 {unit_id} は "
                 f"{unit.get('halted_from')} で停止しました（理由: {unit.get('halt_reason')}）。"
                 "この契約のまま再開しますか？")
@@ -640,5 +713,16 @@ def resume_question(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str
         (tokens.RESUME, f"{unit.get('halted_from')} に戻して再開する"),
         (tokens.NO_RESUME, "停止したままにする（新しい契約版で扱う）")])])
     tokens.record_question(rt, store.project_id, unit_id, "unit_resume", payload, sha=sha,
-                           halt_id=unit.get("halt_id"))
+                           version=version, halt_id=unit.get("halt_id"))
     return payload
+
+
+def _bound_contract(unit: dict) -> tuple[str, int]:
+    """(sha, version) a QUAL-JUDGE / UNIT-RESUME question and its tokens are bound to: the
+    confirmed contract, which must also be the latest submitted one (AC-10)."""
+    conf = unit.get("confirmed") or {}
+    if not conf or _current(unit) != (conf.get("sha"), conf.get("version")):
+        raise FlowError(f"unit {unit['id']}: a newer contract version (v"
+                        f"{(unit.get('contract') or {}).get('version')}) awaits confirmation; "
+                        "confirm it (CONTRACT-CONFIRM) instead")
+    return conf["sha"], conf["version"]

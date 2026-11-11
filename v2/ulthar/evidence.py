@@ -16,7 +16,10 @@ anyone else wrote into the evidence directory, or a rewritten manifest, never co
 Tree hash: every file of the working tree, untracked ones included (.gitignore
 honoured), staged into a temporary index (a copy of the real one, so git's stat cache
 applies) and `git write-tree` -- minus the knowledge store itself when it lives in the
-repository (the store changes with every record, the verify run's own included).
+repository (the store changes with every record, the verify run's own included). In
+its place every transition checks that the confirmed contract file's current sha256 is
+the confirmed (and evidence) contract sha (ulthar.flow). Known limit (spec): a change
+to a product file .gitignore ignores does not show in the tree hash.
 """
 from __future__ import annotations
 
