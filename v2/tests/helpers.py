@@ -65,6 +65,9 @@ class Sandbox:
         work = work or self.work
         cfg = {"knowledge_root": str(self.kr if work == self.work else work / "knowledge"),
                "extractor": {"cmd": [sys.executable, "-S", str(FAKE_EXTRACTOR), *extractor]},
+               # the R1-a/R1-b tests predate GOAL-08 (R1-c AC-11): every sandbox file is a
+               # non-product file unless a test configures its own non_product_globs
+               "non_product_globs": ["**"],
                **extra}
         (work / ".claude").mkdir(parents=True, exist_ok=True)
         (work / ".claude" / "ulthar.json").write_text(json.dumps(cfg), encoding="utf-8")

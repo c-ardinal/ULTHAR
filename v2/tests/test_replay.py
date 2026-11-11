@@ -21,6 +21,8 @@ R1-b AC-16: under the same conditions (one fresh line appended before every time
       detached; the fake extractor, never the real claude) -- each p95 <= 300 ms.
       Before each timed UserPromptSubmit the extractor the previous call launched
       has ended; that wait is not measured (spec AC-16).
+R1-c AC-14: the same for a builder's PreToolUse Edit in a project with AC-11 active and
+      a unit in build (the scope check reads the unit from index.db) -- p95 <= 300 ms.
 $ULTHAR_SKIP_PERF=1 runs only the replay counts (correctness runs): the timed stages
 are skipped, not judged, and no perf record is written.
 The measured values are written to v2/tests/results/replay-latest.json and appended
@@ -169,6 +171,48 @@ def _timed_pretool(p: Probe, sb: Sandbox, session: str, transcript: Path, lines:
             record["p95_ms"] <= P95_LIMIT_MS)
 
 
+PERF_UNIT = "U-00000000perf"
+
+
+def seed_scoped_unit(sb: Sandbox) -> None:
+    """R1-c AC-14: a unit in build whose confirmed scope is src/**, and AC-11 active
+    (no non_product_globs), so a builder's Edit of src/ runs the whole scope check."""
+    cfg_path = sb.work / ".claude" / "ulthar.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["non_product_globs"] = []
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    with sb.inproc(), sb.store().transaction({"hook": "perf-setup"}) as tx:
+        tx.add("unit", {"id": PERF_UNIT, "unit_id": PERF_UNIT, "issue_id": "I-perf",
+                        "state": "build", "contract_ref": None, "history": [],
+                        "confirmed": {"version": 1, "sha": "0" * 64, "scope_globs": ["src/**"],
+                                      "acs": [], "loops": 5}})
+
+
+def _timed_pretool_edit(p: Probe, sb: Sandbox, session: str, transcript: Path,
+                        record: dict) -> None:
+    seed_scoped_unit(sb)
+
+    def payload(i, tag):
+        return {"hook_event_name": "PreToolUse", "session_id": session,
+                "transcript_path": str(transcript), "cwd": str(sb.work), "tool_name": "Edit",
+                "agent_id": f"perf-builder-{tag}", "agent_type": "ulthar-creator",
+                "tool_input": {"file_path": str(sb.work / "src" / "ui" / f"view{i}.py"),
+                               "old_string": "a", "new_string": "b"}}
+
+    def check(i, uuid, tag, call):
+        return None if call.returncode == 0 else f"rc={call.returncode}"
+
+    times, bad = _timed(sb, transcript, "PreToolUse", payload, check)
+    stats = record.setdefault("events", {})["PreToolUse:Edit"] = _stats(times)
+    scoped = sb.query("SELECT COUNT(*) FROM events WHERE tool='Edit' AND decision='allow'"
+                      " AND json_extract(detail, '$.unit_id')=?", (PERF_UNIT,))[0][0]
+    p.check(f"each builder Edit inside the unit's scope was allowed with unit_id recorded "
+            f"({scoped}/{CALLS})", not bad and scoped == CALLS, str(bad[:3]))
+    p.check(f"R1-c AC-14: PreToolUse Edit (AC-11 scope check) p95 {stats['p95_ms']} ms <= "
+            f"{P95_LIMIT_MS:.0f} ms (p50 {stats['p50_ms']}, max {stats['max_ms']})",
+            stats["p95_ms"] <= P95_LIMIT_MS)
+
+
 def _seed_decisions(sb: Sandbox) -> None:
     with sb.inproc(), sb.store().transaction({"hook": "perf-setup"}) as tx:
         for i in range(DECISIONS):
@@ -282,6 +326,7 @@ def run_replay(p: Probe, transcript: Path) -> dict:
         p.check("the same-scale synthetic transcript is ingested first",
                 pre.returncode == 0 and json.loads(pre.stdout).get("lines") == lines, pre.stdout)
         _timed_pretool(p, sb, session, synthetic, lines, record)
+        _timed_pretool_edit(p, sb, session, synthetic, record)
         _timed_subagent_start(p, sb, session, synthetic, record)
         _timed_user_prompt(p, sb, session, synthetic, record)
     finally:

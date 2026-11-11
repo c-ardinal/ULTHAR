@@ -34,6 +34,10 @@ def payloads(sb: Sandbox, transcript: Path) -> dict:
     base = {"session_id": "prof", "transcript_path": str(transcript), "cwd": str(sb.work)}
     return {
         "PreToolUse": lambda i: dict(base, tool_name="Bash", tool_input={"command": "ls -la"}),
+        "PreToolUse:Edit": lambda i: dict(base, tool_name="Edit", agent_id="prof-builder",
+                                          agent_type="ulthar-creator", tool_input={
+                                              "file_path": str(sb.work / "src" / f"v{i}.py"),
+                                              "old_string": "a", "new_string": "b"}),
         "SubagentStart": lambda i: dict(base, agent_id=f"a-{i}", agent_type="ulthar-creator"),
         "UserPromptSubmit": lambda i: dict(base, prompt=f"profile prompt {i}",
                                            prompt_id=f"prof-{os.getpid()}-{i}"),
@@ -61,6 +65,7 @@ def wait_idle(sb: Sandbox) -> None:
 
 def wall(sb: Sandbox, transcript: Path, event: str, make) -> list[float]:
     env, times = sb.env(), []
+    event = event.split(":")[0]
     for i in range(CALLS):
         append_line(transcript, event)
         if event == "UserPromptSubmit":
@@ -74,6 +79,7 @@ def wall(sb: Sandbox, transcript: Path, event: str, make) -> list[float]:
 
 
 def import_ms(sb: Sandbox, transcript: Path, event: str, make) -> tuple[float, list]:
+    event = event.split(":")[0]
     append_line(transcript, event)
     body = json.dumps(dict(make(999), hook_event_name=event))
     argv = [HOOK_ARGV[0], "-X", "importtime"] + HOOK_ARGV[1:] + ["--event", event]
@@ -164,9 +170,9 @@ def in_process(sb: Sandbox, transcript: Path, event: str, make) -> dict:
             append_line(transcript, event + "-ip")
             if event == "UserPromptSubmit":
                 wait_idle(sb)
-            payload = dict(make(500 + i), hook_event_name=event)
+            payload = dict(make(500 + i), hook_event_name=event.split(":")[0])
             t = time.perf_counter()
-            hook.process(event, payload)
+            hook.process(event.split(":")[0], payload)
             total += (time.perf_counter() - t) * 1000
     finally:
         for owner, name, fn in patched:
@@ -196,6 +202,8 @@ def main() -> int:
             ing = sb.cli("ingest", "--session", "real", "--transcript", real)
             lines.append(f"store state: real transcript ingested -> {ing.stdout.strip()[:160]}")
         seed(sb)
+        from test_replay import seed_scoped_unit  # noqa: PLC0415 -- the AC-14 Edit state
+        seed_scoped_unit(sb)
         transcript = sb.root / "prof.jsonl"
         transcript.write_text("", encoding="utf-8")
         makers = payloads(sb, transcript)
