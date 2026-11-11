@@ -207,8 +207,10 @@ def ingest(conn: sqlite3.Connection, session_id: str, transcript_path: str,
             (session_id, key, offset, line_no, tail_len, tail_sha))
         conn.execute("COMMIT")
     except BaseException:
-        conn.execute("ROLLBACK")
-        store.release()  # a deferred manifest stays for the next open; the lock goes
+        try:
+            conn.execute("ROLLBACK")
+        finally:
+            store.release()  # a deferred manifest stays for the next open; the lock goes
         raise
     if found or on_tx is not None:
         # the store's chain rows were part of the transaction just committed: only now

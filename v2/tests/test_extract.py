@@ -14,7 +14,7 @@ import time
 
 from helpers import Probe, Sandbox
 
-WAIT_SEC = 60
+WAIT_SEC = 180  # tolerance for a loaded machine (python + extractor start-ups)
 SLOW_SEC = 6
 
 

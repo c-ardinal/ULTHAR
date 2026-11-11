@@ -110,6 +110,15 @@ def write_manifest(store_dir: Path, plan: dict) -> None:
         raise
 
 
+def committed_rows(plan: dict | None) -> list[list]:
+    """Every runtime.db chain row a completed manifest stands for: its inherited
+    `committed` rows plus one row per file it appended to."""
+    if not plan:
+        return []
+    return [list(r) for r in plan.get("committed", [])] + [
+        [name, step["new"], step["chain"]] for name, step in plan["files"].items()]
+
+
 def read_manifest(store_dir: Path) -> dict | None:
     path = store_dir / MANIFEST
     if not path.exists():  # the usual case; a stat is far cheaper than a failing open

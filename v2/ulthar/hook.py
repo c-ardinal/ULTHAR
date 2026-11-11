@@ -260,8 +260,16 @@ def process(event: str, payload: dict, single_guard: str | None = None,
     (cfg, ctx) is the v1 suites' seam (see v1dispatch.prepare)."""
     db_path = db_mod.resolve_path()
     detail: dict = {}
-    conn, db_error = None, None
     project = memhook.Project(payload)
+    try:
+        return _dispatch(event, payload, single_guard, loaded, db_path, detail, project)
+    finally:
+        project.close()  # the store's reused connection and any kept lock, always
+
+
+def _dispatch(event: str, payload: dict, single_guard, loaded, db_path: Path, detail: dict,
+              project: memhook.Project) -> Processed:
+    conn, db_error = None, None
     try:
         conn = _open_and_catch_up(event, payload, db_path, detail, project)
     except Exception as exc:  # noqa: BLE001 -- any database failure is journaled below
@@ -284,7 +292,6 @@ def process(event: str, payload: dict, single_guard: str | None = None,
             db_error = exc
         finally:
             conn.close()
-    project.close()
     if db_error is not None:
         return Processed(_db_failure(event, db_path, db_error, row, outcome.result),
                          outcome.guards_run)

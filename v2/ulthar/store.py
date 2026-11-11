@@ -641,7 +641,10 @@ class Tx:
             self.conn.execute("COMMIT")
             return
         store = self.store
-        prior = (integrity.read_manifest(store.dir) or {}).get("committed", [])  # deferred rows
+        # A manifest still on disk here was settled as completed (an unfinished one was cut
+        # back): all its rows -- `committed` and its completed `files` -- await the same
+        # runtime.db commit, so the next manifest inherits every one of them.
+        prior = integrity.committed_rows(integrity.read_manifest(store.dir))
         plan = {"files": {}, "committed": prior}
         for name, lines in self.pending.items():
             data = b"".join(lines)

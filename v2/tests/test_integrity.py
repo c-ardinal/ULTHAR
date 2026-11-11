@@ -295,6 +295,47 @@ def check_lost_manifest_is_loud(p: Probe) -> None:
         sb.cleanup()
 
 
+def check_carried_manifest_keeps_all_rows(p: Probe) -> None:
+    """Review r1b-4: a completed manifest A recovered into an open runtime.db transaction,
+    then an append B in that same transaction, then a rollback of it. B's manifest must
+    carry A's rows too, so the next open restores both runtime chain rows."""
+    from ulthar import db as db_mod  # noqa: PLC0415
+
+    sb = Sandbox()
+    try:
+        _seed(sb, 1)
+        with sb.inproc():
+            def append_in_rolled_back_txn(text: str) -> None:
+                store = sb.store()
+                rt = db_mod.connect(sb.db)
+                rt.execute("BEGIN IMMEDIATE")
+                try:
+                    with store.transaction({"hook": "test"}, rt) as tx:
+                        tx.add("decision", dict(DECISION, text=text))
+                finally:
+                    rt.execute("ROLLBACK")  # the outer runtime transaction never commits
+                    store.release()
+                    store.close()
+                    rt.close()
+
+            append_in_rolled_back_txn("A: committed, runtime row lost")
+            append_in_rolled_back_txn("B: appended after recovering A in the same txn")
+            sizes_before = {r[0] for r in sb.query(
+                "SELECT size FROM store_chain WHERE name='decisions.jsonl'")}
+            err = _read_error(sb)
+        size_now = _decisions_path(sb).stat().st_size
+        rows = sorted(r[0] for r in sb.query(
+            "SELECT size FROM store_chain WHERE name='decisions.jsonl'"))
+        verify = _verify(sb)
+        p.check("recover A -> append B -> outer runtime rollback: before reopening, neither "
+                "A's nor B's runtime chain row exists", len(sizes_before) == 1, str(sizes_before))
+        p.check("  ... the reopen restores both rows (A's and B's) and store verify is clean",
+                err is None and len(rows) == 3 and rows[-1] == size_now
+                and verify.returncode == 0, f"{err} rows={rows} {verify.stdout[-300:]}")
+    finally:
+        sb.cleanup()
+
+
 def main() -> int:
     p = Probe()
     print("\n== JSONL integrity (fail closed) ==")
@@ -306,6 +347,7 @@ def main() -> int:
     check_runtime_rollback_recovered(p)
     check_manifest_replacement_atomic(p)
     check_lost_manifest_is_loud(p)
+    check_carried_manifest_keeps_all_rows(p)
     return p.result()
 
 
