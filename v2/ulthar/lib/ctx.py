@@ -13,7 +13,6 @@ from __future__ import annotations
 import copy
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -955,6 +954,21 @@ class ConfigError(Exception):
     to refuse to deploy (logging.refuse_deploy_on_invalid_config)."""
 
 
+class RuntimeImportError(Exception):
+    """v2: a stdlib module the runtime imports where it is used (only shutil, owner's
+    exception for hook latency) could not be imported. An infrastructure failure:
+    v1dispatch.invoke_guard blocks the call on it, never v1's fail-open ALLOW."""
+
+
+def _shutil():
+    """shutil pulls in bz2/lzma/zstd (~10 ms of every hook start); only run_cmd needs it."""
+    try:
+        import shutil  # noqa: PLC0415 -- the one owner-approved lazy stdlib import
+    except ImportError as exc:
+        raise RuntimeImportError(f"shutil: {type(exc).__name__}: {exc}") from exc
+    return shutil
+
+
 class PatternCompileError(Exception):
     """Raised by compile_pattern() when a config-declared regex fails to compile.
     dispatch.py distinguishes this from a generic guard exception so the failure
@@ -1098,7 +1112,7 @@ class Ctx:
             raise ValueError(f"run_cmd: kind must be 'local' or 'remote', got {kind!r}")
         resolved_argv = list(argv)
         if resolved_argv:
-            resolved = shutil.which(resolved_argv[0])
+            resolved = _shutil().which(resolved_argv[0])
             if resolved:
                 resolved_argv[0] = resolved
         try:

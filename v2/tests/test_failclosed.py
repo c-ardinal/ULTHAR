@@ -4,10 +4,15 @@
   * subprocess/signal are imported at module level, as in v1: when they cannot be
     imported, the failure surfaces at guard/runtime load and blocks a PreToolUse
     (AC-4), never mid-run where v1's fail-open rule applies;
+  * the one owner-approved exception (hook latency, R1-c): lib/ctx.py imports shutil
+    where run_cmd uses it; a guard whose run_cmd cannot import it BLOCKS the PreToolUse
+    (ctx.RuntimeImportError), and lib/ + guards/ have no other function-level stdlib
+    import that v1 (hooks/) does not have;
   * blob_hash records hash_failed when subprocess cannot be imported.
 """
 from __future__ import annotations
 
+import ast
 import json
 import marshal
 import os
@@ -147,6 +152,72 @@ def check_import_failure_at_guard_load_blocks(p: Probe) -> None:
         sb.cleanup()
 
 
+STUB_RUNS_CMD = ("from ulthar.lib.io import ALLOW", "",
+                 "def run(payload, cfg, ctx):",
+                 "    ctx.run_cmd(['git', '--version'], 'local')",
+                 "    return ALLOW", "")
+LAZY_STDLIB_EXCEPTIONS = {("lib/ctx.py", "shutil")}  # owner-approved, R1-c hook latency
+
+
+def check_shutil_import_failure_blocks(p: Probe) -> None:
+    """shutil is imported where Ctx.run_cmd uses it: its import failure, raised while a
+    guard runs, must block the PreToolUse -- not reach v1's fail-open ALLOW."""
+    sb = Sandbox()
+    try:
+        with _Env(sb, NL.join(STUB_RUNS_CMD)):
+            ok = hook.process("PreToolUse", dict(BASH, session_id="fc-sh-ok", cwd=str(sb.work)))
+        p.check("shutil importable: a guard calling ctx.run_cmd is allowed (control)",
+                ok.result.exit_code == 0, ok.result.stderr[:300])
+        with _Env(sb, NL.join(STUB_RUNS_CMD), block="shutil"):
+            out = hook.process("PreToolUse", dict(BASH, session_id="fc-sh", cwd=str(sb.work)))
+        decision, guard_id, _, _ = _last_event(sb, "fc-sh")
+        p.check("owner exception: `shutil` unimportable inside ctx.run_cmd -> PreToolUse exits 2 "
+                "naming the import failure",
+                out.result.exit_code == 2 and "could not import a runtime module" in out.result.stderr
+                and "shutil" in out.result.stderr and "To recover" in out.result.stderr,
+                out.result.stderr[:300])
+        p.check("  ... and is recorded as a deny", decision == "deny", f"{decision} {guard_id}")
+    finally:
+        sb.cleanup()
+
+
+def _stdlib_imports(path: Path) -> set[tuple[str, str]]:
+    """('top' | 'lazy', stdlib root) of every import in `path`; 'lazy' = inside a function."""
+    found: set[tuple[str, str]] = set()
+
+    def visit(node: ast.AST, in_fn: bool) -> None:
+        for ch in ast.iter_child_nodes(node):
+            names = []
+            if isinstance(ch, ast.Import):
+                names = [a.name for a in ch.names]
+            elif isinstance(ch, ast.ImportFrom) and ch.level == 0 and ch.module:
+                names = [ch.module]
+            for name in names:
+                root = name.split(".")[0]
+                if root in sys.stdlib_module_names and root != "__future__":
+                    found.add(("lazy" if in_fn else "top", root))
+            visit(ch, in_fn or isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef)))
+
+    visit(ast.parse(path.read_text(encoding="utf-8")), False)
+    return found
+
+
+def check_lazy_stdlib_imports_match_v1(p: Probe) -> None:
+    """Owner rule: the guard path (lib/, guards/) imports stdlib modules where v1 does
+    (module level) -- the only function-level stdlib import v1 lacks is shutil in ctx."""
+    v1_root = V2_ROOT.parent / "hooks"
+    extra = set()
+    for sub in ("lib", "guards"):
+        for f in sorted((PACKAGE / sub).glob("*.py")):
+            rel = f.relative_to(PACKAGE).as_posix()
+            v1 = v1_root / rel
+            v1_lazy = {m for k, m in _stdlib_imports(v1) if k == "lazy"} if v1.is_file() else set()
+            extra |= {(rel, m) for k, m in _stdlib_imports(f) if k == "lazy" and m not in v1_lazy}
+    p.check("owner rule: function-level stdlib imports in lib/ and guards/ beyond v1's are "
+            f"exactly {sorted(LAZY_STDLIB_EXCEPTIONS)}", extra == LAZY_STDLIB_EXCEPTIONS,
+            str(sorted(extra)))
+
+
 def check_blob_hash_import_failure_marks_hash_failed(p: Probe) -> None:
     sb = Sandbox()
     try:
@@ -173,6 +244,8 @@ def main() -> int:
     p = Probe()
     check_planted_config_cache_has_no_effect(p)
     check_import_failure_at_guard_load_blocks(p)
+    check_shutil_import_failure_blocks(p)
+    check_lazy_stdlib_imports_match_v1(p)
     check_blob_hash_import_failure_marks_hash_failed(p)
     return p.result()
 

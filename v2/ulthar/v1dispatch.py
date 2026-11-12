@@ -179,9 +179,15 @@ def _attribute_to_project_overlay(guard_id: str, ctx, exc, event: str):
 
 
 def invoke_guard(guard_id: str, mod, payload: dict, cfg: dict, ctx, event: str) -> io_mod.Result:
-    """Calls one loaded guard with v1's exception and result rules."""
+    """Calls one loaded guard with v1's exception and result rules -- except that
+    ctx.RuntimeImportError (shutil, imported where run_cmd uses it) blocks like a guard
+    that failed to import, instead of v1's fail-open ALLOW."""
     try:
         result = mod.run(payload, cfg, ctx)
+    except ctx_mod.RuntimeImportError as exc:
+        ctx.log_error(guard_id, exc, sorted(payload.keys()))
+        return io_mod.Result(2, "", infra_block_message(
+            f"guard '{guard_id}' could not import a runtime module", str(exc), event))
     except ctx_mod.PatternCompileError as exc:
         attributed = _attribute_to_project_overlay(guard_id, ctx, exc, event)
         if attributed is not None:
