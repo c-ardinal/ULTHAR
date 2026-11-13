@@ -7,7 +7,9 @@ Per call, in order:
   4. run the memory step (ulthar.memhook: store protection, budgets, injection,
      owner-message capture and extraction launch, decide tokens, Stop reminder);
   5. on PostToolUse of a file-writing tool, hash every written path (TRUST-07);
-  6. store one `events` row and refresh the `sessions` row;
+  6. store one `events` row and refresh the `sessions` row; in the same transaction the
+     session's window lease is acquired or renewed and the row stamped with its fencing
+     token (R1-d AC-8, ulthar.lease);
   7. write stdout/stderr once and exit with the decision.
 An internal failure of the memory step blocks a PreToolUse like a guard-pipeline
 failure does, and is a warning on every other event.
@@ -29,6 +31,7 @@ from . import db as db_mod
 from . import ingest as ingest_mod
 from . import extract as extract_mod
 from . import journal as journal_mod
+from . import lease as lease_mod
 from . import memhook
 from . import v1dispatch
 from .lib import io as io_mod
@@ -108,9 +111,9 @@ def insert_row(conn: sqlite3.Connection, row: dict) -> int:
     Returns the events row id."""
     cur = conn.execute(
         "INSERT INTO events (ts, session_id, agent_id, agent_type, hook, tool, decision,"
-        " guard_id, paths, post_hashes, detail) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        " guard_id, fence_token, paths, post_hashes, detail) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (row["ts"], row["session_id"], row["agent_id"], row["agent_type"], row["hook"],
-         row["tool"], row["decision"], row["guard_id"],
+         row["tool"], row["decision"], row["guard_id"], row.get("fence_token"),
          json.dumps(row["paths"]) if row["paths"] else None,
          json.dumps(row["post_hashes"]) if row["post_hashes"] is not None else None,
          json.dumps(row["detail"], ensure_ascii=False)))
@@ -127,11 +130,15 @@ def insert_row(conn: sqlite3.Connection, row: dict) -> int:
     return cur.lastrowid
 
 
-def _record(conn: sqlite3.Connection, row: dict, after_insert=None) -> None:
+def _record(conn: sqlite3.Connection, row: dict, after_insert=None,
+            lease_project: str | None = None) -> None:
     """`after_insert(conn, event_id, detail)` runs in the same transaction; a detail it
-    changed is stored back on the row."""
+    changed is stored back on the row. With `lease_project`, the session's lease is
+    acquired / renewed first and the row carries its fencing token (R1-d AC-8)."""
     conn.execute("BEGIN IMMEDIATE")
     try:
+        if lease_project is not None:
+            row["fence_token"] = lease_mod.touch(conn, lease_project, row["session_id"], row["ts"])
         event_id = insert_row(conn, row)
         if after_insert is not None:
             after_insert(conn, event_id, row["detail"])
@@ -139,6 +146,7 @@ def _record(conn: sqlite3.Connection, row: dict, after_insert=None) -> None:
                          (json.dumps(row["detail"], ensure_ascii=False), event_id))
         conn.execute("COMMIT")
     except BaseException:
+        row.pop("fence_token", None)  # its issue was rolled back: a journaled row has none
         conn.execute("ROLLBACK")
         raise
 
@@ -197,6 +205,18 @@ def _run_guards(event: str, payload: dict, single_guard: str | None, loaded,
             return v1dispatch.Outcome(io_mod.Result(2, "", msg), PIPELINE_ERROR_GUARD_ID)
         warning = "[ulthar] WARNING (not blocking this event): " + msg
         return v1dispatch.Outcome(io_mod.Result(0, "", warning), PIPELINE_ERROR_GUARD_ID)
+
+
+def _lease_project(payload: dict, project: memhook.Project) -> str | None:
+    """The project whose window lease this call acquires or renews (None: none -- no
+    session id, the extractor's own session, or a project that cannot be resolved,
+    whose writes then carry no token and fail TRUST-04 (d))."""
+    if not payload.get("session_id") or extract_mod.in_extractor():
+        return None
+    try:
+        return project.store().project_id
+    except Exception:  # noqa: BLE001 -- the store's own error is reported by the steps using it
+        return None
 
 
 def _run_memory(event: str, payload: dict, conn, project: memhook.Project, outcome,
@@ -306,7 +326,8 @@ def _dispatch(event: str, payload: dict, single_guard, loaded, db_path: Path, de
     row = _event_row(event, payload, outcome, paths, post_hashes, detail)
     if conn is not None:
         try:
-            _record(conn, row, act.after_insert if act is not None else None)
+            _record(conn, row, act.after_insert if act is not None else None,
+                    _lease_project(payload, project))
         except Exception as exc:  # noqa: BLE001
             db_error = exc
         finally:
