@@ -1,9 +1,12 @@
-"""R1-a AC-11 / R1-b AC-17 / R1-c AC-15: every import in v2/ulthar/ is the standard
+"""R1-a AC-11 / R1-b AC-17 / R1-c AC-15 / R1-d AC-15: every import in v2/ulthar/ is the standard
 library, psutil, PyYAML (`yaml`) or ulthar itself (static AST scan: module-level,
 function-level and relative imports alike); and the hook path -- every ulthar module
 reachable from `__main__.py hook` (the dispatcher, its guards and helpers) -- never
 imports PyYAML: statically (no `yaml` import in any of those modules, at any level) and
-at run time (`sys.modules` after hook calls of every kind R1-c adds work to)."""
+at run time (`sys.modules` after hook calls of every kind R1-c and R1-d add work to).
+R1-d AC-15 also: the hook modules R1-d adds import no standard-library module inside a
+function (no lazy stdlib import on the guard path; the one exception is lib/ctx.py's
+shutil, pinned by test_failclosed)."""
 from __future__ import annotations
 
 import ast
@@ -16,7 +19,9 @@ from helpers import V2_ROOT, Probe, Sandbox
 
 PACKAGE = V2_ROOT / "ulthar"
 ALLOWED_THIRD_PARTY = {"psutil", "yaml"}
-CLI_ONLY = {"ulthar.contract", "ulthar.flow", "ulthar.evidence", "ulthar.cli"}
+CLI_ONLY = {"ulthar.contract", "ulthar.flow", "ulthar.evidence", "ulthar.cli", "ulthar.stages",
+            "ulthar.integrate", "ulthar.runcmd", "ulthar.packinstall"}
+R1D_HOOK_MODULES = ("ulthar.packs", "ulthar.lease", "ulthar.gitref", "ulthar.acshape")
 
 
 def imported_roots(path: Path) -> list[tuple[int, str]]:
@@ -90,7 +95,8 @@ def check_hook_path(p: Probe) -> None:
     closure = hook_closure()
     with_yaml = [n for n, f in closure.items() if "yaml" in {r for _, r in imported_roots(f)}]
     p.check(f"AC-15: the hook path ({len(closure)} modules) imports PyYAML nowhere (static)",
-            not with_yaml and not (CLI_ONLY & set(closure)) and "ulthar.product" in closure,
+            not with_yaml and not (CLI_ONLY & set(closure)) and "ulthar.product" in closure
+            and all(m in closure for m in R1D_HOOK_MODULES),
             f"yaml in {with_yaml}; CLI-only modules reached: {sorted(CLI_ONLY & set(closure))}")
     sb = Sandbox()
     try:
@@ -103,6 +109,12 @@ def check_hook_path(p: Probe) -> None:
                              "tool_input": {"questions": [{"question": "CONTRACT-CONFIRM:U-0 v1 sha:000000000000"}]},
                              "tool_response": {"answers": {}}}),
             ("SubagentStart", {"agent_id": "a-2", "agent_type": "t"}),
+            ("SubagentStart", {"agent_id": "a-3", "agent_type": "ulthar-creator@ui"}),
+            ("PreToolUse", {"tool_name": "Agent", "tool_use_id": "t3",
+                            "tool_input": {"prompt": "work", "description": "w"}}),
+            ("PreToolUse", {"tool_name": "Bash", "tool_use_id": "t4",
+                            "tool_input": {"command": "git update-ref refs/heads/develop HEAD"}}),
+            ("PostToolUse", {"tool_name": "Edit", "tool_input": {"file_path": str(sb.work / "a.py")}}),
             ("UserPromptSubmit", {"prompt": "hello", "prompt_id": "p-1"}),
         ]
         script = (
@@ -119,7 +131,8 @@ def check_hook_path(p: Probe) -> None:
                               encoding="utf-8", env=sb.env(), timeout=120)
         report = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else {}
         p.check("AC-15: after hook calls (Edit scope check, runner token, unit question answer, "
-                "SubagentStart, UserPromptSubmit) with site-packages available, sys.modules holds "
+                "SubagentStart incl. a pack agent, Agent dispatch, a git ref command, PostToolUse "
+                "Edit, UserPromptSubmit) with site-packages available, sys.modules holds "
                 f"no yaml module ({report.get('yaml')}) and no CLI-only module",
                 bool(report) and not report["yaml"] and not report["cli_only"],
                 proc.stdout[-300:] + proc.stderr[-500:])
@@ -127,10 +140,30 @@ def check_hook_path(p: Probe) -> None:
         sb.cleanup()
 
 
+def check_no_lazy_stdlib(p: Probe) -> None:
+    """R1-d AC-15: no standard-library import inside a function of R1-d's hook modules."""
+    stdlib = set(sys.stdlib_module_names)
+    found = []
+    for name in R1D_HOOK_MODULES:
+        path = PACKAGE / f"{name.split('.')[-1]}.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Import):
+                    found += [f"{name}:{node.lineno} {a.name}" for a in node.names
+                              if a.name.split(".")[0] in stdlib]
+                elif isinstance(node, ast.ImportFrom) and not node.level and (
+                        (node.module or "").split(".")[0] in stdlib):
+                    found.append(f"{name}:{node.lineno} {node.module}")
+    p.check(f"AC-15 (R1-d): function-level stdlib imports in {', '.join(R1D_HOOK_MODULES)}: "
+            f"{len(found)}", not found, "\n       ".join(found))
+
+
 def main() -> int:
     p = Probe()
     check_imports(p)
     check_hook_path(p)
+    check_no_lazy_stdlib(p)
     return p.result()
 
 
