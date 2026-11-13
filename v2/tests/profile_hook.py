@@ -6,9 +6,13 @@
 
 State: a sandbox whose store holds the real transcript's Episodes, 200 decisions (20
 confirmed), and a session transcript that gets one fresh owner line before every call
--- as test_replay does; and (R1-c AC-14) a unit in build with the confirmed scope src/**.
-For PreToolUse (Bash `ls -la`), PreToolUse:Edit (a builder's Edit of src/, the whole unit
-scope check), SubagentStart and UserPromptSubmit it reports:
+-- as test_replay does; and (R1-c AC-14) a unit in build with the confirmed scope src/**;
+and (R1-d AC-16, test_replay.seed_scoped_unit) the ui pack of 5 skills installed, the unit
+declaring it, the builder holding the ui creator's receipt.
+For PreToolUse (Bash `ls -la`), PreToolUse:Edit (the ui creator's Edit of src/ui/: the unit
+scope check and the pack rule), PostToolUse:Edit (the post-hash of an LF file, the lease
+renewal), SubagentStart (a ui creator: L1 and the receipt check) and UserPromptSubmit it
+reports:
   * wall time of the production hook command (process start included), p50 of N calls;
   * interpreter start + imports (`-X importtime` of the same command);
   * in-process time per phase of the dispatcher (wrapping its functions), averaged.
@@ -26,6 +30,7 @@ import time
 from pathlib import Path
 
 from helpers import HOOK_ARGV, TESTS_DIR, Sandbox
+from test_replay import PERF_BUILDER, PERF_CREATOR
 
 CALLS = 25
 OUT = TESTS_DIR / "results" / "hook-phases.txt"
@@ -35,14 +40,27 @@ def payloads(sb: Sandbox, transcript: Path) -> dict:
     base = {"session_id": "prof", "transcript_path": str(transcript), "cwd": str(sb.work)}
     return {
         "PreToolUse": lambda i: dict(base, tool_name="Bash", tool_input={"command": "ls -la"}),
-        "PreToolUse:Edit": lambda i: dict(base, tool_name="Edit", agent_id="prof-builder",
-                                          agent_type="ulthar-creator", tool_input={
-                                              "file_path": str(sb.work / "src" / f"v{i}.py"),
+        "PreToolUse:Edit": lambda i: dict(base, tool_name="Edit", agent_id=PERF_BUILDER,
+                                          agent_type=PERF_CREATOR, tool_input={
+                                              "file_path": str(sb.work / "src" / "ui" / f"v{i}.py"),
                                               "old_string": "a", "new_string": "b"}),
-        "SubagentStart": lambda i: dict(base, agent_id=f"a-{i}", agent_type="ulthar-creator"),
+        "PostToolUse:Edit": lambda i: dict(base, tool_name="Edit", agent_id=PERF_BUILDER,
+                                           agent_type=PERF_CREATOR,
+                                           tool_input={"file_path": str(post_file(sb, i))},
+                                           tool_response={"filePath": str(post_file(sb, i))}),
+        "SubagentStart": lambda i: dict(base, agent_id=f"a-{i}", agent_type=PERF_CREATOR),
         "UserPromptSubmit": lambda i: dict(base, prompt=f"profile prompt {i}",
                                            prompt_id=f"prof-{os.getpid()}-{i}"),
     }
+
+
+def post_file(sb: Sandbox, i: int) -> Path:
+    """The file a PostToolUse:Edit call reports, written (LF) before the call."""
+    path = sb.work / "src" / "ui" / f"post{i}.py"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"value = {i}\n".encode("utf-8"))
+    return path
 
 
 def append_line(transcript: Path, tag: str) -> None:
@@ -114,6 +132,12 @@ PHASES = [
     ("ulthar.product", "scoped_units", "unit scope lookup (index.db reader)"),
     ("ulthar.product", "forms", "path forms (abspath, realpath)"),
     ("ulthar.memory", "build_l1", "L1 assembly"),
+    ("ulthar.memhook", "_pre_writes", "R1-c/R1-d write checks (scope, packs, git refs)"),
+    ("ulthar.packs", "check_write", "pack rule (R1-d AC-5)"),
+    ("ulthar.packs", "for_store", "pack definitions (validate, globs, skill stats)"),
+    ("ulthar.packs", "receipt", "receipt check (R1-d AC-4: definition + SKILL.md sha256)"),
+    ("ulthar.hook", "blob_hash", "post-hash (TRUST-07)"),
+    ("ulthar.lease", "touch", "lease acquire/renew (R1-d AC-8)"),
     ("ulthar.memory", "build_l0", "L0 assembly"),
     ("ulthar.extract", "launch", "extractor spawn"),
     ("ulthar.hook", "_record", "events row"),
