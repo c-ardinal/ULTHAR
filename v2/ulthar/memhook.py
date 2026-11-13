@@ -283,25 +283,30 @@ def _dispatch(payload: dict, project: Project, rt, act: Action, detail: dict) ->
 
 
 def _pre_writes(payload: dict, project: Project, rt, detail: dict, memo: dict) -> tuple:
-    """(block message, guard id) of R1-c AC-11 and R1-d AC-4 / AC-5 / AC-11, or (None, None)."""
-    from . import gitref  # noqa: PLC0415 -- see run()
-    from . import product  # noqa: PLC0415
+    """(block message, guard id) of R1-c AC-11 and R1-d AC-4 / AC-5 / AC-11, or (None, None).
+    The R1-d modules load only for the calls they judge (hook latency, AC-16)."""
+    from . import product  # noqa: PLC0415 -- see run()
 
-    packs = packs_mod()
     agent = payload.get("agent_id")
     if agent and (payload.get("tool_name") in WRITE_TOOLS or product.targets(payload)):
-        msg = packs.refused(rt, agent)
+        msg = packs_mod().refused(rt, agent)
         if msg:
-            return msg, packs.GUARD_ID
+            return msg, packs_mod().GUARD_ID
     entries: list = []
     msg = product.check(payload, project.store, rt, detail, memo, entries)
     if msg:
         return msg, product.GUARD_ID
-    msg = packs.check_write(payload, entries, project.store(), rt)
-    if msg:
-        return msg, packs.GUARD_ID
-    msg = gitref.check(payload, project.store)
-    return (msg, gitref.GUARD_ID) if msg else (None, None)
+    if entries:
+        msg = packs_mod().check_write(payload, entries, project.store(), rt)
+        if msg:
+            return msg, packs_mod().GUARD_ID
+    if payload.get("tool_name") in SHELL_TOOLS and "git" in _shell_command(payload).casefold():
+        from . import gitref  # noqa: PLC0415
+
+        msg = gitref.check(payload, project.store)
+        if msg:
+            return msg, gitref.GUARD_ID
+    return None, None
 
 
 # ---------------------------------------------------------------------------- events
