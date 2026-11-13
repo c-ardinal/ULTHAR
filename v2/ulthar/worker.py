@@ -286,21 +286,22 @@ def _ntdll():
     return ntdll
 
 
-def _run_extractor(argv: list[str], prompt: str, timeout: float = TIMEOUT_SEC) -> str:
-    """Runs the extractor for at most `timeout` seconds (inclusive); past that the whole
-    process tree is killed and the run fails."""
-    cwd = store_mod.state_dir()
-    cwd.mkdir(parents=True, exist_ok=True)
+def run_contained(argv: list[str], stdin: bytes, timeout: float, cwd: str,
+                  env: dict, what: str = "extractor") -> tuple[int, bytes, bytes]:
+    """Runs `argv` windowless (CREATE_NO_WINDOW, never DETACHED_PROCESS) for at most
+    `timeout` seconds (inclusive), its whole process tree contained (Windows: a
+    kill-on-close job joined before it runs; POSIX: its own session); past the time the
+    tree is killed and RuntimeError raised. When it returns, nothing it started is left
+    running (Windows; on POSIX a descendant that left the session may outlive it).
+    Returns (exit code, stdout, stderr). Also `ulthar verify` (R1-c AC-16)."""
     spawn = ({"creationflags": subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED}
              if os.name == "nt" else {"start_new_session": True})
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                            errors="replace", cwd=str(cwd),
-                            env=dict(os.environ, **{extract.EXTRACTOR_ENV: "1"}), **spawn)
+                            stderr=subprocess.PIPE, cwd=cwd, env=env, **spawn)
     job = _contain(proc) if os.name == "nt" else None
     try:
         try:
-            stdout, stderr = proc.communicate(prompt, timeout=timeout)
+            stdout, stderr = proc.communicate(stdin, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             started = time.monotonic()
             if job is not None:
@@ -312,14 +313,25 @@ def _run_extractor(argv: list[str], prompt: str, timeout: float = TIMEOUT_SEC) -
             except subprocess.TimeoutExpired:
                 proc.kill()
             how = "job object" if job is not None else "killpg"
-            raise RuntimeError(f"extractor timed out after {timeout:g} s; its process tree was "
+            raise RuntimeError(f"{what} timed out after {timeout:g} s; its process tree was "
                                f"killed ({how}, {time.monotonic() - started:.1f} s)") from exc
     finally:
         if job is not None:
-            job.close()  # kill-on-close: nothing the extractor left running survives
-    if proc.returncode != 0:
-        raise RuntimeError(f"extractor exit {proc.returncode}: {stderr[-DETAIL_CHARS:]}")
-    return stdout
+            job.close()  # kill-on-close: nothing the command left running survives
+    return proc.returncode, stdout, stderr
+
+
+def _run_extractor(argv: list[str], prompt: str, timeout: float = TIMEOUT_SEC) -> str:
+    """Runs the extractor for at most `timeout` seconds (inclusive); past that the whole
+    process tree is killed and the run fails."""
+    cwd = store_mod.state_dir()
+    cwd.mkdir(parents=True, exist_ok=True)
+    rc, stdout, stderr = run_contained(argv, prompt.encode("utf-8"), timeout, str(cwd),
+                                       dict(os.environ, **{extract.EXTRACTOR_ENV: "1"}))
+    if rc != 0:
+        raise RuntimeError(f"extractor exit {rc}: "
+                           f"{stderr.decode('utf-8', 'replace')[-DETAIL_CHARS:]}")
+    return stdout.decode("utf-8", "replace")
 
 
 def run_worker(episode_id: str, project_dir: str) -> int:

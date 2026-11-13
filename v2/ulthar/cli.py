@@ -2,6 +2,8 @@
   db init | ingest | status | hook                                  (R1-a)
   decide list|review|confirm, fact add|list, inject, index rebuild,
   store verify                                                     (R1-b)
+  issue add|list, unit new|show|advance|list, contract submit|lint|show,
+  review record, verify                                            (R1-c)
   extract                         (internal: the detached extraction worker)
 Project-scoped commands act on the project of --project-dir (default: the current
 directory); see ulthar.store for how that maps to a knowledge_root.
@@ -15,12 +17,16 @@ import sys
 import time
 from pathlib import Path
 
+from . import contract as contract_mod
 from . import db as db_mod
 from . import decide as decide_mod
+from . import evidence as evidence_mod
+from . import flow as flow_mod
 from . import worker as worker_mod
 from . import ingest as ingest_mod
 from . import memory
 from . import store as store_mod
+from . import tokens as tokens_mod
 
 
 def _store(args) -> store_mod.Store:
@@ -192,6 +198,172 @@ def cmd_extract(args) -> int:
     return worker_mod.run_worker(args.episode, args.project_dir or os.getcwd())
 
 
+# ---------------------------------------------------------------------------- R1-c
+
+def _actor() -> dict:
+    return {"session_id": os.environ.get("CLAUDE_SESSION_ID")}
+
+
+def _with_rt(args, fn):
+    conn = _rt(args)
+    try:
+        return fn(conn)
+    finally:
+        conn.close()
+
+
+def cmd_issue_add(args) -> int:
+    rec = flow_mod.add_issue(_store(args), args.title, _actor())
+    print(f"{rec['id']}\t{rec['title']}")
+    return 0
+
+
+def cmd_issue_list(args) -> int:
+    with _store(args).reader() as conn:
+        issues = store_mod.current(conn, "issue")
+    for i in issues:
+        print(f"{i['id']}\t{i.get('status')}\t{i.get('title')}")
+    print(f"issues: {len(issues)}")
+    return 0
+
+
+def cmd_unit_new(args) -> int:
+    rec = flow_mod.new_unit(_store(args), args.issue, _actor())
+    print(f"{rec['id']}\t{rec['state']}\tissue {rec['issue_id']}")
+    return 0
+
+
+def cmd_unit_list(args) -> int:
+    store = _store(args)
+    with store.reader() as conn:
+        ids = [u["id"] for u in store_mod.current(conn, "unit")]
+    units = _with_rt(args, lambda rt: [flow_mod.recover(store, rt, i) for i in ids])
+    for u in units:
+        print(f"{u['id']}\t{u.get('state')}\tissue {u.get('issue_id')}"
+              f"\tcontract v{(u.get('contract') or {}).get('version') or '-'}")
+    print(f"units: {len(units)}")
+    return 0
+
+
+def cmd_unit_show(args) -> int:
+    store = _store(args)
+    if args.ask:
+        ask = flow_mod.qual_question if args.ask == "qual" else flow_mod.resume_question
+        _print_json(_with_rt(args, lambda rt: ask(store, rt, args.unit)))
+        return 0
+    _print_json(_with_rt(args, lambda rt: flow_mod.recover(store, rt, args.unit)))
+    return 0
+
+
+def cmd_unit_advance(args) -> int:
+    store = _store(args)
+    rec = _with_rt(args, lambda rt: flow_mod.advance(
+        store, rt, args.unit, args.to, reason=args.reason, cause=args.cause, actor=_actor()))
+    print(f"{rec['id']}\t{rec['history'][-1]['from']} -> {rec['state']}")
+    return 0
+
+
+def cmd_contract_submit(args) -> int:
+    store = _store(args)
+    data = Path(args.file).read_bytes()
+    rec = _with_rt(args, lambda rt: flow_mod.submit(store, rt, args.unit, data, _actor()))
+    ref = rec["contract"]
+    print(f"{rec['id']}\t{rec['state']}\tcontract v{ref['version']} sha:{ref['sha'][:12]}"
+          f"\t{store.dir / ref['path']}")
+    return 0
+
+
+def cmd_contract_lint(args) -> int:
+    store = _store(args)
+    with store.reader() as conn:
+        unit = flow_mod.read_unit(conn, args.unit)
+    doc = flow_mod.contract_doc(store, unit.get("contract"))
+    found = contract_mod.lint(doc, store.repo or store.root)
+    for rule, msg in found:
+        print(f"{rule}\t{msg}")
+    print("contract lint: OK" if not found else f"contract lint: {len(found)} violation(s)")
+    return 0 if not found else 1
+
+
+def cmd_contract_show(args) -> int:
+    store = _store(args)
+    _print_json(_with_rt(args, lambda rt: flow_mod.contract_question(store, rt, args.unit)))
+    return 0
+
+
+def cmd_review_record(args) -> int:
+    store = _store(args)
+    rec = _with_rt(args, lambda rt: flow_mod.record_review(
+        store, rt, args.unit, args.kind, args.result, args.blocker, args.unmapped_change,
+        args.runner_token))
+    review = rec["reviews"][-1]
+    print(f"{rec['id']}\t{review['kind']} review {review['result']} by {review['agent_id']}"
+          f"\tblockers={len(review['blockers'])} unmapped={len(review['unmapped_changes'])}")
+    return 0
+
+
+def cmd_verify(args) -> int:
+    store = _store(args)
+    manifest, rec = _with_rt(args, lambda rt: flow_mod.verify(
+        store, rt, args.unit, args.self, args.runner_token))
+    for r in manifest["acs"]:
+        print(f"{r['id']}\t{r['kind']}\t{'PASS' if r['passed'] else 'FAIL'}\tvalue={r['value']}"
+              f"\texit={r['exit_code']}")
+    print(f"tree {manifest['tree_hash']}  manifest run {manifest['run_id']}  unit {rec['state']}"
+          + (f" ({rec.get('halt_reason')})" if rec["state"] == "halted" else ""))
+    return 0 if manifest["all_quant_passed"] and rec["state"] != "halted" else 1
+
+
+REFUSALS = (flow_mod.FlowError, contract_mod.ContractError, tokens_mod.TokenError,
+            evidence_mod.EvidenceError)
+
+
+def _r1c_parsers(sub) -> None:
+    iss = sub.add_parser("issue", help="issues (ISS-01)")
+    isub = iss.add_subparsers(dest="issue_command", required=True)
+    _leaf(isub, "add", cmd_issue_add, "add an issue").add_argument("--title", required=True)
+    _leaf(isub, "list", cmd_issue_list, "every issue")
+
+    unit = sub.add_parser("unit", help="units and their process (design §7)")
+    usub = unit.add_subparsers(dest="unit_command", required=True)
+    _leaf(usub, "new", cmd_unit_new, "a unit (state intake) of an issue").add_argument(
+        "--issue", required=True)
+    show = _leaf(usub, "show", cmd_unit_show, "the unit's record, or an owner question")
+    show.add_argument("unit")
+    show.add_argument("--ask", choices=("qual", "resume"),
+                      help="print (and record) the QUAL-JUDGE / UNIT-RESUME AskUserQuestion input")
+    adv = _leaf(usub, "advance", cmd_unit_advance, "move the unit (window only)")
+    adv.add_argument("unit")
+    adv.add_argument("to")
+    adv.add_argument("--reason", help="required for a return")
+    adv.add_argument("--cause", choices=flow_mod.HALT_CAUSES, help="required to leave halted")
+    _leaf(usub, "list", cmd_unit_list, "every unit with its state")
+
+    con = sub.add_parser("contract", help="goal contracts (YAML)")
+    csub = con.add_subparsers(dest="contract_command", required=True)
+    sm = _leaf(csub, "submit", cmd_contract_submit, "submit a new contract version")
+    sm.add_argument("unit")
+    sm.add_argument("--file", required=True)
+    _leaf(csub, "lint", cmd_contract_lint, "lint the unit's current contract").add_argument("unit")
+    _leaf(csub, "show", cmd_contract_show,
+          "print (and record) the CONTRACT-CONFIRM AskUserQuestion input").add_argument("unit")
+
+    rev = sub.add_parser("review", help="the reviewer's records")
+    rsub = rev.add_subparsers(dest="review_command", required=True)
+    rr = _leaf(rsub, "record", cmd_review_record, "record a contract or verify review (reviewer)")
+    rr.add_argument("--unit", required=True)
+    rr.add_argument("--kind", required=True, choices=flow_mod.REVIEW_KINDS)
+    rr.add_argument("--result", required=True, choices=("pass", "fail"))
+    rr.add_argument("--blocker", action="append", default=[])
+    rr.add_argument("--unmapped-change", action="append", default=[])
+    rr.add_argument("--runner-token", help="(added by the hook)")
+
+    ver = _leaf(sub, "verify", cmd_verify, "run the confirmed contract's verify commands")
+    ver.add_argument("unit")
+    ver.add_argument("--self", action="store_true", help="the builder's own loop (build)")
+    ver.add_argument("--runner-token", help="(added by the hook)")
+
+
 def _project_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project-dir", help="the project (default: current directory)")
     p.add_argument("--db", help="runtime.db path (default $ULTHAR_RUNTIME_DB or ~/.claude/ulthar/runtime.db)")
@@ -245,6 +417,8 @@ def build_parser() -> argparse.ArgumentParser:
     ssub = sto.add_subparsers(dest="store_command", required=True)
     _leaf(ssub, "verify", cmd_store_verify, "recompute the JSONL chain values (AC-20)")
 
+    _r1c_parsers(sub)
+
     ex = _leaf(sub, "extract", cmd_extract, "(internal, hook only) run one extraction")
     ex.add_argument("--episode", required=True)
     sub.add_parser("hook", help="hook dispatcher entry: ulthar hook --event <E> < payload",
@@ -258,9 +432,13 @@ def main(argv: list[str] | None = None) -> int:
         from . import hook  # noqa: PLC0415 -- the hook path skips argparse setup below
         return hook.main(argv[1:])
     sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
+    except REFUSALS as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
     except store_mod.StoreError as exc:
         print(f"ulthar: {exc}", file=sys.stderr)
         return 4

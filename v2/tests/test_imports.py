@@ -1,15 +1,22 @@
-"""AC-11: every import in v2/ulthar/ is the standard library, psutil, or ulthar itself
-(static AST scan: module-level, function-level and relative imports alike)."""
+"""R1-a AC-11 / R1-b AC-17 / R1-c AC-15: every import in v2/ulthar/ is the standard
+library, psutil, PyYAML (`yaml`) or ulthar itself (static AST scan: module-level,
+function-level and relative imports alike); and the hook path -- every ulthar module
+reachable from `__main__.py hook` (the dispatcher, its guards and helpers) -- never
+imports PyYAML: statically (no `yaml` import in any of those modules, at any level) and
+at run time (`sys.modules` after hook calls of every kind R1-c adds work to)."""
 from __future__ import annotations
 
 import ast
+import json
+import subprocess
 import sys
 from pathlib import Path
 
-from helpers import V2_ROOT, Probe
+from helpers import V2_ROOT, Probe, Sandbox
 
 PACKAGE = V2_ROOT / "ulthar"
-ALLOWED_THIRD_PARTY = {"psutil"}
+ALLOWED_THIRD_PARTY = {"psutil", "yaml"}
+CLI_ONLY = {"ulthar.contract", "ulthar.flow", "ulthar.evidence", "ulthar.cli"}
 
 
 def imported_roots(path: Path) -> list[tuple[int, str]]:
@@ -32,13 +39,98 @@ def check_imports(p: Probe) -> None:
             if root not in allowed:
                 violations.append(f"{f.relative_to(V2_ROOT)}:{lineno}: {root}")
     p.check(f"scanned {len(files)} modules under v2/ulthar", len(files) >= 10, str(len(files)))
-    p.check(f"AC-11: non-stdlib/psutil imports: {len(violations)}", not violations,
-            "\n       ".join(violations))
+    p.check(f"AC-15: imports other than stdlib / psutil / PyYAML: {len(violations)}",
+            not violations, "\n       ".join(violations))
+
+
+def _module_name(path: Path) -> str:
+    rel = path.relative_to(V2_ROOT).with_suffix("")
+    parts = list(rel.parts)
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
+def _ulthar_imports(path: Path) -> set[str]:
+    """ulthar modules `path` imports (any level, relative or absolute)."""
+    name = _module_name(path)
+    package = name if path.name == "__init__.py" else name.rsplit(".", 1)[0]
+    out = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            out |= {a.name for a in node.names if a.name.split(".")[0] == "ulthar"}
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package.split(".")
+                base = base[:len(base) - node.level + 1]
+                mod = ".".join(base + ([node.module] if node.module else []))
+            else:
+                mod = node.module or ""
+            if mod.split(".")[0] != "ulthar":
+                continue
+            out.add(mod)
+            out |= {f"{mod}.{a.name}" for a in node.names}
+    return out
+
+
+def hook_closure() -> dict[str, Path]:
+    files = {_module_name(f): f for f in PACKAGE.rglob("*.py")}
+    # `__main__.py hook` imports ulthar.hook and exits; its CLI import below that line is
+    # never reached on the hook path. The guards are imported by name (v1dispatch).
+    todo = ["ulthar.hook"] + [n for n in files if n.startswith("ulthar.guards.")]
+    seen: dict[str, Path] = {}
+    while todo:
+        name = todo.pop()
+        if name in seen or name not in files:
+            continue
+        seen[name] = files[name]
+        todo += sorted(_ulthar_imports(files[name]))
+    return seen
+
+
+def check_hook_path(p: Probe) -> None:
+    closure = hook_closure()
+    with_yaml = [n for n, f in closure.items() if "yaml" in {r for _, r in imported_roots(f)}]
+    p.check(f"AC-15: the hook path ({len(closure)} modules) imports PyYAML nowhere (static)",
+            not with_yaml and not (CLI_ONLY & set(closure)) and "ulthar.product" in closure,
+            f"yaml in {with_yaml}; CLI-only modules reached: {sorted(CLI_ONLY & set(closure))}")
+    sb = Sandbox()
+    try:
+        sb.configure(["none"], non_product_globs=[])
+        events = [
+            ("PreToolUse", {"tool_name": "Edit", "tool_input": {"file_path": str(sb.work / "a.py")}}),
+            ("PreToolUse", {"tool_name": "Bash", "agent_id": "a-1", "tool_use_id": "t1",
+                            "tool_input": {"command": "ulthar verify U-000000000000 --self"}}),
+            ("PostToolUse", {"tool_name": "AskUserQuestion", "tool_use_id": "t2",
+                             "tool_input": {"questions": [{"question": "CONTRACT-CONFIRM:U-0 v1 sha:000000000000"}]},
+                             "tool_response": {"answers": {}}}),
+            ("SubagentStart", {"agent_id": "a-2", "agent_type": "t"}),
+            ("UserPromptSubmit", {"prompt": "hello", "prompt_id": "p-1"}),
+        ]
+        script = (
+            "import json, sys\n"
+            f"sys.path.insert(0, {str(V2_ROOT)!r})\n"
+            "from ulthar import hook\n"
+            "codes = []\n"
+            f"for event, payload in json.loads({json.dumps(json.dumps(events))}):\n"
+            f"    payload = dict(payload, session_id='imp', cwd={str(sb.work)!r}, hook_event_name=event)\n"
+            "    codes.append(hook.process(event, payload).result.exit_code)\n"
+            "print(json.dumps({'codes': codes, 'yaml': sorted(m for m in sys.modules if m.split('.')[0] == 'yaml'),"
+            " 'cli_only': sorted(m for m in sys.modules if m in %r)}))\n" % sorted(CLI_ONLY))
+        proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                              encoding="utf-8", env=sb.env(), timeout=120)
+        report = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else {}
+        p.check("AC-15: after hook calls (Edit scope check, runner token, unit question answer, "
+                "SubagentStart, UserPromptSubmit) with site-packages available, sys.modules holds "
+                f"no yaml module ({report.get('yaml')}) and no CLI-only module",
+                bool(report) and not report["yaml"] and not report["cli_only"],
+                proc.stdout[-300:] + proc.stderr[-500:])
+    finally:
+        sb.cleanup()
 
 
 def main() -> int:
     p = Probe()
     check_imports(p)
+    check_hook_path(p)
     return p.result()
 
 

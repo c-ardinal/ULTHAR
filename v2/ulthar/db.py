@@ -9,7 +9,8 @@ extraction state per owner_msg Episode: pending/done/failed, DEC-01), injections
 Stop hook already asked about), store_chain (the chain value of every knowledge-store
 append, AC-20, a second copy of index.db's) and confirm_ops (progress of a decide
 confirm, so a retry completes it). Episodes themselves live in the knowledge store
-(ulthar.store), not here (R1-b AC-2).
+(ulthar.store), not here (R1-b AC-2). Schema 5 (R1-c): tokens also hold `unit_resume`
+(the owner's UNIT-RESUME) and `runner` (a subagent's review/verify run) kinds.
 """
 from __future__ import annotations
 
@@ -17,8 +18,9 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 5000
+WAL_AUTOCHECKPOINT_PAGES = 256  # 1 MB of 4 KB pages; see connect()
 DB_ENV = "ULTHAR_RUNTIME_DB"
 
 DESIGN_TABLES: dict[str, tuple[str, ...]] = {
@@ -56,7 +58,7 @@ CREATE INDEX IF NOT EXISTS events_session ON events(session_id);
 CREATE TABLE IF NOT EXISTS tokens (
   token_id TEXT PRIMARY KEY,
   kind TEXT CHECK (kind IN ('contract_confirm','decision_confirm','qual_judgement',
-                            'substitution_approval')),
+                            'substitution_approval','unit_resume','runner')),
   bound TEXT, issued_by_hook TEXT, consumed_at TEXT);
 CREATE TABLE IF NOT EXISTS receipts (
   id INTEGER PRIMARY KEY, agent_id TEXT, pack TEXT, agent_def_hash TEXT, skill_hashes TEXT,
@@ -111,6 +113,18 @@ def resolve_path(explicit: str | None = None) -> Path:
     return Path.home() / ".claude" / "ulthar" / "runtime.db"
 
 
+def _widen_token_kinds(conn: sqlite3.Connection) -> None:
+    """A schema-4 tokens table (its CHECK lacks R1-c's unit_resume/runner kinds) is
+    rebuilt with the current definition, rows kept."""
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='tokens'").fetchone()[0]
+    if "'runner'" in sql:
+        return
+    conn.executescript(
+        "BEGIN IMMEDIATE; ALTER TABLE tokens RENAME TO tokens_v4;"
+        + _DDL[_DDL.index("CREATE TABLE IF NOT EXISTS tokens"):_DDL.index("CREATE TABLE IF NOT EXISTS receipts")]
+        + "INSERT INTO tokens SELECT * FROM tokens_v4; DROP TABLE tokens_v4; COMMIT;")
+
+
 def connect(path: Path) -> sqlite3.Connection:
     """Opens (creating if needed) the database in WAL mode with the schema applied.
     autocommit (isolation_level=None): callers open explicit transactions."""
@@ -120,9 +134,15 @@ def connect(path: Path) -> sqlite3.Connection:
     if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_DDL)
+        _widen_token_kinds(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     # Hook latency (AC-9): WAL commits without fsync, and no checkpoint+WAL delete
     # on every close -- the WAL auto-checkpoints at its page threshold instead.
     conn.execute("PRAGMA synchronous=NORMAL")
+    # A fresh process's first read costs ~1.4 ms per MB of un-checkpointed WAL, and
+    # every hook call is a fresh process (~25 KB of WAL per call): a 1 MB bound instead
+    # of SQLite's 4 MB default saves ~2 ms per call on average. Same PASSIVE checkpoint
+    # (it never waits for other connections), just ~4x as often (about every 40 calls).
+    conn.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT_PAGES}")
     conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
     return conn
