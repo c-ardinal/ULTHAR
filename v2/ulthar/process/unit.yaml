@@ -1,9 +1,11 @@
-# ULTHAR unit process (design §7; R1-c: intake .. accepted, the returns, halted).
+# ULTHAR unit process (design §7; R1-c: intake .. accepted, the returns, halted;
+# R1-d: accepted -> integrated -> done, done -> reopen -> contract_draft).
 # Read by the CLI only (`ulthar unit advance`, `ulthar verify`); never by a hook.
 # A transition's `requires` names preconditions; their checks live in ulthar/flow.py
 # (PRECONDITIONS), looked up by name -- an unknown name refuses the transition.
 # `by: cli` = `ulthar unit advance` (the window only); `by: verify` = taken by
-# `ulthar verify --self` itself (AC-8), never by `unit advance`.
+# `ulthar verify --self` itself (AC-8), never by `unit advance`; `by: done` = taken by
+# `ulthar unit advance <u> done` itself when the verify on the integration branch fails.
 # `to: previous` = the state the unit was in when it was halted.
 
 states:
@@ -14,6 +16,9 @@ states:
   - quant_verified
   - owner_review
   - accepted
+  - integrated
+  - done
+  - reopen
   - halted
 
 transitions:
@@ -33,3 +38,10 @@ transitions:
   # halted (AC-8) and the way back
   - {from: build, to: halted, by: verify, requires: [loops_exhausted_or_stalled]}
   - {from: halted, to: previous, by: cli, requires: [halt_cause_classified, resume_authorized]}
+  # R1-d: integration (TRUST-04 check, then the CLI's own merge), done, the owner's reopen
+  - {from: accepted, to: integrated, by: cli,
+     requires: [lease_held, worktree_clean, provenance_verified]}
+  - {from: integrated, to: done, by: cli, requires: [integration_verify_passed]}
+  - {from: integrated, to: accepted, by: done, requires: [integration_verify_failed]}
+  - {from: done, to: reopen, by: cli, requires: [reopen_authorized]}
+  - {from: reopen, to: contract_draft, by: cli, requires: [contract_resubmitted]}

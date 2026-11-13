@@ -2,12 +2,15 @@
 the CLI's checks; no YAML here.
 
 Runner token (AC-4, AC-7): the PreToolUse of a Bash / PowerShell call that is exactly
-one `ulthar review record ...` or `ulthar verify ...` from a subagent issues a one-time
-token bound to (session_id, agent_id, tool_use_id, project, command, unit) and appends
-`--runner-token <id>` to the command through `updatedInput`. The CLI consumes it and
-writes that agent_id as the runner. A main-session call gets no token (the CLI then
-records nothing); a command that already names `--runner-token`, or that wraps the
-call in anything else (pipes, redirections, a second command), is blocked.
+one `ulthar review record ...`, `ulthar verify ...` or (R1-d AC-7) `ulthar run ...` from
+a subagent issues a one-time token bound to (session_id, agent_id, tool_use_id,
+project, command, unit) and appends `--runner-token <id>` to the command through
+`updatedInput`. The CLI consumes it and writes that agent_id as the runner. A
+main-session call gets no token (the CLI then records nothing); a command that already
+names `--runner-token`, or that wraps the call in anything else (pipes, redirections, a
+second command), is blocked. R1-d AC-9: `ulthar unit advance <u> integrated` gets the
+same token the other way round -- only from the window (no agent_id) -- so the CLI
+knows the window's session and can check that it holds the lease.
 
 Owner tokens (AC-5, AC-10): the CLI records the exact AskUserQuestion input in
 runtime.db `questions` (`ulthar contract show`, `ulthar unit show --ask qual|resume`):
@@ -15,6 +18,7 @@ runtime.db `questions` (`ulthar contract show`, `ulthar unit show --ask qual|res
   QUAL-JUDGE:<unit> sha:<12>               one question per qualitative AC, 合格 / 不合格
                                            -> one qual_judgement token per AC
   UNIT-RESUME:<unit> sha:<12>              options 再開 / 再開しない  -> unit_resume
+  UNIT-REOPEN:<unit> sha:<12> ac:<id|なし>  options 差し戻す / 差し戻さない -> unit_reopen (R1-d)
 The AskUserQuestion PostToolUse issues them as R1-b's decide review does (ulthar.decide):
 only for exactly the recorded input, only when the session's transcript holds that
 tool_use, and only for the issuing answer. Consuming one (`ulthar unit advance`)
@@ -43,11 +47,14 @@ RUNNER_GUARD = "unit_runner"
 CONTRACT_MARK = re.compile(r"CONTRACT-CONFIRM:(U-[0-9a-f]+) v(\d+) sha:([0-9a-f]{12})")
 QUAL_MARK = re.compile(r"QUAL-JUDGE:(U-[0-9a-f]+) sha:([0-9a-f]{12})")
 RESUME_MARK = re.compile(r"UNIT-RESUME:(U-[0-9a-f]+) sha:([0-9a-f]{12})")
+REOPEN_MARK = re.compile(r"UNIT-REOPEN:(U-[0-9a-f]+) sha:([0-9a-f]{12})")
 CONFIRM, REVISE = "確定", "修正"
 PASS, FAIL = "合格", "不合格"
 RESUME, NO_RESUME = "再開", "再開しない"
+REOPEN, NO_REOPEN = "差し戻す", "差し戻さない"
 OWNER_KINDS = {"contract_confirm": CONTRACT_MARK, "qual_judgement": QUAL_MARK,
-               "unit_resume": RESUME_MARK}
+               "unit_resume": RESUME_MARK, "unit_reopen": REOPEN_MARK}
+WINDOW_COMMANDS = frozenset({"unit advance"})  # runner tokens issued to the window only
 
 
 class TokenError(Exception):
@@ -62,12 +69,17 @@ def runner_command(args: list[str]) -> str | None:
         return "verify"
     if words == ["review", "record"]:
         return "review record"
+    if words[:1] == ["run"]:
+        return "run"
+    if words == ["unit", "advance"] and "integrated" in [a.casefold() for a in args[2:]]:
+        return "unit advance"
     return None
 
 
 def _unit_arg(command: str, args: list[str]) -> str | None:
-    if command == "verify":
-        return next((a for a in args[1:] if not a.startswith("-")), None)
+    if command in ("verify", "run", "unit advance"):
+        skip = 2 if command == "unit advance" else 1
+        return next((a for a in args[skip:] if not a.startswith("-")), None)
     for i, a in enumerate(args):
         if a == "--unit" and i + 1 < len(args):
             return args[i + 1]
@@ -144,8 +156,10 @@ def consume_runner(rt: sqlite3.Connection, token_id: str | None, command: str, u
             project_id, command, unit_id):
         raise TokenError(f"runner token is for {bound.get('command')} {bound.get('unit')} "
                          f"in {bound.get('project_id')}, not {command} {unit_id}")
-    if not bound.get("agent_id"):
-        raise TokenError("runner token has no agent_id (a main-session call records nothing)")
+    if bool(bound.get("agent_id")) == (command in WINDOW_COMMANDS):
+        raise TokenError("runner token has no agent_id (a main-session call records nothing)"
+                         if command not in WINDOW_COMMANDS else
+                         f"`ulthar {command}` is the window's: a subagent's token is refused")
     event = rt.execute("SELECT hook, agent_id, detail FROM events WHERE id=?",
                        (bound.get("event_id"),)).fetchone()
     if (event is None or event[0] != "PreToolUse" or event[1] != bound["agent_id"]
@@ -205,6 +219,9 @@ def _still_open(kind: str, unit: dict, q: dict) -> str | None:
     elif kind == "qual_judgement":
         if unit.get("state") != "owner_review" or (unit.get("confirmed") or {}).get("sha") != q.get("sha"):
             return "the unit is not in owner_review with this contract"
+    elif kind == "unit_reopen":
+        if unit.get("state") != "done" or (unit.get("confirmed") or {}).get("sha") != q.get("sha"):
+            return "the unit is not done with this contract"
     elif unit.get("state") != "halted" or unit.get("halt_id") != q.get("halt_id"):
         return "the unit is not halted (or halted again since the question)"
     return None
@@ -216,6 +233,8 @@ def _verdicts(kind: str, answers: list[str], q: dict) -> list[tuple[dict, str]]:
         return [({}, "confirm")] if answers[0] == CONFIRM else []
     if kind == "unit_resume":
         return [({"halt_id": q.get("halt_id")}, "resume")] if answers[0] == RESUME else []
+    if kind == "unit_reopen":
+        return [({"ac": q.get("ac")}, "reopen")] if answers[0] == REOPEN else []
     verdict = {PASS: "pass", FAIL: "fail"}
     return [({"ac_id": ac}, verdict[a]) for ac, a in zip(q.get("acs") or [], answers)
             if a in verdict]
@@ -305,7 +324,7 @@ def owner_sessions(rt: sqlite3.Connection, unit_id: str) -> set[str]:
     """Sessions of this unit's unconsumed owner tokens (to ingest before checking them)."""
     out = set()
     for (raw,) in rt.execute("SELECT bound FROM tokens WHERE consumed_at IS NULL AND kind IN"
-                             " ('contract_confirm','qual_judgement','unit_resume')"):
+                             " ('contract_confirm','qual_judgement','unit_resume','unit_reopen')"):
         bound = json.loads(raw or "{}")
         if bound.get("unit_id") == unit_id and bound.get("session_id"):
             out.add(bound["session_id"])
