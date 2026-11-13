@@ -263,10 +263,12 @@ def scoped_units(store: store_mod.Store, rt) -> list[tuple[str, list[str]]]:
     return out
 
 
-def check(payload: dict, store_of, rt, detail: dict, memo: dict | None = None) -> str | None:
+def check(payload: dict, store_of, rt, detail: dict, memo: dict | None = None,
+          entries: list | None = None) -> str | None:
     """The block message, or None. `store_of()` gives the project's store (opened only
     when a product file is written). Raises on an unreadable config or store. `memo`:
-    see forms."""
+    see forms. `entries` (R1-d AC-5) receives each product write as (label,
+    repository-relative forms, is_tree) before the scope is judged."""
     found = targets(payload)
     if not found:
         return None
@@ -284,6 +286,8 @@ def check(payload: dict, store_of, rt, detail: dict, memo: dict | None = None) -
                 product.append((label, rels, tree or not known))
     if not product:
         return None
+    if entries is not None:
+        entries += product
     units = scoped_units(store, rt)
     matched: list[str] = []
     for label, rels, tree in product:

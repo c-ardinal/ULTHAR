@@ -14,9 +14,14 @@ R1-c: PreToolUse also blocks `ulthar unit advance` from a subagent, issues the r
 token of a subagent's `ulthar review record|verify` (ulthar.tokens, answered through
 `updatedInput`), and limits product writes to confirmed unit scopes (ulthar.product,
 GOAL-08); the AskUserQuestion PostToolUse also issues the unit owner tokens
-(CONTRACT-CONFIRM, QUAL-JUDGE, UNIT-RESUME).
+(CONTRACT-CONFIRM, QUAL-JUDGE, UNIT-RESUME, UNIT-REOPEN).
+R1-d (ulthar.packs, ulthar.gitref): PreToolUse also blocks every write of a subagent
+whose receipt check failed, a pack path's write without that pack's receipt (AC-5),
+and git ref updates of the integration / protected branches (AC-11); an Agent launch
+gets the unit's pack agent type through `updatedInput` (AC-3); SubagentStart records
+the receipt of a verified pack agent (AC-4).
 With ULTHAR_EXTRACTOR=1 (the extractor's own session) only the store protection, the
-runner-token check and the product scope run.
+runner-token check, the product scope, the pack checks and the git ref check run.
 """
 from __future__ import annotations
 
@@ -245,6 +250,8 @@ def _pretool(payload: dict, project: Project, rt, act: Action, detail: dict) -> 
         packed = memory.build_l1(project.store(), rt, _writer(payload, "PreToolUse"))
         if packed.over:
             act.block, act.guard_id = _over_notice(packed, "L1"), BUDGET_GUARD
+        elif tool in packs_mod().LAUNCH:
+            _dispatch(payload, project, rt, act, detail)
         return
     if payload.get("agent_id"):
         return
@@ -254,6 +261,47 @@ def _pretool(payload: dict, project: Project, rt, act: Action, detail: dict) -> 
         packed, _ = memory.build_l0(project.store(), rt, required_only=True)
         if packed.over:
             act.block, act.guard_id = _over_notice(packed, "L0"), BUDGET_GUARD
+
+
+def packs_mod():
+    from . import packs  # noqa: PLC0415 -- see run()
+
+    return packs
+
+
+def _dispatch(payload: dict, project: Project, rt, act: Action, detail: dict) -> None:
+    """R1-d AC-3: the unit's pack agent type, through `updatedInput` (CORE-02)."""
+    block, updated, note = packs_mod().dispatch(payload, project.store(), rt)
+    if note:
+        detail["pack_dispatch"] = note
+    if block:
+        act.block, act.guard_id = block, packs_mod().GUARD_ID
+    elif updated is not None:
+        act.updated_input = updated
+        act.context = (f"[ULTHAR] 送り出し先の型を {updated['subagent_type']} に書き換えました"
+                       f"（{note}。単位のパックの担当だけが、そのパスに書けます）。")
+
+
+def _pre_writes(payload: dict, project: Project, rt, detail: dict, memo: dict) -> tuple:
+    """(block message, guard id) of R1-c AC-11 and R1-d AC-4 / AC-5 / AC-11, or (None, None)."""
+    from . import gitref  # noqa: PLC0415 -- see run()
+    from . import product  # noqa: PLC0415
+
+    packs = packs_mod()
+    agent = payload.get("agent_id")
+    if agent and (payload.get("tool_name") in WRITE_TOOLS or product.targets(payload)):
+        msg = packs.refused(rt, agent)
+        if msg:
+            return msg, packs.GUARD_ID
+    entries: list = []
+    msg = product.check(payload, project.store, rt, detail, memo, entries)
+    if msg:
+        return msg, product.GUARD_ID
+    msg = packs.check_write(payload, entries, project.store(), rt)
+    if msg:
+        return msg, packs.GUARD_ID
+    msg = gitref.check(payload, project.store)
+    return (msg, gitref.GUARD_ID) if msg else (None, None)
 
 
 # ---------------------------------------------------------------------------- events
@@ -337,6 +385,23 @@ def _session_start(payload: dict, project: Project, rt, act: Action) -> None:
 def _subagent_start(payload: dict, project: Project, rt, act: Action) -> None:
     packed = memory.build_l1(project.store(), rt, _writer(payload, "SubagentStart"))
     act.context = (_over_notice(packed, "L1") if packed.over else packed.text)
+    packs = packs_mod()
+    row, why = packs.receipt(rt, payload)  # R1-d AC-4
+    if row is None and why is None:
+        return
+    agent = str(payload.get("agent_id") or "")
+
+    def after_insert(conn, event_id: int, detail: dict) -> None:
+        if row is not None:
+            packs.write_receipt(conn, row)
+            detail["receipt"] = {"pack": row["pack"], "agent_type": row["agent_type"]}
+        else:
+            packs.refuse_agent(conn, agent, str(payload.get("agent_type")), why)
+            detail["receipt_refused"] = why
+    act.after_insert = after_insert
+    if why:
+        act.context = (f"[ULTHAR] 受領記録を作れませんでした（{why}）。この担当の書き込みはすべて"
+                       "遮断されます。作業せず窓口に報告してください。\n" + (act.context or ""))
 
 
 def _post_ask(payload: dict, project: Project, act: Action) -> None:
@@ -363,10 +428,13 @@ def _post_ask(payload: dict, project: Project, act: Action) -> None:
 
 
 def _runner(payload: dict, project: Project, act: Action, request: dict) -> None:
-    """R1-c AC-4/AC-7: a subagent's `ulthar review record|verify` gets a runner token."""
-    if not payload.get("agent_id") or not payload.get("tool_use_id"):
-        return  # a main-session call: no token, so the CLI records nothing
+    """R1-c AC-4/AC-7: a subagent's `ulthar review record|verify|run` gets a runner
+    token; R1-d AC-9: the window's `ulthar unit advance <u> integrated` does."""
     from . import tokens  # noqa: PLC0415 -- see run()
+
+    window_command = request["command"] in tokens.WINDOW_COMMANDS
+    if bool(payload.get("agent_id")) == window_command or not payload.get("tool_use_id"):
+        return  # no token, so the CLI records nothing
 
     token_id = os.urandom(16).hex()
     project_id = project.store().project_id
@@ -384,10 +452,10 @@ def run(event: str, payload: dict, rt, project: Project, detail: dict) -> Action
     act = Action()
     request = None
     if event == "PreToolUse":
-        # R1-c's unit modules load only for the events that use them (PreToolUse and the
-        # AskUserQuestion PostToolUse): hook latency, AC-14. An import failure raises here,
-        # inside the memory step, so a PreToolUse is still blocked (fail-closed).
-        from . import product  # noqa: PLC0415
+        # The unit modules (R1-c product/tokens, R1-d packs/gitref) load only for the
+        # events that use them (PreToolUse, SubagentStart, the AskUserQuestion
+        # PostToolUse): hook latency, AC-14. An import failure raises inside the memory
+        # step, so a PreToolUse is still blocked (fail-closed).
         from . import tokens  # noqa: PLC0415
 
         memo: dict = {}  # path forms, shared by the store guard and the scope check
@@ -399,9 +467,9 @@ def run(event: str, payload: dict, rt, project: Project, detail: dict) -> Action
         if msg:
             act.block, act.guard_id = msg, tokens.RUNNER_GUARD
             return act
-        msg = product.check(payload, project.store, rt, detail, memo)
+        msg, guard = _pre_writes(payload, project, rt, detail, memo)
         if msg:
-            act.block, act.guard_id = msg, product.GUARD_ID
+            act.block, act.guard_id = msg, guard
             return act
     if extract.in_extractor():
         return act

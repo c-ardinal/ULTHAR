@@ -10,6 +10,8 @@ A contract is a YAML mapping (design §6.1, R1-c AC-2):
                     lo_incl, hi_incl} | null, evidence_kind, rubric: {levels, good, bad}
                     (qual), sources: [...], artifacts: [<repo path>, ...] (optional)}
     budget:      {loops: <positive integer> | null}
+    packs:       [<pack name>, ...]                 (optional; R1-d SKL-02)
+    write_cmds:  {<name>: <command>, ...}           (optional; R1-d AC-7, `ulthar run`)
 Structure errors (a missing element, a wrong type, YAML that does not parse) refuse the
 submission; content rules are the lint's (AC-3):
     LINT-A  no vague word (U-05, case-insensitive) in a statement, threshold, rubric or
@@ -22,6 +24,8 @@ submission; content rules are the lint's (AC-3):
     LINT-F  qualitative ACs are at most 30 % (30 % passes) and each has a rubric with
             levels, good examples and bad examples
     LINT-G  at least 2 intent alternatives, and the interpretation is one of them
+    LINT-H  (R1-d, SKL-02) the declared packs are exactly the packs whose path_globs meet
+            a scope glob (a pack definition that cannot be read is a violation too)
 """
 from __future__ import annotations
 
@@ -29,10 +33,10 @@ import shutil
 from pathlib import Path
 
 from . import shellwords
+from .acshape import check_ac, is_str_list as _is_str_list
 
 VAGUE_WORDS = ("適切に", "いい感じ", "なるべく", "十分", "必要に応じて", "適宜", "可能な限り",
                "など", "等", "appropriate", "as needed", "reasonable", "properly")  # U-05
-KINDS = ("quant", "qual")
 QUAL_RATIO_MAX = 0.30
 RUBRIC_KEYS = ("levels", "good", "bad")
 
@@ -67,46 +71,6 @@ def parse(data: bytes) -> dict:
     return doc
 
 
-def _is_str_list(v) -> bool:
-    return isinstance(v, list) and all(isinstance(x, str) for x in v)
-
-
-def _is_num(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
-
-
-def _check_threshold(where: str, th) -> list[str]:
-    if th is None:
-        return []
-    if not isinstance(th, dict) or set(th) - {"lo", "hi", "lo_incl", "hi_incl"}:
-        return [f"{where}.threshold must be a mapping of lo, hi, lo_incl, hi_incl (or null)"]
-    out = [f"{where}.threshold.{k} must be a number or null"
-           for k in ("lo", "hi") if th.get(k) is not None and not _is_num(th.get(k))]
-    out += [f"{where}.threshold.{k} must be true or false"
-            for k in ("lo_incl", "hi_incl") if k in th and not isinstance(th[k], bool)]
-    return out
-
-
-def _check_ac(i: int, ac) -> list[str]:
-    where = f"acs[{i}]"
-    if not isinstance(ac, dict):
-        return [f"{where} must be a mapping"]
-    out = [f"{where}.{k} is missing" for k in ("id", "statement", "kind", "verify_cmd",
-                                               "evidence_kind", "sources") if k not in ac]
-    out += [f"{where}.{k} must be a string" for k in ("id", "statement", "verify_cmd",
-                                                      "evidence_kind")
-            if k in ac and not isinstance(ac[k], str)]
-    if "kind" in ac and ac["kind"] not in KINDS:
-        out.append(f"{where}.kind must be one of {KINDS}")
-    if "sources" in ac and not _is_str_list(ac["sources"]):
-        out.append(f"{where}.sources must be a list of strings")
-    if "artifacts" in ac and not _is_str_list(ac["artifacts"]):
-        out.append(f"{where}.artifacts must be a list of repository paths")
-    if ac.get("rubric") is not None and not isinstance(ac["rubric"], dict):
-        out.append(f"{where}.rubric must be a mapping (levels, good, bad) or null")
-    return out + _check_threshold(where, ac.get("threshold"))
-
-
 def validate(doc) -> list[str]:
     if not isinstance(doc, dict):
         return ["the contract must be a YAML mapping"]
@@ -135,10 +99,16 @@ def validate(doc) -> list[str]:
             out.append("acs must be a non-empty list")
         else:
             for i, ac in enumerate(acs):
-                out += _check_ac(i, ac)
+                out += check_ac(f"acs[{i}]", ac)
             ids = [ac.get("id") for ac in acs if isinstance(ac, dict)]
             if len(ids) != len(set(ids)):
                 out.append("acs ids must be unique")
+    if "packs" in doc and not _is_str_list(doc["packs"]):
+        out.append("packs must be a list of pack names")
+    cmds = doc.get("write_cmds")
+    if "write_cmds" in doc and not (isinstance(cmds, dict) and all(
+            isinstance(k, str) and k and isinstance(v, str) and v.strip() for k, v in cmds.items())):
+        out.append("write_cmds must be a mapping of name -> command")
     budget = doc.get("budget")
     if "budget" in doc:
         if not isinstance(budget, dict) or "loops" not in budget:
@@ -198,9 +168,26 @@ def _alt_names(alts: list) -> set[str]:
     return out
 
 
-def lint(doc: dict, repo: Path) -> list[tuple[str, str]]:
-    """[(rule id, message)] for a validated contract; [] = it passes."""
-    out: list[tuple[str, str]] = []
+def _lint_packs(doc: dict, packs) -> list[tuple[str, str]]:
+    """LINT-H: `packs` is the project's pack list, or the PackError text."""
+    if isinstance(packs, str):
+        return [("LINT-H", f"the pack definitions cannot be read: {packs}")]
+    from .packs import inferred  # noqa: PLC0415 -- CLI only; packs is hook-safe, nothing heavy
+
+    declared = sorted(set(doc.get("packs") or []))
+    unknown = sorted(set(declared) - {p["name"] for p in packs})
+    want = inferred(doc["scope_globs"], packs)
+    out = [("LINT-H", f"packs {unknown} are not defined in .claude/ulthar.json")] if unknown else []
+    if declared != want:
+        out.append(("LINT-H", f"packs declares {declared}, but scope_globs meet the path_globs of "
+                              f"{want}: declare exactly the packs the scope touches"))
+    return out
+
+
+def lint(doc: dict, repo: Path, packs=()) -> list[tuple[str, str]]:
+    """[(rule id, message)] for a validated contract; [] = it passes. `packs`: the
+    project's skill packs (ulthar.packs.load), or the text of the error reading them."""
+    out: list[tuple[str, str]] = _lint_packs(doc, packs)
     intent = doc["intent"]
     for word in _vague(intent["interpretation"]):
         out.append(("LINT-A", f"intent.interpretation contains the vague word 「{word}」"))
@@ -252,6 +239,6 @@ def lint(doc: dict, repo: Path) -> list[tuple[str, str]]:
 
 def summary(doc: dict) -> dict:
     """What the unit's record keeps of a confirmed contract (hooks read it from index.db)."""
-    return {"scope_globs": list(doc["scope_globs"]),
+    return {"scope_globs": list(doc["scope_globs"]), "packs": list(doc.get("packs") or []),
             "acs": [{"id": ac["id"], "kind": ac["kind"]} for ac in doc["acs"]],
             "loops": doc["budget"]["loops"]}
