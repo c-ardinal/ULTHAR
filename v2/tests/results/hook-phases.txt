@@ -690,3 +690,49 @@ SubagentStart      shutil   p50  351.2  p95  953.6  p99 1115.7  min  252.0  max 
 UserPromptSubmit   e529293  p50  305.4  p95  765.9  p99 1135.4  min  267.8  max 1408.6
 UserPromptSubmit   c36f9b9  p50  313.7  p95  609.1  p99  885.7  min  275.7  max  961.3
 UserPromptSubmit   shutil   p50  295.6  p95  593.3  p99 1030.9  min  238.8  max 5469.1
+
+
+######## R1-d (2026-11-13), feature/v2-r1d ecedd02 vs develop ba08b5d -- NOT acceptance ########
+PC saturated by other sessions the whole time: CPU 96-99 % (psutil, 5 s) before and after the
+A/B, other sessions' python/node jobs running; p50 is ~2x the quiet level, so whole-call p50/p95
+resolve only large changes. The 3-run judgement (AC-16) is the PM's, in an idle window.
+
+What R1-d adds per call (design):
+  * every event with a session: lease acquire/renew + fencing token, inside the events-row
+    transaction (1 SELECT + 2 UPDATE, no extra commit, no extra open);
+  * PreToolUse of a subagent's write or a product write: the receipt-refusal lookup, the pack
+    definitions validated (skill SKILL.md stats, glob intersection), the receipt lookup
+    (ulthar.packs, loaded only for such calls); Bash/PowerShell mentioning git: ulthar.gitref
+    (HEAD read from .git, no process); Agent launches: the AC-3 dispatch;
+  * SubagentStart of a pack agent: the definition + its SKILL.md files hashed, a receipts row;
+  * PostToolUse of a write tool: the post-hash is computed in-process when no git filter can
+    apply (hook._plain_blob) -- `git hash-object` started a process (~70 ms on this PC, measured
+    `git --version` 69-88 ms) on every such call before; CRLF / `$Id` / attributes files still
+    go to git.
+
+== in-process phases (profile_hook.py, 10 calls each, saturated PC; R1-d rows only) ==
+PreToolUse:Edit (ui creator, receipt held):  R1-c/R1-d write checks 6.6 ms = unit scope (R1-c)
+                                             4.4 + pack rule 2.1 (of which definitions 1.9);
+                                             lease 0.1
+PostToolUse:Edit (LF file):                  post-hash 40.0 ms (in-process; the file was written
+                                             just before the call, so the read includes the
+                                             on-access scan); lease 0.1
+SubagentStart (ulthar-creator@ui, 5 skills): receipt check 2.5 ms; lease 0.2
+UserPromptSubmit / PreToolUse Bash:          lease 0.1
+
+== interleaved hook calls, 60/event, both trees exported to the same scratch dir, order
+   alternated per round (ab_hooks.py; production hook form `python -S __main__.py hook`) ==
+PostToolUse:Edit   ba08b5d  p50  945.5  p95 2020.2  min  294.4  max 2790.2  n=60
+PostToolUse:Edit   r1d      p50  593.7  p95 1557.2  min  226.8  max 2478.8  n=60
+PreToolUse         ba08b5d  p50  584.1  p95 1470.8  min  250.1  max 2375.8  n=60
+PreToolUse         r1d      p50  545.4  p95 1221.6  min  245.2  max 1630.7  n=60
+PreToolUse:Edit    ba08b5d  p50  619.0  p95 1111.0  min  263.6  max 1549.3  n=60
+PreToolUse:Edit    r1d      p50  636.8  p95 1241.5  min  264.6  max 1715.2  n=60
+SubagentStart      ba08b5d  p50  626.8  p95 1550.8  min  243.3  max 1774.2  n=60
+SubagentStart      r1d      p50  585.4  p95 1446.0  min  245.9  max 3123.3  n=60
+UserPromptSubmit   ba08b5d  p50  606.4  p95 1703.9  min  274.2  max 2980.1  n=60
+UserPromptSubmit   r1d      p50  490.5  p95 1381.6  min  242.6  max 1938.7  n=60
+(ba08b5d's Edit is a plain builder without packs; r1d's is the ui creator with the pack rule.)
+Reading: min values -- the least disturbed calls -- are equal within ~5 ms except PostToolUse
+(-68 ms, the in-process post-hash); p50/p95 move by more than that between runs of the same
+code (an earlier run of the same pair: PreToolUse:Edit p50 527 vs 598, PostToolUse 626 vs 472).
