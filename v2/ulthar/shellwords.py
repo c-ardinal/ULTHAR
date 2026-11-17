@@ -121,21 +121,29 @@ def _unquoted_heredocs(line: str) -> list[tuple[str, bool]]:
     return found
 
 
-def strip_heredocs(command: str) -> str:
-    """A Bash command with the bodies of its here-documents left out -- the lines after a
+def split_heredocs(command: str) -> tuple[str, list[tuple[str, str, str]]]:
+    """A Bash command with the bodies of its here-documents taken out -- the lines after a
     line with an unquoted `<<WORD` / `<<-WORD` / `<<'WORD'` / `<<"WORD"`, up to the line
-    that is exactly WORD (leading tabs stripped for `<<-`) -- so their text is never read
-    as commands. An unterminated body runs to the end, as in Bash."""
-    out, pending = [], []
+    that is exactly WORD (leading tabs stripped for `<<-`); an unterminated body runs to
+    the end, as in Bash. Returns (the remaining text, [(the line that opened it, WORD,
+    the body)]): the caller judges each body by what reads it."""
+    out, pending, bodies, current = [], [], [], []
     for line in command.split("\n"):
         if pending:
-            word, tabs = pending[0]
+            opener, word, tabs = pending[0]
             if (line.lstrip("\t") if tabs else line).rstrip("\r") == word:
+                bodies.append((opener, word, "\n".join(current)))
                 pending.pop(0)
+                current = []
+            else:
+                current.append(line)
             continue
         out.append(line)
-        pending += _unquoted_heredocs(line)
-    return "\n".join(out)
+        pending += [(line, word, tabs) for word, tabs in _unquoted_heredocs(line)]
+    if pending:
+        bodies.append((pending[0][0], pending[0][1], "\n".join(current)))
+        bodies += [(opener, word, "") for opener, word, _ in pending[1:]]
+    return "\n".join(out), bodies
 
 
 def variants(command: str, tool: str | None) -> list[list[str]]:

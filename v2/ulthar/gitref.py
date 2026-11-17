@@ -5,12 +5,23 @@ In a project with `.claude/ulthar.json`, every Bash / PowerShell command is read
 git in COMMAND POSITION: the first word of a segment (after VAR=x assignments), after
 the wrappers xargs / env / command / exec / nice / time / timeout / sudo / nohup /
 stdbuf (and their options), at a `$(` / backtick / `(` / `{` opening, and inside a
-child shell: `bash -c` / `sh -c` take their one script argument, `cmd /c` / `cmd /k` and
-`powershell -Command` / `-c` the whole rest of the line, quoted or not (PowerShell's `&`
-call operator splits the segment, so `& git ...` is a segment of its own). `echo git
-commit` or `grep "git reset" f` is no git call, nor is the body of a Bash here-document
-(`<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`: shellwords.strip_heredocs) -- the line that
-opens it is read as usual. A call is blocked when it would move a guarded branch -- the config's
+child shell whose launcher is itself in command position: `bash -c` / `sh -c` take their
+one script argument, `cmd /c` / `cmd /k` and `powershell -Command` / `-c` the whole rest
+of the line, quoted or not (PowerShell's `&` call operator splits the segment, so `& git
+...` is a segment of its own). `echo git commit`, `grep "git reset" f` and `echo cmd /c
+git ...` are no git calls.
+Input that gets executed is read as a command too:
+  * a Bash here-document body (`<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`;
+    shellwords.split_heredocs) is judged by what reads it -- the command that has the
+    operator and every later stage of its pipeline: an executor (bash / sh / zsh / dash /
+    ksh / source, powershell / pwsh, cmd, iex / Invoke-Expression / Invoke-Command, xargs
+    with its command) -> the body as a nested command; a display / filter command (cat,
+    grep, head, tee, ...) or git (whose reading of stdin the rules above judge) -> inert;
+    anything else -> blocked when the body mentions git or a guarded ref;
+  * a redirection operand of an executor (`bash <<< "..."`) and, in a pipeline into an
+    executor (`echo ... | bash`, PowerShell `@'...'@ | iex`, `... | powershell -Command
+    -`), the producer's text; a pipeline into any other non-display command is blocked
+    when that text mentions git or a guarded ref. A call is blocked when it would move a guarded branch -- the config's
 `integration_branch` (default develop) and `protected_branches` (default main, master):
   * merge / pull / commit / rebase / cherry-pick / revert / am / reset while that branch
     is checked out (the HEAD of the repository the command runs in, read from .git);
@@ -72,6 +83,18 @@ VALUED = frozenset({"-C", "-c", "--git-dir", "--work-tree"})
 CHILD_SHELLS = {"cmd": ("cmd", frozenset({"/c", "/k"})),
                 "powershell": ("PowerShell", frozenset({"-command", "-c", "-commandwithargs"})),
                 "pwsh": ("PowerShell", frozenset({"-command", "-c", "-commandwithargs"}))}
+POSIX_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "ash"})
+EXECUTORS = {**{sh: "Bash" for sh in POSIX_SHELLS}, "source": "Bash", ".": "Bash",
+             "powershell": "PowerShell", "pwsh": "PowerShell", "iex": "PowerShell",
+             "invoke-expression": "PowerShell", "invoke-command": "PowerShell",
+             "icm": "PowerShell", "cmd": "cmd", "xargs": "Bash"}
+INERT_READERS = PRINTERS | frozenset({
+    "egrep", "fgrep", "wc", "sort", "uniq", "tee", "tee-object", "tr", "cut", "column",
+    "diff", "cmp", "jq", "base64", "od", "xxd", "md5sum", "sha1sum", "sha256sum", "true",
+    "false", "out-file", "set-content", "add-content", "out-null", "measure-object",
+    "git"})  # git: its own stdin forms (update-ref --stdin, fast-import) are judged as git
+MENTIONS_GIT = re.compile(r"(?<![\w-])git(?![\w-])", re.I)
+MAX_DEPTH = 6
 WRAPPER_VALUE_OPTIONS = {
     "xargs": frozenset({"-I", "-n", "-L", "-P", "-d", "-E", "-s", "-a", "--max-args",
                         "--max-lines", "--max-procs", "--delimiter", "--arg-file"}),
@@ -110,7 +133,6 @@ BRANCH_MOVES = frozenset({"-f", "--force", "-m", "-M", "--move", "-c", "-C", "--
 CREATE_FORCE = {"checkout": frozenset({"-B"}), "switch": frozenset({"-C", "--force-create"})}
 OPENERS = ("$(", "`", "(", "{")
 ASSIGNMENT = re.compile(r"^\w+=")
-NESTED_DEPTH = 2
 ALIAS_DEPTH = 5
 
 
@@ -448,28 +470,114 @@ def _why(sub: str, args: list[str], ctx: _Ctx, depth: int = 0) -> str | None:
     return None
 
 
-def _child(seg: list[str], k: int, tool: str) -> tuple[str, str]:
-    """(command text, tool) a child shell runs for the option at seg[k]: cmd /c|/k and
-    powershell -Command|-c take the whole rest of the segment, bash/sh -c its one argument."""
-    opt = seg[k].casefold()
-    for word in reversed(seg[:k]):
-        launcher = shellwords.basename(word).removesuffix(".exe")
-        if launcher in CHILD_SHELLS and opt in CHILD_SHELLS[launcher][1]:
-            return " ".join(seg[k + 1:]), CHILD_SHELLS[launcher][0]
-        if launcher in ("bash", "sh"):
-            return seg[k + 1], "Bash"
-    return seg[k + 1], tool
+def _exe(words: list[str]) -> str:
+    return shellwords.basename(words[0]).removesuffix(".exe") if words else ""
 
 
-def _segments(command: str, tool: str, depth: int = 0):
-    text = shellwords.strip_heredocs(command) if tool == "Bash" else command
-    for toks in shellwords.variants(text, tool):
-        for seg in shellwords.segments(toks):
-            yield seg
-            if depth < NESTED_DEPTH:
-                for k in range(len(seg) - 1):
-                    if seg[k].casefold() in shellwords.COMMAND_OPTIONS:
-                        yield from _segments(*_child(seg, k, tool), depth + 1)
+def _child(words: list[str]) -> tuple[str, str] | None:
+    """(command text, tool) a child shell in command position runs: cmd /c|/k and
+    powershell -Command|-c take the whole rest, bash/sh -c its one script argument."""
+    exe = _exe(words)
+    for k in range(1, len(words) - 1):
+        opt = words[k].casefold()
+        if exe in CHILD_SHELLS and opt in CHILD_SHELLS[exe][1]:
+            return " ".join(words[k + 1:]), CHILD_SHELLS[exe][0]
+        if exe in POSIX_SHELLS and opt == "-c":
+            return words[k + 1], "Bash"
+    return None
+
+
+def _pipelines(toks: list[str]) -> list[list[list[str]]]:
+    """Pipelines (split at ; && || & and newlines) of stages (split at |), raw tokens."""
+    out, pipe, stage = [], [], []
+    for tok in toks + [";"]:
+        if tok == "|":
+            pipe.append(stage)
+            stage = []
+        elif tok in shellwords.SEPARATORS:
+            pipe.append(stage)
+            out.append([s for s in pipe if s])
+            pipe, stage = [], []
+        else:
+            stage.append(tok)
+    return [p for p in out if p]
+
+
+def _stage_command(stage: list[str]) -> list[str]:
+    """The command a stage runs, in command position -- for xargs the xargs words
+    themselves, as what xargs runs takes its arguments from the input."""
+    words = [w for w in stage if w not in (shellwords.REDIRECT, shellwords.INPUT)]
+    while words and ASSIGNMENT.match(words[0]):
+        words = words[1:]
+    if words and _exe(words) == "xargs":
+        return words
+    found = commands(stage)
+    return found[0] if found else []
+
+
+def _redirect_operands(stage: list[str]) -> list[str]:
+    return [b for a, b in zip(stage, stage[1:])
+            if a in (shellwords.REDIRECT, shellwords.INPUT) and b not in
+            (shellwords.REDIRECT, shellwords.INPUT)]
+
+
+def _produced(words: list[str]) -> str:
+    """What a pipeline stage writes to the next one, as far as the text shows it: a
+    display command's arguments, a PowerShell here-string's content, else its words."""
+    keep = words[1:] if _exe(words) in INERT_READERS else words
+    return " ".join(w.strip("@").strip() if w.startswith("@") else w for w in keep)
+
+
+def _executed(text: str, consumer: list[str], ctx: "_Ctx", depth: int,
+              what: str) -> str | None:
+    """Judges `text` fed to `consumer` (command-position words)."""
+    exe = _exe(consumer)
+    if exe in EXECUTORS:
+        if exe == "xargs":
+            inner = _unwrap(consumer)
+            text = " ".join(inner + text.split()) if inner else text
+        why = _why_text(text, EXECUTORS[exe], ctx, depth + 1)
+        return f"{what} run by {exe}: {why}" if why else None
+    if exe in INERT_READERS or not text.strip():
+        return None
+    if MENTIONS_GIT.search(text) or _guarded_ref(text.split(), ctx.names):
+        return (f"{what} is read by `{consumer[0]}`, which ulthar cannot tell from an executor, "
+                "and it mentions git or a guarded branch")
+    return None
+
+
+def _why_stdin(pipeline: list[list[str]], ctx: "_Ctx", depth: int) -> str | None:
+    """Here-strings, redirection operands of executors, pipelines into executors."""
+    cmds = [_stage_command(stage) for stage in pipeline]
+    for k, stage in enumerate(pipeline):
+        if cmds[k] and _exe(cmds[k]) in EXECUTORS and _exe(cmds[k]) != "xargs":
+            for operand in _redirect_operands(stage):
+                why = _executed(operand, cmds[k], ctx, depth, "a redirected input")
+                if why:
+                    return why
+        for later in cmds[k + 1:]:
+            if later and cmds[k]:
+                why = _executed(_produced(cmds[k]), later, ctx, depth, "piped input")
+                if why:
+                    return why
+    return None
+
+
+def _why_heredoc(opener: str, word: str, body: str, ctx: "_Ctx", depth: int) -> str | None:
+    """A here-document body, judged by the commands that read it."""
+    for pipeline in _pipelines(shellwords.tokenize(opener, "\\")):
+        cmds = [_stage_command(stage) for stage in pipeline]
+        for k, stage in enumerate(pipeline):
+            if any(a in (shellwords.REDIRECT, shellwords.INPUT) and b.lstrip("-") == word
+                   for a, b in zip(stage, stage[1:])):
+                for consumer in [c for c in cmds[k:] if c]:
+                    why = _executed(body, consumer, ctx, depth, f"the here-document <<{word}")
+                    if why:
+                        return why
+                return None
+    if MENTIONS_GIT.search(body) or _guarded_ref(body.split(), ctx.names):
+        return f"a here-document (<<{word}) whose reader cannot be told mentions git"
+    return None
 
 
 def _why_command(words: list[str], ctx: _Ctx, depth: int) -> str | None:
@@ -490,9 +598,24 @@ def _why_command(words: list[str], ctx: _Ctx, depth: int) -> str | None:
 
 
 def _why_text(command: str, tool: str, ctx: _Ctx, depth: int = 0) -> str | None:
-    for seg in _segments(command, tool):
-        for words in commands(seg):
-            why = _why_command(words, ctx, depth)
+    if depth > MAX_DEPTH:
+        return f"commands nested deeper than {MAX_DEPTH} levels"
+    text, heredocs = shellwords.split_heredocs(command) if tool == "Bash" else (command, [])
+    for opener, word, body in heredocs:
+        why = _why_heredoc(opener, word, body, ctx, depth)
+        if why:
+            return why
+    for toks in shellwords.variants(text, tool):
+        for pipeline in _pipelines(toks):
+            for stage in pipeline:
+                for words in commands(stage):
+                    why = _why_command(words, ctx, depth)
+                    nested = _child(words) if not why else None
+                    if nested is not None:
+                        why = _why_text(*nested, ctx, depth + 1)
+                    if why:
+                        return why
+            why = _why_stdin(pipeline, ctx, depth)
             if why:
                 return why
     return None

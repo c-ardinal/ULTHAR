@@ -87,6 +87,7 @@ def _indirection(p: Probe, sb) -> None:
     git(sb, "checkout", "-q", WORK_BRANCH)
     _config_aliases(p, sb)
     _child_shells(p, sb)
+    _round4(p, sb)
 
 
 def _command_position(p: Probe, sb) -> None:
@@ -133,6 +134,40 @@ def _child_shells(p: Probe, sb) -> None:
         res = _shell(sb, tool, command)
         p.check(f"AC-11 (review r1d-3 #2): blocked -- {tool}: `{command}`",
                 res.returncode == 2 and GUARD in res.stderr, res.stderr[-300:])
+
+
+UPDATE = "git update-ref refs/heads/develop HEAD"
+
+
+def _round4(p: Probe, sb) -> None:
+    """Review r1d-4, work branch: input that gets executed is a command; child-shell text
+    given to a display command is not."""
+    executed = [
+        ("Bash", f"bash <<EOF\n{UPDATE}\nEOF", "bash <<EOF"),
+        ("Bash", f"sh -s <<EOF\n{UPDATE}\nEOF", "sh -s <<EOF"),
+        ("Bash", f"zsh <<'EOF'\n{UPDATE}\nEOF", "zsh <<'EOF'"),
+        ("Bash", f"cat <<EOF | bash\n{UPDATE}\nEOF", "cat <<EOF | bash"),
+        ("Bash", "cat <<EOF | xargs git update-ref\nrefs/heads/develop HEAD\nEOF", "cat <<EOF | xargs"),
+        ("Bash", f'bash <<< "{UPDATE}"', "bash <<< here-string"),
+        ("Bash", f"echo {UPDATE} | bash", "echo ... | bash"),
+        ("Bash", f"powershell -Command - <<EOF\n{UPDATE}\nEOF", "powershell -Command - <<EOF"),
+        ("Bash", f"echo {UPDATE} | powershell -Command -", "echo ... | powershell -Command -"),
+        ("PowerShell", f"@'\n{UPDATE}\n'@ | iex", "PowerShell @'...'@ | iex"),
+        ("PowerShell", f"@'\n{UPDATE}\n'@ | Invoke-Expression", "PowerShell @'...'@ | Invoke-Expression"),
+        ("Bash", f"python - <<EOF\nimport os\nos.system('{UPDATE}')\nEOF",
+         "an unclassified reader (python) of a body mentioning git"),
+    ]
+    for tool, command, name in executed:
+        res = _shell(sb, tool, command)
+        p.check(f"AC-11 (review r1d-4 #1): blocked -- {name}", res.returncode == 2 and GUARD in res.stderr,
+                res.stderr[-300:])
+    inert = [f"cat <<'EOF'\n{UPDATE}\nEOF", f"cat <<EOF | grep develop\n{UPDATE}\nEOF",
+             "python - <<EOF\nprint(1)\nEOF", f"echo cmd /c {UPDATE}",
+             f"echo powershell -Command {UPDATE}", f"grep cmd /c {UPDATE}"]
+    for command in inert:
+        res = bash(sb, None, command)
+        p.check(f"AC-11 (review r1d-4 #1/#2): allowed -- `{command.splitlines()[0]}`",
+                res.returncode == 0, res.stderr[-300:])
 
 
 def _config_aliases(p: Probe, sb) -> None:
