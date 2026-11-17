@@ -10,11 +10,13 @@ UI change; the window drafts contracts; creators and an evaluator work as subage
       committed -> the integration stops: unattributed, reason (b);
   (4) a regular Edit (post-hash recorded), then an undeclared command overwrites the file,
       committed -> the integration stops: unattributed, reason (b);
-  (5) session A's lease lapses, session B takes it, then A's creator writes a file,
-      committed -> the integration (by the lease holder B) stops: reason (d).
-      Since R1-e (AC-1) that Edit is already blocked at write time; the file then reaches
-      the tree by a route the PreToolUse does not see (only its PostToolUse is recorded,
-      as test_integrate's (d) case does), and the integration still stops it with (d).
+  (5) (owner-corrected wording) A's lease lapses and B acquires a new token; afterwards A
+      writes with the old token and commits -> the integration (by the lease holder B)
+      stops with (d). A change written with a then-valid token before the lapse is not
+      stopped. Since R1-e (AC-1) A's Edit after the lapse is already blocked at write time;
+      the file then reaches the tree by a route the PreToolUse does not see (only its
+      PostToolUse is recorded, as test_integrate's (d) case does), and the integration
+      still stops it with (d).
 """
 from __future__ import annotations
 
@@ -79,6 +81,8 @@ def check_cases(p: Probe) -> None:
         write(sb, "bld-1", "src/ui/a.txt", "ui v1\n", CREATOR, tool="Edit")
         write(sb, "bld-1", "src/ui/f.txt", "edited\n", CREATOR, tool="Edit")
         gen = bash(sb, "bld-1", "python tools/gen.py src/ui/f.txt", CREATOR)
+        valid = write(sb, "bld-1", "src/ui/before.txt", "with the valid token\n", CREATOR,
+                      tool="Edit")
         (sb.work / "src" / "ui" / "f.txt").write_text("generated\n", encoding="utf-8")
         expire_lease(sb)
         sb.hook("PreToolUse", {"session_id": OTHER, "tool_name": "Bash", "tool_input": {"command": "ls"}})
@@ -104,11 +108,13 @@ def check_cases(p: Probe) -> None:
         p.check("AC-13 (4): an Edit then an undeclared overwrite (allowed at write time), "
                 "committed -> unattributed (b)", ok, (res.stderr[-500:] if res else "") + str(listed))
         ok = (stale.returncode == 2 and "lease" in stale.stderr
-              and listed.get("src/ui/d.txt") == "d")
+              and listed.get("src/ui/d.txt") == "d"
+              and valid.returncode == 0 and "src/ui/before.txt" not in listed)
         held += ok
-        p.check("AC-13 (5): a write after the lease lapsed and B took it (blocked at write time "
-                "since R1-e AC-1; written anyway), committed -> unattributed (d)", ok,
-                str(listed) + stale.stderr[-200:])
+        p.check("AC-13 (5): A's lease lapses, B acquires a new token, then A writes with the old "
+                "token (blocked at write time since R1-e AC-1; written anyway) and commits -> "
+                "unattributed (d); A's write made with the then-valid token before the lapse is "
+                "not refused", ok, str(listed) + stale.stderr[-200:])
 
         shell = bash(sb, "bld-1", 'p=src; p=$p/ui/g.tsx; echo x > "$p"', CREATOR)
         (sb.work / "src" / "ui" / "g.tsx").write_text("x\n", encoding="utf-8")

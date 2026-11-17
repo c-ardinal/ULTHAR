@@ -603,7 +603,7 @@ def record_review(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, 
         if kind == "verify":
             from . import stages  # noqa: PLC0415
 
-            stages.check_evaluator(rt, unit, bound["agent_id"])
+            stages.check_evaluator(rt, store.project_id, unit, bound)
         ref = unit.get("contract") if kind == "contract" else unit.get("confirmed")
         if not ref:
             raise FlowError(f"unit {unit_id} has no {'submitted' if kind == 'contract' else 'confirmed'}"

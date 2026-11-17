@@ -314,7 +314,7 @@ def _pre_writes(payload: dict, project: Project, rt, detail: dict, memo: dict) -
         msg = packs_mod().check_write(payload, entries, project.store(), rt)
         if msg:
             return msg, packs_mod().GUARD_ID
-    if payload.get("tool_name") in SHELL_TOOLS and "git" in _shell_command(payload).casefold():
+    if payload.get("tool_name") in SHELL_TOOLS:  # also indirect spellings without "git"
         from . import gitref  # noqa: PLC0415
 
         msg = gitref.check(payload, project.store)
@@ -405,17 +405,22 @@ def _subagent_start(payload: dict, project: Project, rt, act: Action) -> None:
     packed = memory.build_l1(project.store(), rt, _writer(payload, "SubagentStart"))
     act.context = (_over_notice(packed, "L1") if packed.over else packed.text)
     packs = packs_mod()
-    row, why = packs.receipt(rt, payload)  # R1-d AC-4
+    project_id = project.store().project_id
+    try:
+        row, why = packs.receipt(rt, payload, project_id)  # R1-d AC-4
+    except Exception as exc:  # noqa: BLE001 -- review r1d-1: a failed check blocks the agent
+        row, why = None, f"the receipt check failed ({type(exc).__name__}: {exc})"
     if row is None and why is None:
         return
     agent = str(payload.get("agent_id") or "")
+    session = str(payload.get("session_id") or "")
 
     def after_insert(conn, event_id: int, detail: dict) -> None:
         if row is not None:
             packs.write_receipt(conn, row)
             detail["receipt"] = {"pack": row["pack"], "agent_type": row["agent_type"]}
         else:
-            packs.refuse_agent(conn, agent, str(payload.get("agent_type")), why)
+            packs.refuse_agent(conn, project_id, session, agent, str(payload.get("agent_type")), why)
             detail["receipt_refused"] = why
     act.after_insert = after_insert
     if why:

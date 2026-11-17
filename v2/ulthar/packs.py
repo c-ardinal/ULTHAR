@@ -11,7 +11,9 @@ reason; a hook that gets one blocks every product write (any could be a pack's).
 
 `ulthar pack install` (ulthar.packinstall) generates `ulthar-creator@<pack>` and
 `ulthar-evaluator@<pack>` and registers each file's sha256 and its SKILL.md files'
-sha256 in runtime.db `pack_agents`. Hook side:
+sha256 in runtime.db `pack_agents`. Every registration and receipt is bound to the
+project (review r1d-1 #2: one runtime.db serves every project), a receipt also to the
+parent session the subagent started in; every lookup below uses that binding. Hook side:
   * AC-3 `dispatch`: an Agent launch for a unit with packs whose subagent_type (absent =
     general-purpose, P-17) is not one of that unit's pack agents is rewritten to
     `ulthar-creator@<first pack>` through `updatedInput` (answered by the dispatcher,
@@ -197,8 +199,9 @@ def _block(why: str) -> str:
     return f"BLOCKED (ulthar skill pack, SKL-03): {why}"
 
 
-def registered(rt, agent: str) -> bool:
-    return rt.execute("SELECT 1 FROM pack_agents WHERE agent_type=?", (agent,)).fetchone() is not None
+def registered(rt, project_id: str, agent: str) -> bool:
+    return rt.execute("SELECT 1 FROM pack_agents WHERE project_id=? AND agent_type=?",
+                      (project_id, agent)).fetchone() is not None
 
 
 def unit_packs(unit: dict) -> list[str]:
@@ -243,7 +246,7 @@ def dispatch(payload: dict, store: store_mod.Store, rt) -> tuple[str | None, dic
     requested = ti.get("subagent_type") or DEFAULT_AGENT
     allowed = {agent_type(role, p) for p in wanted for role in ROLES}
     target = requested if requested in allowed else agent_type("creator", wanted[0])
-    if not registered(rt, target):
+    if not registered(rt, store.project_id, target):
         return _block(f"unit {unit['id']} needs {target}, which is not installed: run `ulthar pack "
                       "install --agents-dir <dir>` before the session starts (P-13)"), None, None
     if target == requested:
@@ -260,16 +263,16 @@ def file_sha(path: str | Path) -> str | None:
         return None
 
 
-def receipt(rt, payload: dict) -> tuple[dict | None, str | None]:
-    """(receipts row, None) for a verified pack agent, (None, why) for a pack-agent type
-    that fails, (None, None) for any other agent type."""
+def receipt(rt, payload: dict, project_id: str) -> tuple[dict | None, str | None]:
+    """(receipts row, None) for a pack agent verified against this project's registration,
+    (None, why) for a pack-agent type that fails, (None, None) for any other agent type."""
     kind = str(payload.get("agent_type") or "")
     if not AGENT_TYPE.match(kind):
         return None, None
-    reg = rt.execute("SELECT pack, def_path, def_sha, skills FROM pack_agents WHERE agent_type=?",
-                     (kind,)).fetchone()
+    reg = rt.execute("SELECT pack, def_path, def_sha, skills FROM pack_agents"
+                     " WHERE project_id=? AND agent_type=?", (project_id, kind)).fetchone()
     if reg is None:
-        return None, f"{kind} is not a registered pack agent (`ulthar pack install`)"
+        return None, f"{kind} is not a registered pack agent of this project (`ulthar pack install`)"
     pack, def_path, def_sha, skills = reg
     if file_sha(def_path) != def_sha:
         return None, f"{kind}: its definition {def_path} changed since `ulthar pack install`"
@@ -279,22 +282,25 @@ def receipt(rt, payload: dict) -> tuple[dict | None, str | None]:
             return None, f"{kind}: skill {s['name']} ({s['path']}) changed since `ulthar pack install`"
         hashes[s["name"]] = s["sha"]
     return {"agent_id": payload.get("agent_id"), "pack": pack, "agent_def_hash": def_sha,
-            "skill_hashes": hashes, "agent_type": kind}, None
+            "skill_hashes": hashes, "agent_type": kind, "project_id": project_id,
+            "session_id": str(payload.get("session_id") or "")}, None
 
 
 def write_receipt(rt, row: dict) -> None:
-    rt.execute("INSERT INTO receipts (agent_id, pack, agent_def_hash, skill_hashes, ts, agent_type)"
-               " VALUES (?,?,?,?,?,?)", (row["agent_id"], row["pack"], row["agent_def_hash"],
-                                        json.dumps(row["skill_hashes"]), store_mod.now_iso(),
-                                        row["agent_type"]))
+    rt.execute("INSERT INTO receipts (agent_id, pack, agent_def_hash, skill_hashes, ts, agent_type,"
+               " project_id, session_id) VALUES (?,?,?,?,?,?,?,?)",
+               (row["agent_id"], row["pack"], row["agent_def_hash"], json.dumps(row["skill_hashes"]),
+                store_mod.now_iso(), row["agent_type"], row["project_id"], row["session_id"]))
 
 
-def refuse_agent(rt, agent_id: str, kind: str, why: str) -> None:
-    rt.execute("INSERT OR REPLACE INTO agent_blocks (agent_id, agent_type, reason, ts)"
-               " VALUES (?,?,?,?)", (agent_id, kind, why, store_mod.now_iso()))
+def refuse_agent(rt, project_id: str, session_id: str, agent_id: str, kind: str, why: str) -> None:
+    rt.execute("INSERT OR REPLACE INTO agent_blocks (project_id, session_id, agent_id, agent_type,"
+               " reason, ts) VALUES (?,?,?,?,?,?)",
+               (project_id, session_id, agent_id, kind, why, store_mod.now_iso()))
 
 
 def refused(rt, agent_id: str) -> str | None:
+    """A refusal recorded in any project blocks that agent everywhere (fail-closed)."""
     row = rt.execute("SELECT reason FROM agent_blocks WHERE agent_id=?", (agent_id,)).fetchone()
     if row is None:
         return None
@@ -302,11 +308,17 @@ def refused(rt, agent_id: str) -> str | None:
                   "of it is blocked (AC-4). Launch a fresh pack agent after `ulthar pack install`.")
 
 
-def receipts_of(rt, agent_id: str, role: str | None = None) -> set[str]:
-    sql = "SELECT pack FROM receipts WHERE agent_id=?"
-    rows = rt.execute(sql, (agent_id,)).fetchall() if role is None else rt.execute(
-        sql + " AND agent_type LIKE ?", (agent_id, f"ulthar-{role}@%")).fetchall()
-    return {r[0] for r in rows}
+def receipts_of(rt, project_id: str, session_id: str | None, agent_id: str | None,
+                role: str | None = None) -> set[str]:
+    """The packs `agent_id` holds receipts for in this project and parent session."""
+    if not agent_id:
+        return set()
+    sql = "SELECT pack FROM receipts WHERE agent_id=? AND project_id=? AND session_id=?"
+    args = [agent_id, project_id, str(session_id or "")]
+    if role is not None:
+        sql += " AND agent_type LIKE ?"
+        args.append(f"ulthar-{role}@%")
+    return {r[0] for r in rt.execute(sql, args)}
 
 
 # ---------------------------------------------------------------------------- AC-5
@@ -331,7 +343,7 @@ def check_write(payload: dict, entries: list, store: store_mod.Store, rt) -> str
                           "never writes a pack's paths (spec 事前決定 2). Launch the unit's "
                           f"{agent_type('creator', sorted(need)[0])} to write it.")
         if have is None:
-            have = receipts_of(rt, agent)
+            have = receipts_of(rt, store.project_id, payload.get("session_id"), agent)
         if need - have:
             return _block(f"{label} belongs to pack {sorted(need)}, and this subagent holds no "
                           f"receipt for {sorted(need - have)} (it holds {sorted(have)}): only a "

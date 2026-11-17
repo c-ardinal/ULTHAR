@@ -4,10 +4,11 @@ function-level and relative imports alike); and the hook path -- every ulthar mo
 reachable from `__main__.py hook` (the dispatcher, its guards and helpers) -- never
 imports PyYAML: statically (no `yaml` import in any of those modules, at any level) and
 at run time (`sys.modules` after hook calls of every kind R1-c and R1-d add work to).
-R1-d AC-15 also: the hook modules R1-d adds import no standard-library module inside a
-function (no lazy stdlib import on the guard path; the one exception is lib/ctx.py's
-shutil, pinned by test_failclosed). R1-e AC-15: the same for the hook modules R1-e adds
-(isolation, external, notify); relay, caps, monitor and notifier stay off the hook path."""
+R1-d AC-15 also (review r1d-1 #6): no module of the whole computed hook closure
+(ulthar.hook included) imports a standard-library module inside a function, except the
+entries of LAZY_STDLIB_ALLOWED, each with its reason -- every other one fails. R1-e
+AC-15: the hook modules R1-e adds (isolation, external, notify) are in that closure under
+the same rule; relay, caps, monitor and notifier stay off the hook path."""
 from __future__ import annotations
 
 import ast
@@ -23,8 +24,24 @@ ALLOWED_THIRD_PARTY = {"psutil", "yaml"}
 CLI_ONLY = {"ulthar.contract", "ulthar.flow", "ulthar.evidence", "ulthar.cli", "ulthar.stages",
             "ulthar.integrate", "ulthar.runcmd", "ulthar.packinstall",
             "ulthar.relay", "ulthar.caps", "ulthar.monitor", "ulthar.notifier"}  # R1-e: CLI only
-R1D_HOOK_MODULES = ("ulthar.packs", "ulthar.lease", "ulthar.gitref", "ulthar.acshape")
+R1D_HOOK_MODULES = ("ulthar.packs", "ulthar.lease", "ulthar.gitref", "ulthar.acshape",
+                    "ulthar.posthash")
 R1E_HOOK_MODULES = ("ulthar.isolation", "ulthar.external", "ulthar.notify")
+PRE_R1D = "in develop before R1-d, not on the guard decision path"
+AS_V1 = "ported v1 code, where v1 has it (test_failclosed compares lib/ and guards/ with v1)"
+LAZY_STDLIB_ALLOWED = {
+    ("ulthar.hook", "subprocess"): "PostToolUse post-hash only (git hash-object); " + PRE_R1D,
+    ("ulthar.hook", "traceback"): "the pipeline-error path only; " + PRE_R1D,
+    ("ulthar.journal", "fcntl"): "platform-specific lock (POSIX); " + PRE_R1D,
+    ("ulthar.journal", "msvcrt"): "platform-specific lock (Windows); " + PRE_R1D,
+    ("ulthar.store", "winreg"): "platform-specific machine id (Windows); " + PRE_R1D,
+    ("ulthar.v1dispatch", "hashlib"): "the overlay notice marker only; " + PRE_R1D,
+    ("ulthar.lib.ctx", "shutil"): "the owner's single exception (Ctx.run_cmd, fail-closed)",
+    ("ulthar.lib.ctx", "json"): AS_V1,
+    ("ulthar.lib.ctx", "traceback"): AS_V1,
+    ("ulthar.lib.io", "ctypes"): AS_V1,
+    ("ulthar.guards.tool_discipline", "ctypes"): AS_V1,
+}
 
 
 def imported_roots(path: Path) -> list[tuple[int, str]]:
@@ -151,24 +168,26 @@ def check_hook_path(p: Probe) -> None:
 
 
 def check_no_lazy_stdlib(p: Probe) -> None:
-    """R1-d / R1-e AC-15: no standard-library import inside a function of the hook modules
-    R1-d and R1-e add."""
+    """R1-d / R1-e AC-15: no standard-library import inside a function anywhere on the hook
+    path, the justified LAZY_STDLIB_ALLOWED entries excepted."""
     stdlib = set(sys.stdlib_module_names)
     found = []
-    for name in R1D_HOOK_MODULES + R1E_HOOK_MODULES:
-        path = PACKAGE / f"{name.split('.')[-1]}.py"
+    closure = hook_closure()
+    for name, path in sorted(closure.items()):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for fn in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
             for node in ast.walk(fn):
-                if isinstance(node, ast.Import):
-                    found += [f"{name}:{node.lineno} {a.name}" for a in node.names
-                              if a.name.split(".")[0] in stdlib]
-                elif isinstance(node, ast.ImportFrom) and not node.level and (
-                        (node.module or "").split(".")[0] in stdlib):
-                    found.append(f"{name}:{node.lineno} {node.module}")
-    p.check(f"AC-15 (R1-d, R1-e): function-level stdlib imports in "
-            f"{', '.join(R1D_HOOK_MODULES + R1E_HOOK_MODULES)}: "
-            f"{len(found)}", not found, "\n       ".join(found))
+                mods = ([a.name for a in node.names] if isinstance(node, ast.Import) else
+                        [node.module or ""] if isinstance(node, ast.ImportFrom) and not node.level
+                        else [])
+                found += [f"{name}:{node.lineno} {m}" for m in mods if m.split(".")[0] in stdlib
+                          and (name, m.split(".")[0]) not in LAZY_STDLIB_ALLOWED]
+    p.check(f"AC-15 (R1-d, review #6): function-level stdlib imports on the hook path "
+            f"({len(closure)} modules, ulthar.hook included) beyond the {len(LAZY_STDLIB_ALLOWED)} "
+            f"justified exceptions: {len(found)}",
+            not found and "ulthar.hook" in closure
+            and all(m in closure for m in R1D_HOOK_MODULES + R1E_HOOK_MODULES),
+            "\n       ".join(found))
 
 
 def main() -> int:

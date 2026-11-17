@@ -53,6 +53,10 @@ def check_definitions(p: Probe) -> None:
         p.check("AC-1: an unknown skill is refused with the reason",
                 res.returncode != 0 and "unknown skill 'no-such-skill'" in res.stderr, res.stderr[-300:])
         p.check(f"AC-1: accepted 1/1, refused {refused}/3", good.returncode == 0 and refused == 3)
+        _config(sb, "ui")
+        res = cli(sb, "pack", "list")
+        p.check("AC-1: a present but non-list `packs` is refused with the reason",
+                res.returncode != 0 and "packs must be a list" in res.stderr, res.stderr[-300:])
     finally:
         sb.cleanup()
 
@@ -216,8 +220,68 @@ def check_write_rule(p: Probe) -> None:
         p.check("AC-1: when the hook cannot read the pack definitions, a product write that a "
                 "pack could own is blocked", res.returncode == 2 and "cannot be read" in res.stderr,
                 res.stderr[-300:])
+        _config(sb, {"name": "ui"})
+        res = write(sb, "c-ui", "src/ui/x3.txt", "x\n", CREATOR)
+        p.check("AC-1: a present but non-list `packs` blocks such a write too",
+                res.returncode == 2 and "packs must be a list" in res.stderr, res.stderr[-300:])
         p.check("AC-5 events carry the window session (P-18 shape)", bool(sb.query(
             "SELECT 1 FROM events WHERE agent_id='c-ui' AND session_id=?", (WINDOW,))))
+    finally:
+        sb.cleanup()
+
+
+def _project_b(sb):
+    """A second project sharing the sandbox's runtime.db: its own ui pack (other skill
+    texts), installed into its own agents directory."""
+    work_b = sb.root / "work-b"
+    for name in UI_SKILLS + API_SKILLS:
+        md = work_b / ".claude" / "skills" / name / "SKILL.md"
+        md.parent.mkdir(parents=True)
+        md.write_text(f"---\nname: {name}\ndescription: project B's {name}\n---\nB rule\n",
+                      encoding="utf-8")
+    sb.configure(["none"], work=work_b, non_product_globs=[], packs=pack_defs())
+    res = sb.cli("pack", "install", "--agents-dir", str(sb.root / "agents-b"), cwd=work_b)
+    return work_b, res
+
+
+def check_project_scope(p: Probe) -> None:
+    """Review r1d-1 #2: registrations and receipts are bound to the project (and a receipt
+    to its parent session)."""
+    sb = new_r1d_sandbox()
+    try:
+        unit_id = to_build(sb)
+        project_a = sb.store().project_id
+        before = sb.query("SELECT agent_type, def_path, def_sha, skills FROM pack_agents"
+                          " WHERE project_id=? ORDER BY agent_type", (project_a,))
+        work_b, res = _project_b(sb)
+        after = sb.query("SELECT agent_type, def_path, def_sha, skills FROM pack_agents"
+                         " WHERE project_id=? ORDER BY agent_type", (project_a,))
+        total = sb.query("SELECT COUNT(*) FROM pack_agents")[0][0]
+        p.check("review #2: installing ulthar-creator@ui in project B leaves project A's "
+                "registration unchanged (both kept)", res.returncode == 0 and before == after
+                and len(after) == 4 and total == 8, res.stderr[-300:])
+        start_agent(sb, "c-a", CREATOR)
+        ok = write(sb, "c-a", "src/ui/a1.txt", "a\n", CREATOR)
+        p.check("review #2: project A's creator still gets its receipt and writes",
+                ok.returncode == 0, ok.stderr[-300:])
+        sb.hook("SubagentStart", {"session_id": WINDOW, "agent_id": "c-b", "agent_type": CREATOR,
+                                  "cwd": str(work_b)})
+        in_b = sb.query("SELECT project_id FROM receipts WHERE agent_id='c-b'")
+        cross = write(sb, "c-b", "src/ui/a2.txt", "b\n", CREATOR)
+        p.check("review #2: a receipt from project B does not authorize a write in project A",
+                bool(in_b) and in_b[0][0] != project_a and cross.returncode == 2
+                and "no receipt" in cross.stderr, cross.stderr[-300:])
+        other = write(sb, "c-a", "src/ui/a3.txt", "c\n", CREATOR, session="another-session")
+        p.check("review #2: a receipt from another (parent) session does not authorize a write",
+                other.returncode == 2 and "no receipt" in other.stderr, other.stderr[-300:])
+        sb.query("UPDATE pack_agents SET skills='{' WHERE project_id=? AND agent_type=?",
+                 (project_a, "ulthar-evaluator@ui"))
+        start_agent(sb, "e-x", "ulthar-evaluator@ui")
+        blocked = write(sb, "e-x", "notes/e.txt", "x\n", "ulthar-evaluator@ui")
+        p.check("review optional: a receipt check that raises records a block -- every write of "
+                "that agent is blocked", bool(sb.query("SELECT 1 FROM agent_blocks WHERE agent_id='e-x'"))
+                and blocked.returncode == 2 and "receipt check failed" in blocked.stderr,
+                blocked.stderr[-300:] + f" unit {unit_id}")
     finally:
         sb.cleanup()
 
@@ -225,6 +289,7 @@ def check_write_rule(p: Probe) -> None:
 def main() -> int:
     p = Probe()
     print("\n== R1-d AC-1..AC-5, AC-14: skill packs ==")
+    check_project_scope(p)
     check_definitions(p)
     check_install(p)
     check_dispatch(p)

@@ -64,12 +64,14 @@ def with_default_acs(store: store_mod.Store, data: bytes) -> bytes:
     return yaml.safe_dump(doc, allow_unicode=True, sort_keys=False).encode("utf-8")
 
 
-def check_evaluator(rt, unit: dict, agent_id: str) -> None:
-    """A verify review only from the unit's pack evaluator (SKL-06)."""
+def check_evaluator(rt, project_id: str, unit: dict, bound: dict) -> None:
+    """A verify review only from the unit's pack evaluator (SKL-06), whose receipt is of
+    this project and of the session the runner token was issued in."""
     wanted = packs_mod.unit_packs(unit)
     if not wanted:
         return
-    held = packs_mod.receipts_of(rt, agent_id, role="evaluator")
+    agent_id = bound["agent_id"]
+    held = packs_mod.receipts_of(rt, project_id, bound.get("session_id"), agent_id, role="evaluator")
     if not held & set(wanted):
         raise flow.FlowError(
             f"the verify review of unit {unit['id']} is taken only from a verified "

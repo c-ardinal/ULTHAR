@@ -104,7 +104,8 @@ def _last_writes(rt, repo: Path) -> dict[str, tuple]:
     return last
 
 
-def _path_problem(rel: str, blob, write, scope: list[str], packs: list[dict], rt) -> tuple:
+def _path_problem(rel: str, blob, write, scope: list[str], packs: list[dict], rt,
+                  project_id: str) -> tuple:
     """(reason letter, detail) of the first condition a..d the path fails, or (None, None)."""
     folded = product.fold(rel)
     if not any(PurePosixPath(folded).full_match(g) for g in scope):
@@ -115,7 +116,7 @@ def _path_problem(rel: str, blob, write, scope: list[str], packs: list[dict], rt
     if value != blob:
         return "b", f"tip blob {blob}, last recorded post-hash {value} (event {eid})"
     need = packs_mod.needed([folded], False, packs)
-    if need and not (agent and need <= packs_mod.receipts_of(rt, agent)):
+    if need and not (agent and need <= packs_mod.receipts_of(rt, project_id, session, agent)):
         return "c", f"needs {sorted(need)}; event {eid} was written by {agent or 'the window'}"
     why = lease_mod.invalid_because(rt, token, session, ts)
     if why:
@@ -159,7 +160,7 @@ def check(store: store_mod.Store, rt, unit: dict, session_id: str) -> dict:
     unattributed = []
     for rel in paths:
         write = writes.get(product.fold(rel))
-        reason, why = _path_problem(rel, blobs.get(rel), write, scope, packs, rt)
+        reason, why = _path_problem(rel, blobs.get(rel), write, scope, packs, rt, store.project_id)
         if reason:
             unattributed.append({"path": rel, "reason": reason, "why": f"{REASONS[reason]}: {why}",
                                  "event_id": write[0] if write else None})

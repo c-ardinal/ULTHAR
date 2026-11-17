@@ -77,9 +77,9 @@ def install(store: store_mod.Store, rt, agents_dir: Path) -> list[dict]:
     rt.execute("BEGIN IMMEDIATE")
     try:
         for r in rows:
-            rt.execute("INSERT OR REPLACE INTO pack_agents (agent_type, project_id, pack, role,"
+            rt.execute("INSERT OR REPLACE INTO pack_agents (project_id, agent_type, pack, role,"
                        " def_path, def_sha, skills, ts) VALUES (?,?,?,?,?,?,?,?)",
-                       (r["agent_type"], store.project_id, r["pack"], r["role"], r["def_path"],
+                       (store.project_id, r["agent_type"], r["pack"], r["role"], r["def_path"],
                         r["def_sha"], json.dumps(r["skills"]), now))
         rt.execute("COMMIT")
     except BaseException:
@@ -88,12 +88,13 @@ def install(store: store_mod.Store, rt, agents_dir: Path) -> list[dict]:
     return rows
 
 
-def listing(rt) -> list[dict]:
-    """Every registered pack agent, with whether its files still hash as registered."""
+def listing(rt, project_id: str) -> list[dict]:
+    """The project's registered pack agents, with whether their files still hash as
+    registered."""
     out = []
     for kind, pack, role, path, sha, skills in rt.execute(
             "SELECT agent_type, pack, role, def_path, def_sha, skills FROM pack_agents"
-            " ORDER BY agent_type"):
+            " WHERE project_id=? ORDER BY agent_type", (project_id,)):
         skills = json.loads(skills)
         intact = packs_mod.file_sha(path) == sha and all(
             packs_mod.file_sha(s["path"]) == s["sha"] for s in skills)

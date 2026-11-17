@@ -26,15 +26,9 @@ its post-write hashes is never silent.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from pathlib import Path
 from collections import namedtuple
-
-try:
-    from _sha1 import sha1  # the builtin; hashlib would load OpenSSL (as store's _sha2)
-except ImportError:  # pragma: no cover -- interpreters without the builtin module
-    from hashlib import sha1
 
 from . import db as db_mod
 from . import ingest as ingest_mod
@@ -44,6 +38,7 @@ from . import isolation
 from . import lease as lease_mod
 from . import memhook
 from . import notify as notify_mod
+from . import posthash
 from . import v1dispatch
 from .lib import io as io_mod
 
@@ -51,7 +46,6 @@ WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 PATH_KEYS = ("file_path", "notebook_path")
 GIT_TIMEOUT_SEC = 10
 HASH_FAILED = "hash_failed"
-PLAIN_BLOB_BLOCKERS = (b"\r", b"$Id")
 
 
 Processed = namedtuple("Processed", ("result", "guards_run"))
@@ -72,52 +66,16 @@ def written_paths(payload: dict) -> list[str]:
     return out
 
 
-def _attributes_on_the_way(p: Path) -> bool:
-    """Whether an attributes file could apply to `p` (or `p` is in no plain repository):
-    .gitattributes from the file's directory up to the repository root, the
-    repository's .git/info/attributes, the user's git/attributes."""
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    if (Path(xdg) if xdg else Path.home() / ".config").joinpath("git", "attributes").exists():
-        return True
-    d = p.parent
-    while True:
-        if (d / ".gitattributes").exists():
-            return True
-        dot = d / ".git"
-        if dot.is_dir():
-            return (dot / "info" / "attributes").exists()
-        if dot.exists() or d.parent == d:
-            return True  # a worktree's .git file, or no repository: let git decide
-        d = d.parent
-
-
-def _plain_blob(p: Path) -> str | None:
-    """The blob id `git hash-object` prints, computed here when git provably stores the
-    bytes unchanged -- else None (ask git). Unchanged: a regular file (git stores a
-    symlink as its target), no CR byte (autocrlf / eol conversions only turn CRLF into
-    LF), no `$Id` (the ident attribute), and no attributes file on the way (filter=,
-    working-tree-encoding). Not seen: a system-wide gitattributes or a core.attributesFile
-    elsewhere; were one to change a blob, the hash here would differ from the stored
-    blob and TRUST-04 (b) would refuse the integration -- a false refusal, never a false
-    acceptance. Saves git's process start (~70 ms) on PostToolUse (R1-d AC-16)."""
-    if p.is_symlink():
-        return None
-    data = p.read_bytes()
-    if any(mark in data for mark in PLAIN_BLOB_BLOCKERS) or _attributes_on_the_way(p):
-        return None
-    return sha1(b"blob %d\0" % len(data) + data).hexdigest()
-
-
 def blob_hash(path: str) -> str | dict | None:
     """What `git hash-object <path>` prints (git applies the path's filters, e.g.
-    autocrlf/.gitattributes) -- computed in-process when no filter can apply
-    (`_plain_blob`). None when the file is absent. When git cannot produce it,
+    autocrlf/.gitattributes) -- computed in-process only where git provably stores the
+    bytes unchanged (ulthar.posthash). None when the file is absent. When git cannot produce it,
     {"hash_failed": reason} -- never a guessed hash. Never raises."""
     p = Path(path)
     try:
         if not p.is_file():
             return None
-        plain = _plain_blob(p)
+        plain = posthash.blob(p)
         if plain is not None:
             return plain
         import subprocess  # noqa: PLC0415 -- lazy: only PostToolUse of a write tool hashes

@@ -97,7 +97,8 @@ def run(store: store_mod.Store, rt, unit_id: str, name: str, token: str | None) 
     after = snapshot(store)
     changed = {p: after.get(p) for p in set(before) | set(after) if before.get(p) != after.get(p)}
     agent = bound["agent_id"]
-    problems = _problems(changed, unit, packs, packs_mod.receipts_of(rt, agent))
+    problems = _problems(changed, unit, packs, packs_mod.receipts_of(
+        rt, store.project_id, bound.get("session_id"), agent))
     detail = {"unit_id": unit_id, "name": name, "command": cmds[name], "exit_code": rc,
               "error": error, "problems": problems, "runner_token": token,
               "stdout_sha256": evidence_mod.sha256_bytes(out),
