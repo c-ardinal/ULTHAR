@@ -6,7 +6,8 @@ session) while it holds the project's lease. In order:
      (a) every unit's state agrees between the store and runtime.db -- the effects of
          each unit's latest operation (tokens consumed, evidence rows) are in runtime.db;
      (b) no question awaits the owner's answer -- a recorded AskUserQuestion that is
-         still queued or asked, not invalidated, and has no hook-issued token;
+         not invalidated and has no hook-issued token whose answer the session transcript
+         confirms (the R1-c AC-5 check: a forged PostToolUse's token does not count);
      (c) every subagent seen running in the window's session tree has stopped
          (SubagentStop) or is registered (its SubagentStart was recorded);
   2. a `relay` Episode (the handover summary) in the knowledge store;
@@ -24,11 +25,13 @@ import json
 import shutil
 import subprocess
 
+from . import decide
 from . import flow
 from . import isolation
 from . import lease as lease_mod
 from . import notify
 from . import store as store_mod
+from . import tokens
 
 LAUNCH_DEFAULT = ["claude", "--bg",
                   "ulthar relay による引き継ぎです。注入された L0 と直近の relay Episode（引き継ぎの要約）を"
@@ -68,19 +71,46 @@ def _units_problems(store: store_mod.Store, rt) -> list[str]:
     return out
 
 
-def unanswered(rt, project_id: str) -> list[tuple[str, str | None, str]]:
-    """(qid, unit, kind) of the project's questions that await the owner's answer."""
+def _verified(rt, conn, token_id: str, kind: str, issuer: str, bound: dict) -> bool:
+    """The token's answer is the owner's: the hook-recorded question and answer events and
+    the session transcript's tool_result, checked as R1-c AC-5 (tokens.valid_owner_tokens)
+    and R1-b's decide confirm do -- a forged PostToolUse's token row never counts."""
+    if kind == decide.TOKEN_KIND:
+        try:
+            decide._check_token(rt, token_id, str(bound.get("project_id")), resuming=True)
+        except decide.ConfirmError:
+            return False
+        return decide._answered_in_transcript(conn, str(bound.get("session_id") or "(none)"),
+                                              bound.get("tool_use_id"), str(bound.get("question") or ""),
+                                              str(bound.get("answer_text") or ""))
+    return tokens._owner_problem(rt, conn, token_id, issuer, bound, set()) is None
+
+
+def unanswered(rt, store: store_mod.Store, ingest: bool = False) -> list[tuple[str, str | None, str]]:
+    """(qid, unit, kind) of the project's questions that await the owner's answer: queued,
+    or asked / answered without a token whose answer passes the transcript check
+    (`_verified`). `ingest`: bring the answering sessions' transcripts in first."""
+    rows = rt.execute("SELECT qid, unit_id, status, payload FROM questions WHERE project_id=? AND"
+                      " status IN ('queued', 'asked', 'answered')", (store.project_id,)).fetchall()
+    found = {}
+    for qid, _u, _s, _p in rows:
+        found[qid] = [(t, k, json.loads(b or "{}"), i) for t, k, b, i in rt.execute(
+            "SELECT token_id, kind, bound, issued_by_hook FROM tokens WHERE"
+            " json_extract(bound, '$.qid')=? OR json_extract(bound, '$.batch_id')=?", (qid, qid))]
+    if ingest:
+        for session in {b.get("session_id") for toks in found.values() for _t, _k, b, _i in toks
+                        if b.get("session_id")}:
+            decide._ingest_session(store, rt, session)
     out = []
-    for qid, unit_id, status, raw in rt.execute(
-            "SELECT qid, unit_id, status, payload FROM questions WHERE project_id=? AND"
-            " status IN ('queued', 'asked')", (project_id,)).fetchall():
-        q = json.loads(raw or "{}")
-        if q.get("invalidated"):
-            continue
-        answered = rt.execute("SELECT 1 FROM tokens WHERE json_extract(bound, '$.qid')=?",
-                              (qid,)).fetchone()
-        if status == "queued" or not answered:
-            out.append((qid, unit_id, str(q.get("kind") or "decide_review")))
+    with store.reader(rt) as conn:
+        for qid, unit_id, status, raw in rows:
+            q = json.loads(raw or "{}")
+            if q.get("invalidated"):
+                continue
+            answered = status != "queued" and any(
+                _verified(rt, conn, t, k, i, b) for t, k, b, i in found[qid])
+            if not answered:
+                out.append((qid, unit_id, str(q.get("kind") or "decide_review")))
     return out
 
 
@@ -95,7 +125,7 @@ def _agent_problems(rt, session_id: str) -> list[str]:
 def conditions(store: store_mod.Store, rt, session_id: str) -> list[str]:
     problems = _units_problems(store, rt)
     problems += [f"question {qid} ({kind}{', unit ' + u if u else ''}) awaits the owner's answer"
-                 for qid, u, kind in unanswered(rt, store.project_id)]
+                 for qid, u, kind in unanswered(rt, store, ingest=True)]
     return problems + _agent_problems(rt, session_id)
 
 

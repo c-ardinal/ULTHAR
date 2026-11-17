@@ -4,8 +4,10 @@ standard library only.
 Listens on 127.0.0.1 only. Each start makes a new random token, prints the URL with it,
 and keeps it (with the port) in `<state>/monitor.token` and the port in runtime.db
 `monitor` (the hooks refuse Claude's reads of that file and its requests to that port,
-ulthar.isolation). Every request needs `?token=<token>` (or the X-Ulthar-Token header):
-none or another -> 403.
+ulthar.isolation; written atomically, mode 0600 where the OS honours it). Every request
+needs `?token=<token>` (or the X-Ulthar-Token header), a Host header naming this server
+(127.0.0.1:<port> or localhost:<port>) and, when present, an Origin of this server:
+otherwise 403.
 
 GET /        the page;  GET /state  the same data as JSON (`snapshot`):
   sessions (project, units in progress with their state, last activity), context usage
@@ -117,9 +119,8 @@ def snapshot(rt, with_agents: bool = True) -> dict:
                   for i, b, a, k, ts, s in rt.execute(
                       "SELECT x.id, x.block_event_id, x.allow_event_id, x.intent_key, e.ts, e.session_id"
                       " FROM suspicions x LEFT JOIN events e ON e.id=x.allow_event_id ORDER BY x.id")]
-    pids = {r[0] for r in rt.execute("SELECT DISTINCT project_id FROM questions")} | set(stores)
     awaiting = [{"project_id": pid, "qid": q, "unit_id": u, "kind": k}
-                for pid in sorted(p for p in pids if p) for q, u, k in relay.unanswered(rt, pid)]
+                for pid, store in sorted(stores.items()) for q, u, k in relay.unanswered(rt, store)]
     units = [{"project_id": pid, "unit_id": u["id"], "state": u.get("state"),
               "results": _ac_results(rt, u["id"])} for pid, us in units_of.items() for u in us]
     flags = [{"project_id": p, "relay_due": r, "frozen": bool(f)} for p, r, f in rt.execute(
@@ -203,12 +204,20 @@ def page(snap: dict, token: str) -> str:
 
 # ---------------------------------------------------------------------------- server
 
-def _handler(token: str, db_path):
+def _handler(token: str, db_path, port_of):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # noqa: D401 -- quiet: no access log on stderr
             return
 
         def _authorized(self) -> bool:
+            """The token, a Host of this server (against DNS rebinding) and, when a browser
+            names one, an Origin of this server (against cross-site POSTs)."""
+            hosts = {f"{HOST}:{port_of()}", f"localhost:{port_of()}"}
+            if self.headers.get("Host", "") not in hosts:
+                return False
+            origin = self.headers.get("Origin")
+            if origin is not None and origin not in {f"http://{h}" for h in hosts}:
+                return False
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             given = (query.get("token") or [""])[0] or self.headers.get("X-Ulthar-Token", "")
             return hmac.compare_digest(given.encode(), token.encode())
@@ -262,9 +271,23 @@ def _handler(token: str, db_path):
     return Handler
 
 
+def _write_token(path, text: str) -> None:
+    """Atomically, readable by the owner only where the OS honours the mode (POSIX; on
+    Windows the file inherits the user profile's ACL)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+
+
 def serve(db_path, port: int = 0) -> None:
     token = os.urandom(24).hex()
-    server = ThreadingHTTPServer((HOST, port), _handler(token, db_path))
+    server = ThreadingHTTPServer((HOST, port), _handler(token, db_path,
+                                                        lambda: server.server_address[1]))
     bound = server.server_address[1]
     rt = db_mod.connect(db_path)
     try:
@@ -273,9 +296,8 @@ def serve(db_path, port: int = 0) -> None:
                    (bound, os.getpid(), store_mod.now_iso()))
     finally:
         rt.close()
-    path = isolation.token_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"port": bound, "token": token, "pid": os.getpid()}), encoding="utf-8")
+    _write_token(isolation.token_path(), json.dumps({"port": bound, "token": token,
+                                                     "pid": os.getpid()}))
     print(f"http://{HOST}:{bound}/?token={token}", flush=True)
     try:
         server.serve_forever()
