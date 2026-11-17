@@ -172,3 +172,35 @@ generated agents `ulthar-creator@<pack>` / `ulthar-evaluator@<pack>` with a comm
 `skills:` line. Side effect, as before:
 the throwaway projects (`%TEMP%/ulthar-p17-*`) and their `claude -p` session records under
 `~/.claude/projects/` remain (cleanup is the owner's call).
+
+# ULTHAR v2 R1-e — P-21 / P-22 (spec 未確認の点)
+
+Measured 2026-11-17 on Windows 11 (native), Claude Code 2.1.322.
+
+| ID | Premise | Result |
+|---|---|---|
+| P-21 | A window started with `claude --bg --session-id <uuid>` runs under that session_id | **does not hold** — `--bg` ignores `--session-id` |
+| P-22 | The main-chain assistant `usage` (input + cache_creation_input + cache_read_input tokens) is usable as the window's context usage, dropping after a compaction | **holds** |
+
+P-21 (`v2/probes/run_p21.py --base <dir>`): a throwaway project with its own settings
+(`--setting-sources project,local`) and a hook on SessionStart / UserPromptSubmit / PreToolUse
+that logs each payload's session_id; `claude --bg --session-id <uuid4> --model haiku "<read
+probe.txt>"`, started windowless. stderr: `warning: --bg manages the session id; ignoring
+--session-id (use --resume <id> to continue an existing session)`; stdout `backgrounded · <8-hex
+id>`. All three hooks fired with one session_id, which was NOT the requested uuid (it begins with
+the printed 8-hex id; `claude agents --json` lists the same `sessionId`). The probe's background
+session was stopped afterwards (`claude stop <id>`). A first run under `%TEMP%` had failed with
+`Workspace not trusted. Run claude in <dir> once and accept the trust prompt` (exit 1): `--bg`
+needs a trusted workspace, so `--base` puts the throwaway project under a trusted directory.
+→ **spec 事前決定 2's fallback**: `ulthar relay` puts the lease "in handover" (10 min) and the first
+other session whose hook call comes in takes it with a new fencing token (ulthar.lease,
+ulthar.relay); the default launch command is `claude --bg <handover prompt>` (no `--session-id`).
+Side effect: the throwaway project `C:\_Workspace\ULTHAR.worktree\_probes\ulthar-p21-*` and its
+background session record remain (cleanup is the owner's call).
+
+P-22 (`v2/probes/run_p22.py <transcript>`, read only, prints figures only): on the R1-a replay
+transcript (sha256 prefix 48a2d2d5afe28ea0), 7788 main-chain assistant lines carry `usage`; the sum
+rose to 520,941..966,799 tokens before each of the 10 compactions (`isCompactSummary`) and the first
+assistant line after each was 95,724..159,654 — **10/10 drops**. (That session ran a 1M-token
+model: `relay.context_window` must then be set to its window, spec 事前決定 7.) → SES-03 uses the
+newest main-chain assistant line's usage, recorded by the transcript ingest (ulthar.ingest).
