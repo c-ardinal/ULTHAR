@@ -20,8 +20,12 @@ Input that gets executed is read as a command too:
     anything else -> blocked when the body mentions git or a guarded ref;
   * a redirection operand of an executor (`bash <<< "..."`) and, in a pipeline into an
     executor (`echo ... | bash`, PowerShell `@'...'@ | iex`, `... | powershell -Command
-    -`), the producer's text; a pipeline into any other non-display command is blocked
-    when that text mentions git or a guarded ref. A call is blocked when it would move a guarded branch -- the config's
+    -`), the text of every earlier stage; a pipeline into any other non-display command
+    is blocked when the producer's evident text mentions git or a guarded ref.
+  Into an executor, input is blocked as soon as its text mentions git or a guarded ref
+  (review r1d-5): what printf / echo -e / Write-Output ... print is never reconstructed.
+  A shell given a script (`bash -c 'cat >/dev/null'`, `powershell -Command ...`, `cmd
+  /c`) passes its stdin to that script, so the script's first command is the reader. A call is blocked when it would move a guarded branch -- the config's
 `integration_branch` (default develop) and `protected_branches` (default main, master):
   * merge / pull / commit / rebase / cherry-pick / revert / am / reset while that branch
     is checked out (the HEAD of the repository the command runs in, read from .git);
@@ -528,19 +532,38 @@ def _produced(words: list[str]) -> str:
     return " ".join(w.strip("@").strip() if w.startswith("@") else w for w in keep)
 
 
-def _executed(text: str, consumer: list[str], ctx: "_Ctx", depth: int,
-              what: str) -> str | None:
-    """Judges `text` fed to `consumer` (command-position words)."""
+def _mentions_git(text: str, names: set[str]) -> bool:
+    return bool(MENTIONS_GIT.search(text) or _guarded_ref(text.split(), names))
+
+
+def _executed(text: str, consumer: list[str], ctx: "_Ctx", depth: int, what: str,
+              produced: str | None = None) -> str | None:
+    """Judges input fed to `consumer` (command-position words): `text` is all the text
+    that may produce it (a body, a here-string, every earlier pipeline stage), `produced`
+    what an inert producer evidently writes (default: `text`). An executor is blocked
+    when `text` mentions git or a guarded ref at all -- its producer's output is never
+    reconstructed (printf, echo -e, Write-Output ... could assemble anything) -- and
+    otherwise judged as a nested command."""
     exe = _exe(consumer)
+    child = _child(consumer)
+    if child is not None and child[0].strip() not in ("", "-"):
+        # bash -c 'script', powershell -Command '...', cmd /c ...: stdin goes to the script,
+        # not to the shell's own parser -- judged by the script's first command
+        inner = [c for seg in shellwords.segments(shellwords.tokenize(child[0], "\\"))
+                 for c in commands(seg)]
+        return _executed(text, inner[0], ctx, depth + 1, what, produced) if inner else None
     if exe in EXECUTORS:
+        if _mentions_git(text, ctx.names):
+            return f"{what} feeds the executor {exe} and mentions git or a guarded branch"
         if exe == "xargs":
             inner = _unwrap(consumer)
             text = " ".join(inner + text.split()) if inner else text
         why = _why_text(text, EXECUTORS[exe], ctx, depth + 1)
         return f"{what} run by {exe}: {why}" if why else None
+    text = text if produced is None else produced
     if exe in INERT_READERS or not text.strip():
         return None
-    if MENTIONS_GIT.search(text) or _guarded_ref(text.split(), ctx.names):
+    if _mentions_git(text, ctx.names):
         return (f"{what} is read by `{consumer[0]}`, which ulthar cannot tell from an executor, "
                 "and it mentions git or a guarded branch")
     return None
@@ -555,11 +578,12 @@ def _why_stdin(pipeline: list[list[str]], ctx: "_Ctx", depth: int) -> str | None
                 why = _executed(operand, cmds[k], ctx, depth, "a redirected input")
                 if why:
                     return why
-        for later in cmds[k + 1:]:
-            if later and cmds[k]:
-                why = _executed(_produced(cmds[k]), later, ctx, depth, "piped input")
-                if why:
-                    return why
+        if k and cmds[k]:
+            earlier = " ".join(tok for st in pipeline[:k] for tok in st)
+            why = _executed(earlier, cmds[k], ctx, depth, "piped input",
+                            produced=" ".join(_produced(c) for c in cmds[:k] if c))
+            if why:
+                return why
     return None
 
 

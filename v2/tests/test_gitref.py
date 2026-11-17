@@ -156,6 +156,10 @@ def _round4(p: Probe, sb) -> None:
         ("PowerShell", f"@'\n{UPDATE}\n'@ | Invoke-Expression", "PowerShell @'...'@ | Invoke-Expression"),
         ("Bash", f"python - <<EOF\nimport os\nos.system('{UPDATE}')\nEOF",
          "an unclassified reader (python) of a body mentioning git"),
+        ("Bash", f"printf '%s\\n' '{UPDATE}' | bash", "printf '%s\\n' ... | bash (review r1d-5)"),
+        ("Bash", f'echo -e "{UPDATE}" | bash', "echo -e ... | bash (review r1d-5)"),
+        ("PowerShell", f'Write-Output -InputObject "{UPDATE}" | iex',
+         "Write-Output -InputObject ... | iex (review r1d-5)"),
     ]
     for tool, command, name in executed:
         res = _shell(sb, tool, command)
@@ -163,7 +167,8 @@ def _round4(p: Probe, sb) -> None:
                 res.stderr[-300:])
     inert = [f"cat <<'EOF'\n{UPDATE}\nEOF", f"cat <<EOF | grep develop\n{UPDATE}\nEOF",
              "python - <<EOF\nprint(1)\nEOF", f"echo cmd /c {UPDATE}",
-             f"echo powershell -Command {UPDATE}", f"grep cmd /c {UPDATE}"]
+             f"echo powershell -Command {UPDATE}", f"grep cmd /c {UPDATE}",
+             f"bash -c 'cat >/dev/null' <<EOF\n{UPDATE}\nEOF", "git log --oneline -3 | less"]
     for command in inert:
         res = bash(sb, None, command)
         p.check(f"AC-11 (review r1d-4 #1/#2): allowed -- `{command.splitlines()[0]}`",
