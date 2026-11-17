@@ -293,9 +293,11 @@ def intent_key(payload: dict) -> str | None:
         for raw, _sources in product.targets(payload):
             p = Path(raw)
             # the canonical target: symlinks / junctions of the existing part resolved, the
-            # part not created yet appended as written (product.resolved), then folded
+            # part not created yet appended as written (product.resolved), then folded. A UNC
+            # path is only normalized: resolving it can wait on the network (v1 grants suite)
             full = os.path.abspath(p if p.is_absolute() else Path(cwd) / p)
-            return "path:" + product.fold(product.resolved(full))
+            unc = full.replace("\\", "/").startswith("//")
+            return "path:" + product.fold(full if unc else product.resolved(full))
     if tool in SHELL_TOOLS:
         command = str(ti.get("command") or "")
         for seg in shellwords.segments(shellwords.tokenize(
