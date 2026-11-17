@@ -345,7 +345,7 @@ def cmd_pack_list(args) -> int:
     for p in packs_mod.for_store(store):
         print(f"pack {p['name']}\tpaths={','.join(p['path_globs'])}\tskills={','.join(p['skills'])}"
               f"\tdefault_acs={len(p['default_acs'])}")
-    rows = _with_rt(args, packinstall.listing)
+    rows = _with_rt(args, lambda rt: packinstall.listing(rt, store.project_id))
     for r in rows:
         print(f"{r['agent_type']}\t{'intact' if r['intact'] else 'CHANGED'}\t{r['def_path']}")
     print(f"registered pack agents: {len(rows)}")
