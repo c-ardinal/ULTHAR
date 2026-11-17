@@ -706,7 +706,7 @@ What R1-d adds per call (design):
     (HEAD read from .git, no process); Agent launches: the AC-3 dispatch;
   * SubagentStart of a pack agent: the definition + its SKILL.md files hashed, a receipts row;
   * PostToolUse of a write tool: the post-hash is computed in-process when no git filter can
-    apply (hook._plain_blob) -- `git hash-object` started a process (~70 ms on this PC, measured
+    apply (hook._plain_blob, since r1d-1: ulthar.posthash) -- `git hash-object` started a process (~70 ms on this PC, measured
     `git --version` 69-88 ms) on every such call before; CRLF / `$Id` / attributes files still
     go to git.
 

@@ -26,7 +26,7 @@ R1-c AC-14: the same for a builder's PreToolUse Edit in a project with AC-11 act
 R1-d AC-16: the project also defines the skill pack `ui` (src/ui/**, 5 skills) with its
       agents installed and the unit declares it: the PreToolUse Edit is a ui creator's
       (receipt held: AC-5 and the pack match run); PostToolUse of that Edit (the git
-      post-hash of an LF file -- computed in-process, see hook._plain_blob -- and the
+      post-hash of an LF file -- computed in-process, see ulthar.posthash -- and the
       lease renewal) is timed too; SubagentStart starts the ui creator
       (AC-4: the definition and 5 SKILL.md hashed, a receipt written) -- each p95 <= 300 ms.
 $ULTHAR_SKIP_PERF=1 runs only the replay counts (correctness runs): the timed stages
