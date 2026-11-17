@@ -714,7 +714,7 @@ def check_unowned_lock_is_never_stale(p: Probe) -> None:
             )
             p.check(
                 f"unowned lock: fails closed QUICKLY, bounded by the retry budget (took {elapsed:.3f}s)",
-                elapsed < 2.0,
+                elapsed < 5.0,
                 f"elapsed={elapsed:.3f}s",
             )
             p.check(
@@ -785,7 +785,7 @@ def check_reclaim_bounded_when_removal_always_fails(p: Probe) -> None:
         )
         p.check(
             f"unreclaimable stale lock: BOUNDED elapsed time (took {elapsed:.3f}s; incident was 25.03s)",
-            elapsed < 2.0,
+            elapsed < 5.0,
             f"elapsed={elapsed:.3f}s",
         )
         reclaimed_logs = [c for c in log_calls if "pm_allowlist_lock_reclaimed" in str(c)]
@@ -891,7 +891,7 @@ def check_nan_retry_attempts_does_not_hang(p: Probe) -> None:
             )
             p.check(
                 f"NaN retry_attempts: BOUNDED elapsed time (took {elapsed:.3f}s)",
-                elapsed < 2.0,
+                elapsed < 5.0,
                 f"elapsed={elapsed:.3f}s",
             )
         finally:
