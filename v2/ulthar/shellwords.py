@@ -164,6 +164,20 @@ def ulthar_calls(command: str, tool: str | None, depth: int = 0) -> list[list[st
     return found
 
 
+def all_segments(command: str, tool: str | None, depth: int = 0) -> list[list[str]]:
+    """Every segment of every variant, also inside a shell launcher's command-line
+    argument (`bash -c "..."`, `powershell -Command ...`; depth 2)."""
+    out = []
+    for toks in variants(command, tool):
+        for seg in segments(toks):
+            out.append(seg)
+            if depth < NESTED_DEPTH:
+                for prev, tok in zip(seg, seg[1:]):
+                    if prev.casefold() in COMMAND_OPTIONS:
+                        out += all_segments(tok, tool, depth + 1)
+    return out
+
+
 def leading_ulthar(seg: list[str]) -> bool:
     """The segment IS an ulthar CLI call (after VAR=value prefixes), with no redirection."""
     words = list(seg)

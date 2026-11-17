@@ -263,18 +263,17 @@ def scoped_units(store: store_mod.Store, rt) -> list[tuple[str, list[str]]]:
     return out
 
 
-def check(payload: dict, store_of, rt, detail: dict, memo: dict | None = None,
-          entries: list | None = None) -> str | None:
-    """The block message, or None. `store_of()` gives the project's store (opened only
-    when a product file is written). Raises on an unreadable config or store. `memo`:
-    see forms. `entries` (R1-d AC-5) receives each product write as (label,
-    repository-relative forms, is_tree) before the scope is judged."""
+def product_writes(payload: dict, store_of, memo: dict | None = None) -> list[tuple]:
+    """This call's product writes as (label, repository-relative forms, is_tree); [] when
+    it writes none or the project has no `.claude/ulthar.json`. `store_of()` gives the
+    project's store (opened only when the call writes something). Raises on an
+    unreadable config."""
     found = targets(payload)
     if not found:
-        return None
+        return []
     store = store_of()
     if store.repo is None or not (store.repo / store_mod.PROJECT_CONFIG).is_file():
-        return None
+        return []
     globs = _non_product_globs(store.config)
     cwd = str(payload.get("cwd") or os.getcwd())
     roots = forms(str(store.repo), memo)
@@ -284,8 +283,19 @@ def check(payload: dict, store_of, rt, detail: dict, memo: dict | None = None,
             rels = _product_forms(path, roots, globs, memo)
             if rels:
                 product.append((label, rels, tree or not known))
+    return product
+
+
+def check(payload: dict, store_of, rt, detail: dict, memo: dict | None = None,
+          entries: list | None = None, writes: list | None = None) -> str | None:
+    """The block message, or None. `writes`: product_writes of this call, when the caller
+    already has them. Raises on an unreadable config or store. `memo`: see forms.
+    `entries` (R1-d AC-5) receives each product write as (label, repository-relative
+    forms, is_tree) before the scope is judged."""
+    product = product_writes(payload, store_of, memo) if writes is None else writes
     if not product:
         return None
+    store = store_of()
     if entries is not None:
         entries += product
     units = scoped_units(store, rt)

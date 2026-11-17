@@ -11,6 +11,14 @@ session holds -- or, when another session holds the lease, the session's last to
 which `invalid_because` then refuses. A subagent's calls carry the parent's
 session_id (P-18), so they are stamped with the parent's token. R1-d never blocks a
 write on the lease; only the integration check (TRUST-04 (d), CLI) reads it.
+
+R1-e: the hook blocks a non-holder's writes (ulthar.isolation, AC-1), and `ulthar relay`
+hands the lease over (`handover`). P-21 showed `claude --bg` ignores `--session-id`, so
+the successor's id is not known in advance (spec 事前決定 2's fallback): the lease is
+"in handover" for HANDOVER_SEC -- session_id NULL, handover_from = the old window, the
+old token closed -- and the first other session whose hook call comes in acquires it
+with a new token. The old window gets no token back; after HANDOVER_SEC unclaimed, the
+lease has lapsed like any other.
 """
 from __future__ import annotations
 
@@ -18,6 +26,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 LEASE_SEC = 15 * 60  # U-02
+HANDOVER_SEC = 10 * 60  # spec 事前決定 2
 
 
 def _iso(dt: datetime) -> str:
@@ -29,9 +38,10 @@ def touch(conn: sqlite3.Connection, project_id: str, session_id: str, at: str) -
     event's time); the fencing token to stamp on that event (None: the session never
     held one). The caller holds the write transaction."""
     now_s, until = at, _iso(datetime.fromisoformat(at) + timedelta(seconds=LEASE_SEC))
-    row = conn.execute("SELECT session_id, fence_token, expires_at, renewed_at FROM leases"
-                       " WHERE project_id=?", (project_id,)).fetchone()
-    if row is not None and row[2] and row[2] > now_s:
+    row = conn.execute("SELECT session_id, fence_token, expires_at, renewed_at, handover_from"
+                       " FROM leases WHERE project_id=?", (project_id,)).fetchone()
+    handover = row is not None and row[0] is None and row[4] is not None
+    if row is not None and row[2] and row[2] > now_s and not (handover and row[4] != session_id):
         if row[0] == session_id:
             conn.execute("UPDATE leases SET renewed_at=?, expires_at=? WHERE project_id=?",
                          (now_s, until, project_id))
@@ -50,18 +60,42 @@ def touch(conn: sqlite3.Connection, project_id: str, session_id: str, at: str) -
     conn.execute("INSERT INTO leases (project_id, host_id, session_id, fence_token, renewed_at,"
                  " expires_at) VALUES (?,NULL,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET"
                  " session_id=excluded.session_id, fence_token=excluded.fence_token,"
-                 " renewed_at=excluded.renewed_at, expires_at=excluded.expires_at",
-                 (project_id, session_id, token, now_s, until))
+                 " renewed_at=excluded.renewed_at, expires_at=excluded.expires_at,"
+                 " handover_from=NULL", (project_id, session_id, token, now_s, until))
     return token
+
+
+def handover(conn: sqlite3.Connection, project_id: str, from_session: str, at: str) -> int:
+    """`ulthar relay`: the lease goes into handover (module doc); the old token's history
+    ends at `at`. Returns the closed token. The caller holds the write transaction."""
+    token = conn.execute("SELECT fence_token FROM leases WHERE project_id=? AND session_id=?",
+                         (project_id, from_session)).fetchone()
+    if token is None:
+        raise ValueError(f"session {from_session} does not hold the lease of {project_id}")
+    until = _iso(datetime.fromisoformat(at) + timedelta(seconds=HANDOVER_SEC))
+    conn.execute("UPDATE lease_tokens SET expires_at=? WHERE token=?", (at, token[0]))
+    conn.execute("UPDATE leases SET session_id=NULL, handover_from=?, renewed_at=?, expires_at=?"
+                 " WHERE project_id=?", (from_session, at, until, project_id))
+    return token[0]
+
+
+def state(conn: sqlite3.Connection, project_id: str) -> dict | None:
+    """The project's valid lease as {session_id (None in handover), expires_at,
+    handover_from, fence_token}, or None (no valid lease)."""
+    row = conn.execute("SELECT session_id, fence_token, expires_at, handover_from FROM leases"
+                       " WHERE project_id=?", (project_id,)).fetchone()
+    if row is None or not row[2] or row[2] <= _iso(datetime.now(timezone.utc)):
+        return None
+    return {"session_id": row[0], "fence_token": row[1], "expires_at": row[2],
+            "handover_from": row[3]}
 
 
 def holder(conn: sqlite3.Connection, project_id: str) -> tuple[str, int] | None:
     """(session_id, token) of the project's valid lease, or None."""
-    row = conn.execute("SELECT session_id, fence_token, expires_at FROM leases"
-                       " WHERE project_id=?", (project_id,)).fetchone()
-    if row is None or not row[2] or row[2] <= _iso(datetime.now(timezone.utc)):
+    st = state(conn, project_id)
+    if st is None or st["session_id"] is None:
         return None
-    return row[0], row[1]
+    return st["session_id"], st["fence_token"]
 
 
 def token_of(conn: sqlite3.Connection, project_id: str, session_id: str) -> int | None:
