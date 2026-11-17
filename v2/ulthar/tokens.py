@@ -19,6 +19,8 @@ runtime.db `questions` (`ulthar contract show`, `ulthar unit show --ask qual|res
                                            -> one qual_judgement token per AC
   UNIT-RESUME:<unit> sha:<12>              options 再開 / 再開しない  -> unit_resume
   UNIT-REOPEN:<unit> sha:<12> ac:<id|なし>  options 差し戻す / 差し戻さない -> unit_reopen (R1-d)
+  CAP-SUBST:<unit>:<cap> sha:<12>          options 承認する / 承認しない -> substitution_approval
+                                           (R1-e AC-7: a substitute evaluator capability)
 The AskUserQuestion PostToolUse issues them as R1-b's decide review does (ulthar.decide):
 only for exactly the recorded input, only when the session's transcript holds that
 tool_use, and only for the issuing answer. Consuming one (`ulthar unit advance`)
@@ -48,13 +50,16 @@ CONTRACT_MARK = re.compile(r"CONTRACT-CONFIRM:(U-[0-9a-f]+) v(\d+) sha:([0-9a-f]
 QUAL_MARK = re.compile(r"QUAL-JUDGE:(U-[0-9a-f]+) sha:([0-9a-f]{12})")
 RESUME_MARK = re.compile(r"UNIT-RESUME:(U-[0-9a-f]+) sha:([0-9a-f]{12})")
 REOPEN_MARK = re.compile(r"UNIT-REOPEN:(U-[0-9a-f]+) sha:([0-9a-f]{12})")
+SUBST_MARK = re.compile(r"CAP-SUBST:(U-[0-9a-f]+):([a-z0-9_\-]+) sha:([0-9a-f]{12})")
 CONFIRM, REVISE = "確定", "修正"
 PASS, FAIL = "合格", "不合格"
 RESUME, NO_RESUME = "再開", "再開しない"
 REOPEN, NO_REOPEN = "差し戻す", "差し戻さない"
+APPROVE, NO_APPROVE = "承認する", "承認しない"
 OWNER_KINDS = {"contract_confirm": CONTRACT_MARK, "qual_judgement": QUAL_MARK,
-               "unit_resume": RESUME_MARK, "unit_reopen": REOPEN_MARK}
-WINDOW_COMMANDS = frozenset({"unit advance"})  # runner tokens issued to the window only
+               "unit_resume": RESUME_MARK, "unit_reopen": REOPEN_MARK,
+               "substitution_approval": SUBST_MARK}
+WINDOW_COMMANDS = frozenset({"unit advance", "relay"})  # runner tokens issued to the window only
 
 
 class TokenError(Exception):
@@ -73,6 +78,8 @@ def runner_command(args: list[str]) -> str | None:
         return "run"
     if words == ["unit", "advance"] and "integrated" in [a.casefold() for a in args[2:]]:
         return "unit advance"
+    if words[:1] == ["relay"]:
+        return "relay"
     return None
 
 
@@ -222,6 +229,9 @@ def _still_open(kind: str, unit: dict, q: dict) -> str | None:
     elif kind == "unit_reopen":
         if unit.get("state") != "done" or (unit.get("confirmed") or {}).get("sha") != q.get("sha"):
             return "the unit is not done with this contract"
+    elif kind == "substitution_approval":
+        if unit.get("state") != "quant_verified" or (unit.get("confirmed") or {}).get("sha") != q.get("sha"):
+            return "the unit is not quant_verified with this contract"
     elif unit.get("state") != "halted" or unit.get("halt_id") != q.get("halt_id"):
         return "the unit is not halted (or halted again since the question)"
     return None
@@ -235,6 +245,8 @@ def _verdicts(kind: str, answers: list[str], q: dict) -> list[tuple[dict, str]]:
         return [({"halt_id": q.get("halt_id")}, "resume")] if answers[0] == RESUME else []
     if kind == "unit_reopen":
         return [({"ac": q.get("ac")}, "reopen")] if answers[0] == REOPEN else []
+    if kind == "substitution_approval":
+        return [({"capability": q.get("capability")}, "approve")] if answers[0] == APPROVE else []
     verdict = {PASS: "pass", FAIL: "fail"}
     return [({"ac_id": ac}, verdict[a]) for ac, a in zip(q.get("acs") or [], answers)
             if a in verdict]
@@ -324,7 +336,8 @@ def owner_sessions(rt: sqlite3.Connection, unit_id: str) -> set[str]:
     """Sessions of this unit's unconsumed owner tokens (to ingest before checking them)."""
     out = set()
     for (raw,) in rt.execute("SELECT bound FROM tokens WHERE consumed_at IS NULL AND kind IN"
-                             " ('contract_confirm','qual_judgement','unit_resume','unit_reopen')"):
+                             " ('contract_confirm','qual_judgement','unit_resume','unit_reopen',"
+                             " 'substitution_approval')"):
         bound = json.loads(raw or "{}")
         if bound.get("unit_id") == unit_id and bound.get("session_id"):
             out.add(bound["session_id"])

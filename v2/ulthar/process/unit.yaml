@@ -7,6 +7,7 @@
 # `ulthar verify --self` itself (AC-8), never by `unit advance`; `by: done` = taken by
 # `ulthar unit advance <u> done` itself when the verify on the integration branch fails.
 # `to: previous` = the state the unit was in when it was halted.
+# R1-e: quant_verified -> owner_review also needs the evaluator capability (AC-7).
 
 states:
   - intake
@@ -29,7 +30,8 @@ transitions:
   - {from: build, to: quant_verified, by: cli, requires: [self_verify_all_quant_passed]}
   - {from: quant_verified, to: owner_review, by: cli,
      requires: [reviewer_verify_all_quant_passed, reviewer_independent,
-                verify_review_passed_no_blockers, evidence_tree_matches, no_unmapped_changes]}
+                verify_review_passed_no_blockers, evidence_tree_matches, no_unmapped_changes,
+                evaluator_capability_ok]}
   - {from: owner_review, to: accepted, by: cli, requires: [qual_judgements_passed]}
   # returns
   - {from: quant_verified, to: build, by: cli, requires: [reason_given]}

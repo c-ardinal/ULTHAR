@@ -11,6 +11,8 @@ makes the slip a candidate for a new lint rule (the unit's `slips`).
 """
 from __future__ import annotations
 
+import re
+
 from . import contract as contract_mod
 from . import flow
 from . import packs as packs_mod
@@ -18,6 +20,7 @@ from . import store as store_mod
 from . import tokens
 
 NO_AC = "なし"
+DEFAULT_EVALUATOR = "codex"  # ROLE-02
 
 
 def packs_or_error(store: store_mod.Store):
@@ -127,6 +130,39 @@ def _reopen_authorized(c) -> str | None:
     return None
 
 
+def evaluator_capability(store: store_mod.Store) -> str:
+    raw = (store.config.get("evaluator") or {}) if isinstance(store.config.get("evaluator"), dict) else {}
+    return str(raw.get("capability") or DEFAULT_EVALUATOR)
+
+
+def _evaluator_capability_ok(c) -> str | None:
+    """R1-e AC-7 (PORT-05, ROLE-02): the verify review was made through the configured
+    evaluator capability while it was available -- or the owner approved this unit's
+    substitute capability (CAP-SUBST, consumed)."""
+    review = flow._verify_review(c)
+    if review is None:
+        return "no reviewer's verify review"
+    want = evaluator_capability(c.store)
+    via = review.get("via")
+    if via == want and review.get("via_available"):
+        return None
+    conf = c.unit.get("confirmed") or {}
+    good, bad = tokens.valid_owner_tokens(c.rt, c.conn, c.store.project_id, c.unit["id"],
+                                          "substitution_approval", flow._spent(c.unit))
+    good = [(t, b) for t, b in good if b.get("verdict") == "approve" and via
+            and b.get("capability") == via
+            and (b.get("contract_sha"), b.get("version")) == (conf.get("sha"), conf.get("version"))]
+    if good:
+        c.consume.append(good[0][0])
+        return None
+    made = (f"through {via} ({review.get('via_reason')})" if via else
+            "without naming its capability (`--via`)")
+    return (f"the verify review was made {made}, not through an available {want}; a substitute "
+            f"is used for acceptance only with the owner's CAP-SUBST:{c.unit['id']}:<capability> "
+            "approval (`ulthar unit show <u> --ask subst --cap <capability>`)"
+            + ("; " + "; ".join(bad) if bad else ""))
+
+
 def _contract_resubmitted(c) -> str | None:
     now = (c.unit.get("contract") or {}).get("version") or 0
     at = c.unit.get("reopened_at_version") or 0
@@ -142,7 +178,32 @@ PRECONDITIONS = {
     "integration_verify_failed": _integration_verify_failed,
     "reopen_authorized": _reopen_authorized,
     "contract_resubmitted": _contract_resubmitted,
+    "evaluator_capability_ok": _evaluator_capability_ok,
 }
+
+
+# ---------------------------------------------------------------------------- CAP-SUBST (R1-e)
+
+def subst_question(store: store_mod.Store, rt, unit_id: str, cap: str | None) -> dict:
+    """R1-e AC-7: the owner's CAP-SUBST question for a verify review made through `cap`
+    instead of an available evaluator capability, recorded."""
+    with store.reader(rt) as conn:
+        unit = flow.read_unit(conn, unit_id)
+    if unit["state"] != "quant_verified":
+        raise flow.FlowError(f"unit {unit_id} is {unit['state']}, not quant_verified")
+    if not cap or not re.fullmatch(r"[a-z0-9_\-]+", cap):
+        raise flow.FlowError("--cap is required: the capability the verify review was made through")
+    conf = unit.get("confirmed") or {}
+    want = evaluator_capability(store)
+    question = (f"CAP-SUBST:{unit_id}:{cap} sha:{conf['sha'][:12]}\n\n単位 {unit_id} の評価役の能力 "
+                f"{want} が使えない（または使われていない）ため、{cap} による代替の評価を受入に使う"
+                "ことを承認しますか？")
+    payload = tokens.ask_input([(question, "評価役の代替", [
+        (tokens.APPROVE, f"{cap} による評価を受入に使う"),
+        (tokens.NO_APPROVE, f"承認しない（{want} で評価し直す）")])])
+    tokens.record_question(rt, store.project_id, unit_id, "substitution_approval", payload,
+                           sha=conf["sha"], version=conf["version"], capability=cap)
+    return payload
 
 
 # ---------------------------------------------------------------------------- UNIT-REOPEN
