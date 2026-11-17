@@ -219,6 +219,26 @@ def ulthar_calls(command: str, tool: str | None, depth: int = 0) -> list[list[st
     return found
 
 
+class TooDeep(Exception):
+    """A shell launcher nested deeper than NESTED_DEPTH: its command line is not read."""
+
+
+def all_segments(command: str, tool: str | None, depth: int = 0) -> list[list[str]]:
+    """Every segment of every variant, also inside a shell launcher's command-line
+    argument (`bash -c "..."`, `powershell -Command ...`; depth 2). Raises TooDeep when a
+    launcher sits deeper than that, so the caller can fail closed instead of not looking."""
+    out = []
+    for toks in variants(command, tool):
+        for seg in segments(toks):
+            out.append(seg)
+            for prev, tok in zip(seg, seg[1:]):
+                if prev.casefold() in COMMAND_OPTIONS:
+                    if depth >= NESTED_DEPTH:
+                        raise TooDeep(f"a shell launcher nested deeper than {NESTED_DEPTH} levels")
+                    out += all_segments(tok, tool, depth + 1)
+    return out
+
+
 def leading_ulthar(seg: list[str]) -> bool:
     """The segment IS an ulthar CLI call (after VAR=value prefixes), with no redirection."""
     words = list(seg)

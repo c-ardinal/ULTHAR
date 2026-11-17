@@ -91,11 +91,12 @@ def check_migration_6_to_7(p: Probe) -> None:
             both = conn.execute("SELECT COUNT(*) FROM pack_agents").fetchone()[0]
         finally:
             conn.close()
-        ok = (version == db_mod.SCHEMA_VERSION == 7 and {"project_id", "session_id"} <= cols
+        ok = (version == db_mod.SCHEMA_VERSION == 8 and  # R1-e's schema 8 follows R1-d's 7
+               {"project_id", "session_id"} <= cols
               and kept == [("a-1", None)] and keys == {"pack_agents": ["project_id", "agent_type"],
                                                       "agent_blocks": ["project_id", "agent_id"]}
               and tokens == [("tok",)] and both == 2)
-        p.check("schema 6 -> 7: receipts kept and widened, pack_agents / agent_blocks keyed by "
+        p.check("schema 6 -> current (8): receipts kept and widened, pack_agents / agent_blocks keyed by "
                 "project (one agent type registered in two projects), tokens kept", ok,
                 f"{version} {cols} {kept} {keys} {tokens} {both}")
     finally:

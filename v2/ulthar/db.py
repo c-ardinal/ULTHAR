@@ -19,6 +19,14 @@ receipt check failed: all their writes are blocked), receipts.agent_type, and th
 registrations, agent blocks and receipts are project-scoped -- pack_agents and
 agent_blocks keyed by (project_id, agent_type / agent_id), receipts.project_id and
 receipts.session_id (the parent session the subagent started in).
+Schema 8 (R1-e): project_flags (relay_due, frozen, the once-a-minute resend check --
+ulthar.isolation, ulthar.notify), owner_actions (the owner's messages and
+AskUserQuestion answers read from the transcript, and monitor operations: the "read"
+mark of important notifications, AUT-03), relay_triggers (unit operations that already
+raised relay_due, so a recovery re-run never raises it again), leases.handover_from (a
+relay's handover, spec 事前決定 2's fallback after P-21), the notifications' text and
+timing columns, the monitor's port and an index on events(session_id, intent_key)
+(TRUST-06).
 """
 from __future__ import annotations
 
@@ -26,7 +34,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 BUSY_TIMEOUT_MS = 5000
 WAL_AUTOCHECKPOINT_PAGES = 256  # 1 MB of 4 KB pages; see connect()
 DB_ENV = "ULTHAR_RUNTIME_DB"
@@ -119,6 +127,18 @@ CREATE TABLE IF NOT EXISTS pack_agents (
 CREATE TABLE IF NOT EXISTS agent_blocks (
   project_id TEXT NOT NULL, session_id TEXT, agent_id TEXT NOT NULL, agent_type TEXT,
   reason TEXT, ts TEXT, PRIMARY KEY (project_id, agent_id));
+CREATE TABLE IF NOT EXISTS project_flags (
+  project_id TEXT PRIMARY KEY, relay_due TEXT, relay_due_at TEXT, frozen INTEGER,
+  frozen_at TEXT, resend_checked_at TEXT);
+CREATE TABLE IF NOT EXISTS owner_actions (
+  id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL,
+  event_id INTEGER);
+CREATE INDEX IF NOT EXISTS owner_actions_project ON owner_actions(project_id, ts);
+CREATE TABLE IF NOT EXISTS relay_triggers (
+  op_id TEXT PRIMARY KEY, project_id TEXT, reason TEXT, ts TEXT);
+CREATE TABLE IF NOT EXISTS monitor (
+  id INTEGER PRIMARY KEY CHECK (id = 1), port INTEGER, pid INTEGER, started TEXT);
+CREATE INDEX IF NOT EXISTS events_intent ON events(session_id, intent_key);
 CREATE TABLE IF NOT EXISTS reminders (
   project_id TEXT NOT NULL, candidates_sha TEXT NOT NULL, ts TEXT,
   PRIMARY KEY (project_id, candidates_sha));
@@ -133,16 +153,26 @@ def resolve_path(explicit: str | None = None) -> Path:
     return Path.home() / ".claude" / "ulthar" / "runtime.db"
 
 
+ADDED_COLUMNS = {  # columns later schemas added to a table an older schema created
+    "receipts": (("agent_type", "TEXT"), ("project_id", "TEXT"), ("session_id", "TEXT")),
+    "leases": (("handover_from", "TEXT"),),
+    "notifications": (("ts", "TEXT"), ("important", "INTEGER"), ("text", "TEXT"),
+                      ("last_sent_at", "TEXT"), ("detail", "TEXT")),
+}
+
+
 def _widen_token_kinds(conn: sqlite3.Connection) -> None:
     """An older tokens table (its CHECK lacks R1-c's unit_resume/runner or R1-d's
     unit_reopen kinds) is rebuilt with the current definition, rows kept; an older
-    receipts table gets R1-d's columns. Schema-6 pack_agents / agent_blocks (keyed without
-    the project; R1-d before review r1d-1, never deployed) are recreated empty: run
-    `ulthar pack install` again."""
-    have = {r[1] for r in conn.execute("PRAGMA table_info(receipts)")}
-    for col in ("agent_type", "project_id", "session_id"):
-        if col not in have:
-            conn.execute(f"ALTER TABLE receipts ADD COLUMN {col} TEXT")
+    receipts table gets R1-d's columns, and every table the columns later schemas added
+    (ADDED_COLUMNS). Schema-6 pack_agents / agent_blocks (keyed without the project; R1-d
+    before review r1d-1, never deployed) are recreated empty: run `ulthar pack install`
+    again."""
+    for table, cols in ADDED_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, kind in cols:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
     for table in ("pack_agents", "agent_blocks"):
         sql = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (table,)).fetchone()[0]
         if "PRIMARY KEY (project_id" not in sql:

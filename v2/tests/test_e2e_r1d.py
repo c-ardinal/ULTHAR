@@ -13,7 +13,10 @@ UI change; the window drafts contracts; creators and an evaluator work as subage
   (5) (owner-corrected wording) A's lease lapses and B acquires a new token; afterwards A
       writes with the old token and commits -> the integration (by the lease holder B)
       stops with (d). A change written with a then-valid token before the lapse is not
-      stopped.
+      stopped. Since R1-e (AC-1) A's Edit after the lapse is already blocked at write time;
+      the file then reaches the tree by a route the PreToolUse does not see (only its
+      PostToolUse is recorded, as test_integrate's (d) case does), and the integration
+      still stops it with (d).
 """
 from __future__ import annotations
 
@@ -23,8 +26,8 @@ import sys
 from helpers import Probe
 from r1c_helpers import cli, contract, make_unit, write_contract
 from r1d_helpers import (CREATOR, EVALUATOR, WINDOW, advance, bash, commit_all, confirm,
-                         expire_lease, integrate, new_r1d_sandbox, payload, run_ulthar,
-                         start_agent, to_build, unit, write)
+                         expire_lease, integrate, new_r1d_sandbox, payload, post_write,
+                         run_ulthar, start_agent, to_build, unit, write)
 
 OTHER = "e2e-window-b"
 
@@ -84,15 +87,19 @@ def check_cases(p: Probe) -> None:
         expire_lease(sb)
         sb.hook("PreToolUse", {"session_id": OTHER, "tool_name": "Bash", "tool_input": {"command": "ls"}})
         stale = write(sb, "bld-1", "src/ui/d.txt", "after the lapse\n", CREATOR, tool="Edit")
+        post_write(sb, "bld-1", "src/ui/d.txt", "after the lapse\n", CREATOR)
+        expire_lease(sb)  # B's lease lapses as well: the window takes it back and goes on
         run_ulthar(sb, "bld-1", ["verify", unit_id, "--self"], agent_type=CREATOR)
         advance(sb, unit_id, "quant_verified")
         start_agent(sb, "ev-1", EVALUATOR)
         run_ulthar(sb, "ev-1", ["verify", unit_id], agent_type=EVALUATOR)
         run_ulthar(sb, "ev-1", ["review", "record", "--unit", unit_id, "--kind", "verify",
-                                "--result", "pass"], agent_type=EVALUATOR)
+                                "--result", "pass", "--via", "codex"], agent_type=EVALUATOR)
         advance(sb, unit_id, "owner_review")
         advance(sb, unit_id, "accepted")
         commit_all(sb, "the unit's work")
+        expire_lease(sb)
+        sb.hook("PreToolUse", {"session_id": OTHER, "tool_name": "Bash", "tool_input": {"command": "ls"}})
         res = integrate(sb, unit_id, session=OTHER)
         listed = _listed(sb, unit_id)
         ok = (gen.returncode == 0 and res is not None and res.returncode != 0
@@ -100,12 +107,14 @@ def check_cases(p: Probe) -> None:
         held += ok
         p.check("AC-13 (4): an Edit then an undeclared overwrite (allowed at write time), "
                 "committed -> unattributed (b)", ok, (res.stderr[-500:] if res else "") + str(listed))
-        ok = (stale.returncode == 0 and listed.get("src/ui/d.txt") == "d"
+        ok = (stale.returncode == 2 and "lease" in stale.stderr
+              and listed.get("src/ui/d.txt") == "d"
               and valid.returncode == 0 and "src/ui/before.txt" not in listed)
         held += ok
         p.check("AC-13 (5): A's lease lapses, B acquires a new token, then A writes with the old "
-                "token and commits -> unattributed (d); A's write made with the then-valid token "
-                "before the lapse is not refused", ok, str(listed))
+                "token (blocked at write time since R1-e AC-1; written anyway) and commits -> "
+                "unattributed (d); A's write made with the then-valid token before the lapse is "
+                "not refused", ok, str(listed) + stale.stderr[-200:])
 
         shell = bash(sb, "bld-1", 'p=src; p=$p/ui/g.tsx; echo x > "$p"', CREATOR)
         (sb.work / "src" / "ui" / "g.tsx").write_text("x\n", encoding="utf-8")

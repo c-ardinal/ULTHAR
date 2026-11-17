@@ -68,6 +68,8 @@ class Sandbox:
                # the R1-a/R1-b tests predate GOAL-08 (R1-c AC-11): every sandbox file is a
                # non-product file unless a test configures its own non_product_globs
                "non_product_globs": ["**"],
+               # R1-e AC-6/AC-7: the codex health check is a stub (no real Codex in tests)
+               "caps": {"codex": {"check_cmd": [sys.executable, "-c", "print('OK')"]}},
                **extra}
         (work / ".claude").mkdir(parents=True, exist_ok=True)
         (work / ".claude" / "ulthar.json").write_text(json.dumps(cfg), encoding="utf-8")

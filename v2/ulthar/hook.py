@@ -9,7 +9,10 @@ Per call, in order:
   5. on PostToolUse of a file-writing tool, hash every written path (TRUST-07);
   6. store one `events` row and refresh the `sessions` row; in the same transaction the
      session's window lease is acquired or renewed and the row stamped with its fencing
-     token (R1-d AC-8, ulthar.lease);
+     token (R1-d AC-8, ulthar.lease), and (R1-e) the row's intent key is matched against
+     earlier blocks (TRUST-06) and due resends taken (AUT-03); a lease-gated allow is
+     decided again under the write lock, before the lease is touched (R1-e AC-1);
+     the notification senders start after the commit (ulthar.notify);
   7. write stdout/stderr once and exit with the decision.
 An internal failure of the memory step blocks a PreToolUse like a guard-pipeline
 failure does, and is a warning on every other event.
@@ -31,8 +34,10 @@ from . import db as db_mod
 from . import ingest as ingest_mod
 from . import extract as extract_mod
 from . import journal as journal_mod
+from . import isolation
 from . import lease as lease_mod
 from . import memhook
+from . import notify as notify_mod
 from . import posthash
 from . import v1dispatch
 from .lib import io as io_mod
@@ -96,9 +101,26 @@ def _session_transcript(payload: dict) -> str | None:
     return str(Path(raw))
 
 
+def _with_intent(payload: dict, outcome, detail: dict):
+    """TRUST-06: the call's intent key goes on its events row; when it cannot be told, an
+    allowed call is blocked (an unrecorded intent would hide an evasion)."""
+    try:
+        detail["intent_key"] = isolation.intent_key(payload)
+    except Exception as exc:  # noqa: BLE001 -- fail closed below
+        detail["intent_key_error"] = f"{type(exc).__name__}: {exc}"
+        if outcome.result.exit_code != 2:
+            msg = v1dispatch.infra_block_message(
+                "the ULTHAR intent key could not be computed", detail["intent_key_error"],
+                "PreToolUse")
+            return v1dispatch.Outcome(io_mod.Result(2, "", msg), PIPELINE_ERROR_GUARD_ID,
+                                      outcome.guards_run)
+    return outcome
+
+
 def _event_row(event: str, payload: dict, outcome, paths: list[str],
                post_hashes: dict | None, detail: dict) -> dict:
     return {
+        "intent_key": detail.get("intent_key"),
         "jid": journal_mod.new_jid(), "ts": ingest_mod.now_iso(),
         "session_id": str(payload.get("session_id") or "(none)"),
         "agent_id": payload.get("agent_id"), "agent_type": payload.get("agent_type"),
@@ -115,9 +137,11 @@ def insert_row(conn: sqlite3.Connection, row: dict) -> int:
     Returns the events row id."""
     cur = conn.execute(
         "INSERT INTO events (ts, session_id, agent_id, agent_type, hook, tool, decision,"
-        " guard_id, fence_token, paths, post_hashes, detail) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        " guard_id, intent_key, fence_token, paths, post_hashes, detail)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (row["ts"], row["session_id"], row["agent_id"], row["agent_type"], row["hook"],
-         row["tool"], row["decision"], row["guard_id"], row.get("fence_token"),
+         row["tool"], row["decision"], row["guard_id"], row.get("intent_key"),
+         row.get("fence_token"),
          json.dumps(row["paths"]) if row["paths"] else None,
          json.dumps(row["post_hashes"]) if row["post_hashes"] is not None else None,
          json.dumps(row["detail"], ensure_ascii=False)))
@@ -134,25 +158,51 @@ def insert_row(conn: sqlite3.Connection, row: dict) -> int:
     return cur.lastrowid
 
 
+def _recheck_lease(conn: sqlite3.Connection, row: dict, project_id: str) -> None:
+    """R1-e AC-1 under the write lock: an allowed, lease-gated PreToolUse is decided again
+    here, in the transaction that acquires or renews the lease -- the check before the
+    lock (ulthar.isolation.check) may have raced another session for a free or
+    handed-over lease. A refusal turns the row into a deny (`late_block`)."""
+    if row["hook"] != "PreToolUse" or row["decision"] != "allow" or not row["detail"].get(
+            isolation.LEASE_GATED):
+        return
+    msg = isolation.lease_block(conn, project_id, row["session_id"])
+    if msg:
+        row.update(decision="deny", guard_id=isolation.LEASE_GUARD, late_block=msg)
+        row["detail"]["blocked_by"] = "the lease, decided again under the write lock"
+
+
 def _record(conn: sqlite3.Connection, row: dict, after_insert=None,
-            lease_project: str | None = None) -> None:
+            lease_project: str | None = None, payload: dict | None = None) -> list[str]:
     """`after_insert(conn, event_id, detail)` runs in the same transaction; a detail it
     changed is stored back on the row. With `lease_project`, the session's lease is
-    acquired / renewed first and the row carries its fencing token (R1-d AC-8)."""
+    acquired / renewed first and the row carries its fencing token (R1-d AC-8) -- after a
+    lease-gated allow is decided again under the lock (R1-e AC-1); then (R1-e) an
+    allowed PreToolUse is matched against earlier
+    blocks of its intent (TRUST-06) and important notifications due a resend are
+    taken (AUT-03). Returns the notification ids to send after the commit."""
+    sends: list[str] = []
     conn.execute("BEGIN IMMEDIATE")
     try:
         if lease_project is not None:
+            _recheck_lease(conn, row, lease_project)
             row["fence_token"] = lease_mod.touch(conn, lease_project, row["session_id"], row["ts"])
         event_id = insert_row(conn, row)
-        if after_insert is not None:
+        if after_insert is not None and not row.get("late_block"):
             after_insert(conn, event_id, row["detail"])
             conn.execute("UPDATE events SET detail=? WHERE id=?",
                          (json.dumps(row["detail"], ensure_ascii=False), event_id))
+        if lease_project is not None:
+            if row["hook"] == "PreToolUse" and row["decision"] == "allow" and row.get("intent_key"):
+                sends += isolation.suspect(conn, event_id, row, lease_project)
+            sends += notify_mod.due(conn, lease_project, row["ts"])
         conn.execute("COMMIT")
     except BaseException:
         row.pop("fence_token", None)  # its issue was rolled back: a journaled row has none
+        row.pop("late_block", None)  # a PreToolUse whose event fails to store is denied anyway
         conn.execute("ROLLBACK")
         raise
+    return sends
 
 
 def _open_and_catch_up(event: str, payload: dict, db_path: Path, detail: dict,
@@ -327,18 +377,27 @@ def _dispatch(event: str, payload: dict, single_guard, loaded, db_path: Path, de
                    if event == "PostToolUse" and paths else None)
     if post_hashes and any(isinstance(v, dict) for v in post_hashes.values()):
         detail[HASH_FAILED] = [p for p, v in post_hashes.items() if isinstance(v, dict)]
+    if event == "PreToolUse":
+        outcome = _with_intent(payload, outcome, detail)
     row = _event_row(event, payload, outcome, paths, post_hashes, detail)
     if conn is not None:
+        sends: list[str] = []
         try:
-            _record(conn, row, act.after_insert if act is not None else None,
-                    _lease_project(payload, project))
+            sends = _record(conn, row, act.after_insert if act is not None else None,
+                            _lease_project(payload, project), payload)
+            if sends:  # after the commit
+                notify_mod.spawn_all(conn, db_path, sends, project.cwd)
         except Exception as exc:  # noqa: BLE001
-            db_error = exc
+            if not sends:
+                db_error = exc
+            # else the event is committed: an unsent row is taken again by the resend check
         finally:
             conn.close()
     if db_error is not None:
         return Processed(_db_failure(event, db_path, db_error, row, outcome.result),
                          outcome.guards_run)
+    if row.get("late_block"):
+        return Processed(io_mod.Result(2, "", row["late_block"]), outcome.guards_run)
     return Processed(_with_context(event, outcome.result, act), outcome.guards_run)
 
 

@@ -32,7 +32,8 @@ HALT_CAUSES = ("implementation", "design", "requirement", "evaluation", "environ
 REVIEW_KINDS = ("contract", "verify")
 CONTRACT_STATES = ("intake", "contract_draft", "halted", "reopen")  # where a version may be submitted
 TOKEN_CHECKS = {"contract_confirm_token", "qual_judgements_passed", "resume_authorized",
-                "reopen_authorized"}
+                "reopen_authorized", "evaluator_capability_ok"}
+RELAY_STATES = ("done", "halted")  # SES-03 (a): moving a unit there makes a relay due
 MAX_QUESTIONS = 4  # AskUserQuestion's limit per call
 
 
@@ -377,6 +378,10 @@ def apply_op(rt, project_id: str, unit_id: str, op: dict | None, strict: bool) -
                         ev["runner_agent_id"], json.dumps(ev["result"], ensure_ascii=False)))
     if op.get("invalidate_below"):
         tokens.invalidate_for_new_contract(rt, project_id, unit_id, op["invalidate_below"])
+    if op.get("relay_due"):
+        from . import isolation  # noqa: PLC0415 -- R1-e
+
+        isolation.trigger_once(rt, op["id"], project_id, op["relay_due"])
 
 
 def recover(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str) -> dict:
@@ -424,6 +429,8 @@ def take(tx, ctx: Ctx, t: dict, to: str, actor: dict, extra: dict | None = None)
                if (why := checks[name](ctx))]
     if failed:
         raise FlowError(f"{t['from']} -> {to} refused:\n  " + "\n  ".join(failed))
+    if to in RELAY_STATES:
+        ctx.op_parts["relay_due"] = f"unit {ctx.unit['id']} moved to {to}"
     op = _new_op(consume=list(ctx.consume), **ctx.op_parts)
     apply_op(ctx.rt, ctx.store.project_id, ctx.unit["id"], op, strict=True)
     unit = ctx.unit
@@ -579,10 +586,17 @@ def spend_runner(rt: sqlite3.Connection, token: str | None, command: str, unit_i
 
 def record_review(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, kind: str,
                   result: str, blockers: list[str], unmapped: list[str],
-                  token: str | None) -> dict:
+                  token: str | None, via: str | None = None) -> dict:
     """AC-4: the runner token is spent first (a failure later never leaves it usable),
-    then the review is written."""
+    then the review is written. R1-e AC-7: a verify review records the capability it was
+    made through (`via`) and whether that capability was available then."""
     bound = spend_runner(rt, token, "review record", unit_id, store.project_id)
+    via_state = None
+    if kind == "verify" and via:
+        from . import caps  # noqa: PLC0415 -- R1-e
+
+        ok, why = caps.status(rt, via)
+        via_state = {"via": via, "via_available": ok, "via_reason": why}
 
     def body(tx):
         unit = read_unit(tx.conn, unit_id)
@@ -596,7 +610,8 @@ def record_review(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, 
                             " contract to review")
         review = {"kind": kind, "result": result, "blockers": blockers,
                   "unmapped_changes": unmapped, "agent_id": bound["agent_id"],
-                  "contract_sha": ref["sha"], "ts": store_mod.now_iso(), "token": token}
+                  "contract_sha": ref["sha"], "ts": store_mod.now_iso(), "token": token,
+                  **(via_state or {})}
         return tx.revise("unit", unit_id, reviews=(unit.get("reviews") or []) + [review], op=None)
     recover(store, rt, unit_id)
     return atomic(store, rt, {"cli": "review record", "runner_token": token}, body)

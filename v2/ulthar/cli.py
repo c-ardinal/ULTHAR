@@ -6,7 +6,10 @@
   review record, verify                                            (R1-c)
   pack install|list, run, unit advance <u> integrated|done|reopen|contract_draft,
   unit show <u> --ask reopen --ac <id|なし>                          (R1-d)
-  extract                         (internal: the detached extraction worker)
+  relay, cap check|list, monitor, unit show <u> --ask subst --cap <c>,
+  review record --via <capability>                                 (R1-e)
+  extract, notify-send            (internal: the detached extraction worker and
+                                   notification sender)
 Project-scoped commands act on the project of --project-dir (default: the current
 directory); see ulthar.store for how that maps to a knowledge_root.
 """
@@ -102,16 +105,28 @@ def cmd_decide_list(args) -> int:
     return 0
 
 
+def _awaiting(args, store: store_mod.Store, what: str) -> None:
+    """AUT-03: a question the owner must answer is an important notification."""
+    from . import notify  # noqa: PLC0415
+
+    _with_rt(args, lambda rt: notify.send(
+        rt, db_mod.resolve_path(getattr(args, "db", None)), store.project_id, "awaiting_answer",
+        f"回答待ち: {what}（{store.project_id}）。窓口の AskUserQuestion に回答してください。", True,
+        str(store.repo or args.project_dir or os.getcwd())))
+
+
 def cmd_decide_review(args) -> int:
+    store = _store(args)
     conn = _rt(args)
     try:
-        question = decide_mod.review(_store(args), conn)
+        question = decide_mod.review(store, conn)
     finally:
         conn.close()
     if question is None:
         print("未確認の決定候補はありません。")
         return 0
     _print_json(question)
+    _awaiting(args, store, "決定候補の確認")
     return 0
 
 
@@ -255,10 +270,13 @@ def cmd_unit_show(args) -> int:
     store = _store(args)
     if args.ask == "reopen":
         _print_json(_with_rt(args, lambda rt: stages.reopen_question(store, rt, args.unit, args.ac)))
-        return 0
-    if args.ask:
+    elif args.ask == "subst":
+        _print_json(_with_rt(args, lambda rt: stages.subst_question(store, rt, args.unit, args.cap)))
+    elif args.ask:
         ask = flow_mod.qual_question if args.ask == "qual" else flow_mod.resume_question
         _print_json(_with_rt(args, lambda rt: ask(store, rt, args.unit)))
+    if args.ask:
+        _awaiting(args, store, f"単位 {args.unit} の質問（{args.ask}）")
         return 0
     _print_json(_with_rt(args, lambda rt: flow_mod.recover(store, rt, args.unit)))
     return 0
@@ -305,6 +323,7 @@ def cmd_contract_lint(args) -> int:
 def cmd_contract_show(args) -> int:
     store = _store(args)
     _print_json(_with_rt(args, lambda rt: flow_mod.contract_question(store, rt, args.unit)))
+    _awaiting(args, store, f"単位 {args.unit} の契約の確定")
     return 0
 
 
@@ -312,7 +331,7 @@ def cmd_review_record(args) -> int:
     store = _store(args)
     rec = _with_rt(args, lambda rt: flow_mod.record_review(
         store, rt, args.unit, args.kind, args.result, args.blocker, args.unmapped_change,
-        args.runner_token))
+        args.runner_token, args.via))
     review = rec["reviews"][-1]
     print(f"{rec['id']}\t{review['kind']} review {review['result']} by {review['agent_id']}"
           f"\tblockers={len(review['blockers'])} unmapped={len(review['unmapped_changes'])}")
@@ -328,6 +347,13 @@ def cmd_verify(args) -> int:
               f"\texit={r['exit_code']}")
     print(f"tree {manifest['tree_hash']}  manifest run {manifest['run_id']}  unit {rec['state']}"
           + (f" ({rec.get('halt_reason')})" if rec["state"] == "halted" else ""))
+    if rec["state"] == "halted":
+        from . import notify  # noqa: PLC0415
+
+        _with_rt(args, lambda rt: notify.send(
+            rt, db_mod.resolve_path(args.db), store.project_id, "halted",
+            f"単位 {rec['id']} が halted になりました（{rec.get('halt_reason')}）。", True,
+            str(store.repo or args.project_dir or os.getcwd())))
     return 0 if manifest["all_quant_passed"] and rec["state"] != "halted" else 1
 
 
@@ -364,6 +390,76 @@ def cmd_run(args) -> int:
     return 0 if res["decision"] == "allow" and res["exit_code"] == 0 else 1
 
 
+def cmd_cap_check(args) -> int:
+    from . import caps, notify  # noqa: PLC0415
+
+    store = _store(args)
+    res = _with_rt(args, lambda rt: caps.check(store, rt, args.name))
+    print(f"{res['name']}\t{'OK' if res['ok'] else 'FAILED'}\t{res['detail']}"
+          + (f"\tremaining={res['remaining']}" if res["remaining"] else ""))
+    if res["degraded"]:
+        _with_rt(args, lambda rt: notify.send(
+            rt, db_mod.resolve_path(args.db), store.project_id, "capability_degraded",
+            f"能力の劣化: {res['name']} の健全性検査が失敗しました（{res['detail'][:200]}）。", True,
+            str(store.repo or args.project_dir or os.getcwd())))
+    return 0 if res["ok"] else 1
+
+
+def cmd_cap_list(args) -> int:
+    from . import caps  # noqa: PLC0415
+
+    for c in _with_rt(args, caps.listing):
+        print(f"{c['name']}\t{'available' if c['available'] else 'UNAVAILABLE'}\t{c['reason']}"
+              f"\tlast_check={c['last_check'] or '-'}\tremaining={c['remaining'] or '-'}")
+    return 0
+
+
+def cmd_relay(args) -> int:
+    from . import relay  # noqa: PLC0415
+
+    store = _store(args)
+    res = _with_rt(args, lambda rt: relay.run(store, rt, args.runner_token,
+                                              str(store.repo or args.project_dir or os.getcwd()),
+                                              db_mod.resolve_path(args.db)))
+    print(f"relayed: episode {res['episode']}, lease in handover (token {res['closed_token']} "
+          f"closed), {res['launched']}")
+    return 0
+
+
+def cmd_monitor(args) -> int:
+    from . import monitor  # noqa: PLC0415
+
+    monitor.serve(db_mod.resolve_path(args.db), args.port)
+    return 0
+
+
+def cmd_notify_send(args) -> int:
+    from . import notifier  # noqa: PLC0415
+
+    ok = _with_rt(args, lambda rt: notifier.send_recorded(rt, _store(args), args.nid))
+    return 0 if ok else 1
+
+
+def _r1e_parsers(sub) -> None:
+    cap = sub.add_parser("cap", help="the capability registry (PORT-05)")
+    csub = cap.add_subparsers(dest="cap_command", required=True)
+    _leaf(csub, "check", cmd_cap_check, "run and record a capability's health check").add_argument(
+        "name", help="codex | ntfy | claude_push")
+    _leaf(csub, "list", cmd_cap_list, "every capability and whether it is available")
+    rel = _leaf(sub, "relay", cmd_relay, "hand the window over to a new one (the window only)")
+    rel.add_argument("--runner-token", help="(added by the hook)")
+    mon = _leaf(sub, "monitor", cmd_monitor, "the local monitor on 127.0.0.1 (the owner's)")
+    mon.add_argument("--port", type=int, default=0, help="default: any free port")
+    ns = _leaf(sub, "notify-send", cmd_notify_send, "(internal) send one queued notification")
+    ns.add_argument("--nid", required=True)
+
+
+def _refusals() -> tuple:
+    from . import caps, relay  # noqa: PLC0415 -- R1-e modules load only when used
+
+    return REFUSALS + (caps.CapError, relay.RelayError)
+
+
 REFUSALS = (flow_mod.FlowError, contract_mod.ContractError, tokens_mod.TokenError,
             evidence_mod.EvidenceError, packs_mod.PackError)
 
@@ -380,10 +476,11 @@ def _r1c_parsers(sub) -> None:
         "--issue", required=True)
     show = _leaf(usub, "show", cmd_unit_show, "the unit's record, or an owner question")
     show.add_argument("unit")
-    show.add_argument("--ask", choices=("qual", "resume", "reopen"),
-                      help="print (and record) the QUAL-JUDGE / UNIT-RESUME / UNIT-REOPEN "
-                           "AskUserQuestion input")
+    show.add_argument("--ask", choices=("qual", "resume", "reopen", "subst"),
+                      help="print (and record) the QUAL-JUDGE / UNIT-RESUME / UNIT-REOPEN / "
+                           "CAP-SUBST AskUserQuestion input")
     show.add_argument("--ac", help="with --ask reopen: the AC that should have caught it, or なし")
+    show.add_argument("--cap", help="with --ask subst: the capability the verify review used")
     adv = _leaf(usub, "advance", cmd_unit_advance, "move the unit (window only)")
     adv.add_argument("unit")
     adv.add_argument("to")
@@ -409,6 +506,8 @@ def _r1c_parsers(sub) -> None:
     rr.add_argument("--result", required=True, choices=("pass", "fail"))
     rr.add_argument("--blocker", action="append", default=[])
     rr.add_argument("--unmapped-change", action="append", default=[])
+    rr.add_argument("--via", help="--kind verify: the capability the review was made through "
+                                  "(R1-e AC-7; the evaluator capability, default codex)")
     rr.add_argument("--runner-token", help="(added by the hook)")
 
     ver = _leaf(sub, "verify", cmd_verify, "run the confirmed contract's verify commands")
@@ -481,6 +580,7 @@ def build_parser() -> argparse.ArgumentParser:
     _leaf(ssub, "verify", cmd_store_verify, "recompute the JSONL chain values (AC-20)")
 
     _r1c_parsers(sub)
+    _r1e_parsers(sub)
 
     ex = _leaf(sub, "extract", cmd_extract, "(internal, hook only) run one extraction")
     ex.add_argument("--episode", required=True)
@@ -499,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except REFUSALS as exc:
+    except _refusals() as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
     except store_mod.StoreError as exc:

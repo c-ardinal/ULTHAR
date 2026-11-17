@@ -12,6 +12,7 @@ import json
 import sys
 
 from helpers import Probe
+from r1e_helpers import clear_relay_due
 from r1c_helpers import (answer, cli, confirm_contract, contract, edit, new_sandbox, qual_ac,
                          quant_ac, reviewer_pass, runner, set_value, to_build, to_owner_review,
                          to_quant_verified, unit, write_contract)
@@ -23,6 +24,8 @@ def _loop(sb, unit_id: str, values: list[str]) -> list[str]:
         set_value(sb, "AC-1", v)
         runner(sb, "bld-1", ["verify", unit_id, "--self"])
         states.append(unit(sb, unit_id)["state"])
+        if states[-1] == "halted":
+            clear_relay_due(sb)  # R1-e AC-2: halted makes a relay due; this window goes on
     return states
 
 
@@ -104,7 +107,8 @@ def _gate_case(sb, case: str) -> tuple[str, object]:
     review = {"c": ["--result", "fail", "--blocker", "保存ボタンが押せない"],
               "e": ["--result", "pass", "--unmapped-change", "ヘッダーの色が変わった"]}.get(
         case, ["--result", "pass"])
-    runner(sb, "rev-1", ["review", "record", "--unit", unit_id, "--kind", "verify", *review])
+    runner(sb, "rev-1", ["review", "record", "--unit", unit_id, "--kind", "verify", "--via",
+                         "codex", *review])
     if case == "d":
         (sb.work / "src" / "app.txt").write_text("changed after the review\n", encoding="utf-8")
     return unit_id, cli(sb, "unit", "advance", unit_id, "owner_review")

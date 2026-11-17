@@ -10,6 +10,12 @@ byte 0 and the per-line dedupe key keeps already stored Episodes from repeating.
 Only complete ('\\n'-terminated) lines are consumed, so a line still being written
 is picked up by the next call.
 
+R1-e (SES-03, P-22): the newest main-chain assistant line's API usage (input + cache
+creation + cache read tokens) and the number of compactions go to the session's
+`sessions` row in the same transaction, and may raise the project's relay_due
+(ulthar.isolation.note_context); every owner message and AskUserQuestion answer read
+from the transcript is recorded as an owner action (`owner_actions`, AUT-03).
+
 Episodes go to the project's knowledge store (`<knowledge_root>/.ulthar/episodes.jsonl`,
 ulthar.store; R1-b AC-2), written in one locked store transaction before the cursor
 commits: a store failure leaves the cursor where it was, so the lines are re-read. The
@@ -22,8 +28,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import zlib
+from datetime import datetime, timezone
 from pathlib import Path
 
+from . import isolation
 from . import store as store_mod
 from .store import now_iso  # noqa: F401 -- ulthar.hook and others use ingest.now_iso
 
@@ -38,6 +46,7 @@ ASYNC_LAUNCH_MARKER = "Async agent launched"
 INGEST_GUARD_ID = "ingest"
 NO_TOOL = "(none)"
 KINDS = ("owner_msg", "ask", "answer", "compact_summary", "agent_report")
+USAGE_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
 
 def _texts(content) -> list[str]:
@@ -61,6 +70,8 @@ class _Extractor:
     def __init__(self, conn: sqlite3.Connection, session_id: str):
         self.conn = conn
         self.session_id = session_id
+        self.usage: int | None = None  # the newest main-chain assistant line's context usage
+        self.compactions = 0
 
     def _tool_name(self, tool_use_id: str) -> str | None:
         row = self.conn.execute(
@@ -74,10 +85,12 @@ class _Extractor:
         rtype = rec.get("type")
         content = (rec.get("message") or {}).get("content")
         if rtype == "assistant":
+            self._note_usage((rec.get("message") or {}).get("usage"))
             return self._assistant(content)
         if rtype != "user":
             return []
         if rec.get("isCompactSummary") is True:
+            self.compactions += 1
             return [("compact_summary", "\n".join(_texts(content)), 0)]
         out: list[tuple[str, str, int]] = []
         if rec.get("isMeta") is not True:
@@ -89,6 +102,13 @@ class _Extractor:
         if isinstance(content, list):
             out.extend(self._tool_results(content))
         return out
+
+    def _note_usage(self, usage) -> None:
+        """SES-03 (P-22): input + cache creation + cache read tokens of the API call."""
+        if isinstance(usage, dict):
+            parts = [usage.get(k) for k in USAGE_KEYS]
+            if all(isinstance(v, int) or v is None for v in parts):
+                self.usage = sum(v or 0 for v in parts)
 
     def _assistant(self, content) -> list[tuple[str, str, int]]:
         out = []
@@ -200,6 +220,10 @@ def ingest(conn: sqlite3.Connection, session_id: str, transcript_path: str,
                     counts["lines"] += 1
         if found or on_tx is not None:
             _store_episodes(conn, store, session_id, hook, found, counts, on_tx)
+        _owner_actions(conn, store, found)
+        if extractor.usage is not None or extractor.compactions:
+            isolation.note_context(conn, store, session_id, extractor.usage, extractor.compactions)
+            counts["ctx_used"] = extractor.usage
         conn.execute(
             "INSERT INTO ingest_cursors VALUES (?,?,?,?,?,?) "
             "ON CONFLICT(session_id, transcript_path) DO UPDATE SET byte_offset=excluded.byte_offset,"
@@ -217,6 +241,26 @@ def ingest(conn: sqlite3.Connection, session_id: str, transcript_path: str,
         # may its manifest go (a rollback above leaves it, and the next open re-records)
         store.finalize(conn)
     return counts
+
+
+def _utc(ts) -> str:
+    """A transcript timestamp ("...Z") in ulthar's form; now when absent or unreadable."""
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(
+            timezone.utc).isoformat(timespec="milliseconds")
+    except ValueError:
+        return now_iso()
+
+
+def _owner_actions(conn: sqlite3.Connection, store: store_mod.Store, found: list[tuple]) -> None:
+    """AUT-03 (R1-e AC-10): the owner's messages and AskUserQuestion answers read from the
+    transcript are the owner's actions that mark important notifications read -- only
+    transcript lines count, never a hook payload's claim (a PostToolUse can be forged)."""
+    for kind, _text, _dedupe, _ref, rec, _meta in found:
+        if kind in ("owner_msg", "answer"):
+            conn.execute("INSERT INTO owner_actions (project_id, ts, kind, event_id)"
+                         " VALUES (?,?,?,NULL)", (store.project_id, _utc(rec.get("timestamp")),
+                                                  f"transcript:{kind}"))
 
 
 class _Malformed(Exception):

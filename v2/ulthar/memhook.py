@@ -15,6 +15,9 @@ token of a subagent's `ulthar review record|verify` (ulthar.tokens, answered thr
 `updatedInput`), and limits product writes to confirmed unit scopes (ulthar.product,
 GOAL-08); the AskUserQuestion PostToolUse also issues the unit owner tokens
 (CONTRACT-CONFIRM, QUAL-JUDGE, UNIT-RESUME, UNIT-REOPEN).
+R1-e: PreToolUse also blocks direct external writes (ulthar.external, AC-8) and applies
+the monitor-token, freeze, relay-due, ingest-failure and window-lease rules
+(ulthar.isolation, AC-1/3/5/13) before the unit scope.
 R1-d (ulthar.packs, ulthar.gitref): PreToolUse also blocks every write of a subagent
 whose receipt check failed, a pack path's write without that pack's receipt (AC-5),
 and git ref updates of the integration / protected branches (AC-11); an Agent launch
@@ -49,7 +52,7 @@ ERROR_GUARD = "memory-error"
 REPAIR_PER_PROMPT = 3  # lost registrations re-sent to extraction per owner prompt
 REPAIR_AFTER_SEC = 60  # a pending, unclaimed extraction this old was never started
 
-HOOK_ONLY = frozenset({"hook", "extract"})
+HOOK_ONLY = frozenset({"hook", "extract", "notify-send"})
 HOOK_ONLY_LAUNCHERS = ("ulthar", "ulthar.__main__", "__main__.py")
 HOOK_ONLY_CONTEXT = re.compile(r"\$\(|`|\$'")  # command substitution / ANSI-C quoting
 HOOK_ONLY_STRIP = re.compile(r"\$'|\$\(|['\"`\\(){}]")
@@ -283,17 +286,28 @@ def _dispatch(payload: dict, project: Project, rt, act: Action, detail: dict) ->
 
 
 def _pre_writes(payload: dict, project: Project, rt, detail: dict, memo: dict) -> tuple:
-    """(block message, guard id) of R1-c AC-11 and R1-d AC-4 / AC-5 / AC-11, or (None, None).
+    """(block message, guard id) of R1-e AC-8 (external writes), R1-e AC-1/3/5/13
+    (ulthar.isolation), R1-c AC-11 and R1-d AC-4 / AC-5 / AC-11, or (None, None).
     The R1-d modules load only for the calls they judge (hook latency, AC-16)."""
-    from . import product  # noqa: PLC0415 -- see run()
+    from . import external  # noqa: PLC0415 -- see run()
+    from . import isolation  # noqa: PLC0415
+    from . import product  # noqa: PLC0415
 
+    msg = external.check(payload, project.store)
+    if msg:
+        return msg, external.GUARD_ID
+    writes = product.product_writes(payload, project.store, memo)
+    msg, guard = isolation.check(payload, rt, project.store, writes, detail,
+                                 _is_read_only_shell, extract.in_extractor(), memo)
+    if msg:
+        return msg, guard
     agent = payload.get("agent_id")
     if agent and (payload.get("tool_name") in WRITE_TOOLS or product.targets(payload)):
         msg = packs_mod().refused(rt, agent)
         if msg:
             return msg, packs_mod().GUARD_ID
     entries: list = []
-    msg = product.check(payload, project.store, rt, detail, memo, entries)
+    msg = product.check(payload, project.store, rt, detail, memo, entries, writes)
     if msg:
         return msg, product.GUARD_ID
     if entries:

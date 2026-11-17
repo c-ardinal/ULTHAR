@@ -114,7 +114,7 @@ def check_runs(p: Probe) -> None:
                 adv.returncode == 0 and rev is not None and rev.returncode == 0
                 and rows[-1] == ("rev-1", 0) and rows[0] == ("bld-1", 1), f"{rows} {adv.stderr[-200:]}")
         runner(sb, "rev-1", ["review", "record", "--unit", unit_id, "--kind", "verify",
-                             "--result", "pass"])
+                             "--result", "pass", "--via", "codex"])
         confirmed = sb.kr / ".ulthar" / "contracts" / unit_id / "v1.yaml"
         original = confirmed.read_bytes()
         confirmed.write_bytes(original + b"# edited after the confirmation\n")
