@@ -190,7 +190,7 @@ def to_accepted(sb: Sandbox, builder: str = "bld-1", reviewer: str = "rev-1",
     start_agent(sb, reviewer, EVALUATOR)
     run_ulthar(sb, reviewer, ["verify", unit_id], agent_type=EVALUATOR)
     _, rec = run_ulthar(sb, reviewer, ["review", "record", "--unit", unit_id, "--kind", "verify",
-                                       "--result", "pass"], agent_type=EVALUATOR)
+                                       "--result", "pass", "--via", "codex"], agent_type=EVALUATOR)
     assert rec is not None and rec.returncode == 0, rec.stderr if rec else "blocked"
     advance(sb, unit_id, "owner_review")
     advance(sb, unit_id, "accepted")
@@ -200,8 +200,11 @@ def to_accepted(sb: Sandbox, builder: str = "bld-1", reviewer: str = "rev-1",
 
 
 def integrate(sb: Sandbox, unit_id: str, session: str = WINDOW):
-    """The window runs `ulthar unit advance <u> integrated` (its runner token)."""
-    return run_ulthar(sb, None, ["unit", "advance", unit_id, "integrated"], session=session)[1]
+    """The window runs `ulthar unit advance <u> integrated` (its runner token). The CLI's
+    result -- or, when the hook blocked the call (R1-e AC-1: a window without the lease),
+    the hook's."""
+    pre, res = run_ulthar(sb, None, ["unit", "advance", unit_id, "integrated"], session=session)
+    return res if res is not None else pre
 
 
 def expire_lease(sb: Sandbox) -> None:

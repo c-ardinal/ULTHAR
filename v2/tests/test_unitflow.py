@@ -234,7 +234,7 @@ def check_owner_review_return(p: Probe) -> None:
         unit_id = to_quant_verified(sb)
         runner(sb, "rev-1", ["verify", unit_id])
         runner(sb, "rev-1", ["review", "record", "--unit", unit_id, "--kind", "verify",
-                             "--result", "pass"])
+                             "--result", "pass", "--via", "codex"])
         r = _advance(sb, unit_id, "owner_review")
         p.check("AC-6: quant_verified -> owner_review (AC-9 conditions met)",
                 r.returncode == 0 and unit(sb, unit_id)["state"] == "owner_review", r.stderr[-400:])

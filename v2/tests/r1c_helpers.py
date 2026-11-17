@@ -36,7 +36,15 @@ def new_sandbox(non_product_globs: list[str] | None = None) -> Sandbox:
                  ["add", "-A"], ["commit", "-q", "-m", "init"]):
         subprocess.run(["git", "-C", str(sb.work), *args], check=True, capture_output=True)
     set_value(sb, "AC-1", "1")
+    codex_ok(sb)
     return sb
+
+
+def codex_ok(sb: Sandbox) -> None:
+    """R1-e AC-7: the evaluator capability (codex, a stub check) is available, so a verify
+    review made `--via codex` counts without a CAP-SUBST approval."""
+    res = sb.cli("cap", "check", "codex")
+    assert res.returncode == 0, res.stdout + res.stderr
 
 
 def set_value(sb: Sandbox, ac: str, text: str) -> None:
@@ -204,7 +212,7 @@ def to_quant_verified(sb: Sandbox, doc: dict | None = None, builder: str = "bld-
 def reviewer_pass(sb: Sandbox, unit_id: str, reviewer: str = "rev-1", *review_extra: str):
     runner(sb, reviewer, ["verify", unit_id])
     runner(sb, reviewer, ["review", "record", "--unit", unit_id, "--kind", "verify",
-                          "--result", "pass", *review_extra])
+                          "--result", "pass", "--via", "codex", *review_extra])
 
 
 def to_owner_review(sb: Sandbox, doc: dict | None = None, builder: str = "bld-1") -> str:

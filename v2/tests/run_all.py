@@ -9,7 +9,9 @@
     (test_unitflow, test_contract, test_gates, test_verify, test_scope, test_e2e_r1c,
     test_cli_r1c, test_imports) and R1-d AC-1..15 (test_packs: AC-1..5, 14; test_packflow:
     AC-6, 7, 14; test_lease: AC-8; test_integrate: AC-9, 10, 12, 14; test_gitref: AC-11;
-    test_e2e_r1d: AC-13; test_imports: AC-15); the real-transcript replay
+    test_e2e_r1d: AC-13; test_imports: AC-15) and R1-e AC-1..15 (test_isolation: AC-1, 2, 3, 5;
+    test_relay: AC-4; test_caps: AC-6, 7; test_external: AC-8; test_notify: AC-9, 10, 11;
+    test_monitor: AC-12, 13; test_e2e_r1e: AC-14; test_imports: AC-15); the real-transcript replay
     test_replay.py (R1-a AC-6/AC-9, R1-b AC-2/AC-16, R1-c AC-14, R1-d AC-16) skips with a message when
     $ULTHAR_REPLAY_TRANSCRIPT is unset, and runs only its counts (no timed stage, not
     judged, no perf record) with ULTHAR_SKIP_PERF=1;
