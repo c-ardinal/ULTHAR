@@ -83,8 +83,10 @@ def _indirection(p: Probe, sb) -> None:
         res = bash(sb, None, command)
         p.check(f"AC-11 (review #3): allowed -- {name}", res.returncode == 0, res.stderr[-300:])
     _command_position(p, sb)
+    _round3_on_develop(p, sb)
     git(sb, "checkout", "-q", WORK_BRANCH)
     _config_aliases(p, sb)
+    _child_shells(p, sb)
 
 
 def _command_position(p: Probe, sb) -> None:
@@ -97,6 +99,39 @@ def _command_position(p: Probe, sb) -> None:
                     "echo $(git update-ref refs/heads/develop HEAD)", "env A=1 git reset"):
         res = bash(sb, None, command)
         p.check(f"AC-11 (review r1d-2 A): blocked on develop -- `{command}`",
+                res.returncode == 2 and GUARD in res.stderr, res.stderr[-300:])
+
+
+def _round3_on_develop(p: Probe, sb) -> None:
+    """Review r1d-3 #3 / #4, develop checked out: heredoc bodies are no commands; a non-git
+    spelling of a ref-moving operation is blocked."""
+    bodies = ["cat <<'EOF'\ngit push\ngit commit -m x\ngit reset HEAD~1\nEOF",
+              "cat <<EOF\ngit push\nEOF", "cat <<-\"END\"\n\tgit commit\n\tEND\necho done"]
+    for command in bodies:
+        res = bash(sb, None, command)
+        p.check(f"AC-11 (review r1d-3 #3): allowed on develop -- heredoc body {command.split()[1]}",
+                res.returncode == 0, res.stderr[-300:])
+    for command, name in (("git commit -F - <<EOF\nmessage\nEOF", "git commit with a heredoc message"),
+                          ("g merge x", "`g merge x` (a shell alias of git)"),
+                          ("g reset --hard", "`g reset --hard`")):
+        res = bash(sb, None, command)
+        p.check(f"AC-11 (review r1d-3 #3/#4): blocked on develop -- {name}",
+                res.returncode == 2 and GUARD in res.stderr, res.stderr[-300:])
+    for command in ("npm run build", "echo merge", "docker ps"):
+        res = bash(sb, None, command)
+        p.check(f"AC-11 (review r1d-3 #4): allowed on develop -- `{command}`", res.returncode == 0,
+                res.stderr[-300:])
+
+
+def _child_shells(p: Probe, sb) -> None:
+    """Review r1d-3 #2, work branch: cmd /c and powershell -Command run the whole tail."""
+    for tool, command in (("Bash", "cmd /c git update-ref refs/heads/develop HEAD"),
+                          ("Bash", 'cmd /c "git update-ref refs/heads/develop HEAD"'),
+                          ("Bash", "powershell -Command git update-ref refs/heads/develop HEAD"),
+                          ("PowerShell", 'powershell -Command "git update-ref refs/heads/develop HEAD"'),
+                          ("PowerShell", "pwsh -c git update-ref refs/heads/develop HEAD")):
+        res = _shell(sb, tool, command)
+        p.check(f"AC-11 (review r1d-3 #2): blocked -- {tool}: `{command}`",
                 res.returncode == 2 and GUARD in res.stderr, res.stderr[-300:])
 
 

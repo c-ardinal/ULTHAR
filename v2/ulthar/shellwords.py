@@ -91,6 +91,53 @@ def tokenize(cmd: str, escape: str | None, exact: bool = False) -> list[str]:
     return toks
 
 
+HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]+)'|\"([^\"\n]+)\"|\\?([A-Za-z_][\w.-]*))")
+
+
+def _unquoted_heredocs(line: str) -> list[tuple[str, bool]]:
+    """(delimiter, strip_tabs) of each here-document operator of `line` that stands
+    outside quotes (`<<<`, a here-string, is none)."""
+    found, quote, i = [], None, 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch == "\\":
+            i += 2
+            continue
+        elif ch in "'\"":
+            quote = ch
+        elif line.startswith("<<", i) and not line.startswith("<<<", i):
+            m = HEREDOC.match(line, i)
+            if m:
+                found.append((m.group(2) or m.group(3) or m.group(4), m.group(1) == "-"))
+                i = m.end()
+                continue
+        i += 1
+    return found
+
+
+def strip_heredocs(command: str) -> str:
+    """A Bash command with the bodies of its here-documents left out -- the lines after a
+    line with an unquoted `<<WORD` / `<<-WORD` / `<<'WORD'` / `<<"WORD"`, up to the line
+    that is exactly WORD (leading tabs stripped for `<<-`) -- so their text is never read
+    as commands. An unterminated body runs to the end, as in Bash."""
+    out, pending = [], []
+    for line in command.split("\n"):
+        if pending:
+            word, tabs = pending[0]
+            if (line.lstrip("\t") if tabs else line).rstrip("\r") == word:
+                pending.pop(0)
+            continue
+        out.append(line)
+        pending += _unquoted_heredocs(line)
+    return "\n".join(out)
+
+
 def variants(command: str, tool: str | None) -> list[list[str]]:
     escape = ESCAPES.get(tool or "", "\\")
     return [tokenize(command, escape), tokenize(command, None)]

@@ -4,10 +4,13 @@ R1-d AC-11) -- hook side, after the ported v1 git_discipline (which stays as it 
 In a project with `.claude/ulthar.json`, every Bash / PowerShell command is read for
 git in COMMAND POSITION: the first word of a segment (after VAR=x assignments), after
 the wrappers xargs / env / command / exec / nice / time / timeout / sudo / nohup /
-stdbuf (and their options), at a `$(` / backtick / `(` / `{` opening, and inside
-`bash -c` / `powershell -Command` (PowerShell's `&` call operator splits the segment, so
-`& git ...` is a segment of its own). `echo git commit` or `grep "git reset" f` is no git
-call. A call is blocked when it would move a guarded branch -- the config's
+stdbuf (and their options), at a `$(` / backtick / `(` / `{` opening, and inside a
+child shell: `bash -c` / `sh -c` take their one script argument, `cmd /c` / `cmd /k` and
+`powershell -Command` / `-c` the whole rest of the line, quoted or not (PowerShell's `&`
+call operator splits the segment, so `& git ...` is a segment of its own). `echo git
+commit` or `grep "git reset" f` is no git call, nor is the body of a Bash here-document
+(`<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`: shellwords.strip_heredocs) -- the line that
+opens it is read as usual. A call is blocked when it would move a guarded branch -- the config's
 `integration_branch` (default develop) and `protected_branches` (default main, master):
   * merge / pull / commit / rebase / cherry-pick / revert / am / reset while that branch
     is checked out (the HEAD of the repository the command runs in, read from .git);
@@ -29,14 +32,16 @@ call. A call is blocked when it would move a guarded branch -- the config's
     blocked; with no alias (an external git-<name>) it is blocked while the branch is
     checked out or when the command names it; a command whose executable is itself
     indirect (`$var ...`, eval, Invoke-Expression / iex, Invoke-Command) and that names the
-    branch or update-ref; and any command-position executable whose first argument is
-    `update-ref` followed by a guarded ref (`g update-ref refs/heads/develop ...`).
+    branch or update-ref; any command-position executable whose first argument is
+    `update-ref` followed by a guarded ref (`g update-ref refs/heads/develop ...`); and,
+    while a guarded branch is checked out, any command-position executable other than a
+    display command whose first argument is a ref-moving git operation (merge, pull,
+    commit, rebase, cherry-pick, revert, am, reset, update-ref, push) -- `g merge x` with
+    a shell alias or function `g` = git.
 `git commit --dry-run` stays allowed. The ulthar CLI's own git runs (`ulthar unit
 advance <u> integrated`) never pass a hook.
-Known limit: a spelling that names neither git nor update-ref with the branch in the
-command text -- a PowerShell alias or Bash alias / function defined earlier (`g merge x`
-with `g` = git, on develop), a script file that runs git -- is not seen here (as R1-c's
-shell-write limit); such a move does not integrate any unit: its record stays accepted.
+Known limit: git run from inside a script file or program (`./sync.sh`, `make release`)
+is not seen here (as R1-c's shell-write limit).
 """
 from __future__ import annotations
 
@@ -58,7 +63,15 @@ VALUE_OPTIONS = frozenset({"--work-tree", "--namespace", "--exec-path", "--super
 CONFIG_OPTIONS = frozenset({"-c", "--config-env"})
 INDIRECT_COMMANDS = frozenset({"eval", "iex", "invoke-expression", "invoke-command", "icm"})
 PRINTERS = frozenset({"echo", "printf", "write-output", "write-host", "grep", "rg", "findstr",
-                      "select-string"})  # their arguments are text, not a command
+                      "select-string", "cat", "less", "more", "head", "tail", "man", "help",
+                      "get-help", "which", "where", "type", "ls", "dir", "get-content"})
+# their arguments are text or names, not a command
+REF_MOVERS = frozenset({"merge", "pull", "commit", "rebase", "cherry-pick", "revert", "am",
+                        "reset", "update-ref", "push"})
+VALUED = frozenset({"-C", "-c", "--git-dir", "--work-tree"})
+CHILD_SHELLS = {"cmd": ("cmd", frozenset({"/c", "/k"})),
+                "powershell": ("PowerShell", frozenset({"-command", "-c", "-commandwithargs"})),
+                "pwsh": ("PowerShell", frozenset({"-command", "-c", "-commandwithargs"}))}
 WRAPPER_VALUE_OPTIONS = {
     "xargs": frozenset({"-I", "-n", "-L", "-P", "-d", "-E", "-s", "-a", "--max-args",
                         "--max-lines", "--max-procs", "--delimiter", "--arg-file"}),
@@ -311,7 +324,14 @@ def _guarded_ref(words: list[str], names: set[str]) -> str | None:
     return None
 
 
-def _not_git(words: list[str], names: set[str]) -> str | None:
+def _first_operand(words: list[str]) -> str | None:
+    j = 1
+    while j < len(words) and words[j].startswith("-"):
+        j += 2 if words[j] in VALUED else 1
+    return words[j] if j < len(words) else None
+
+
+def _not_git(words: list[str], names: set[str], ctx: "_Ctx") -> str | None:
     """Rules for a command-position executable that is not git."""
     first = words[0]
     if first.startswith(("$", "`")) or first.casefold() in INDIRECT_COMMANDS:
@@ -319,9 +339,18 @@ def _not_git(words: list[str], names: set[str]) -> str | None:
         return f"an indirect command (`{first} ...`) naming {hit}" if hit else None
     exe = shellwords.basename(first).removesuffix(".exe")
     args = [w for w in words[1:] if not w.startswith("-")]
-    if exe not in PRINTERS and args[:1] and args[0].casefold() == "update-ref":
+    if exe in PRINTERS:
+        return None
+    if args[:1] and args[0].casefold() == "update-ref":
         hit = _guarded_ref(args[1:], names)
-        return f"`{first} update-ref {hit}` (update-ref of a guarded branch)" if hit else None
+        if hit:
+            return f"`{first} update-ref {hit}` (update-ref of a guarded branch)"
+    op = _first_operand(words)
+    if op is not None and op.casefold() in REF_MOVERS:
+        here = ctx.here()
+        if here:
+            return (f"`{first} {op} ...` while {here} is checked out (a ref-moving git operation "
+                    "through a non-git spelling, e.g. a shell alias of git)")
     return None
 
 
@@ -419,20 +448,34 @@ def _why(sub: str, args: list[str], ctx: _Ctx, depth: int = 0) -> str | None:
     return None
 
 
+def _child(seg: list[str], k: int, tool: str) -> tuple[str, str]:
+    """(command text, tool) a child shell runs for the option at seg[k]: cmd /c|/k and
+    powershell -Command|-c take the whole rest of the segment, bash/sh -c its one argument."""
+    opt = seg[k].casefold()
+    for word in reversed(seg[:k]):
+        launcher = shellwords.basename(word).removesuffix(".exe")
+        if launcher in CHILD_SHELLS and opt in CHILD_SHELLS[launcher][1]:
+            return " ".join(seg[k + 1:]), CHILD_SHELLS[launcher][0]
+        if launcher in ("bash", "sh"):
+            return seg[k + 1], "Bash"
+    return seg[k + 1], tool
+
+
 def _segments(command: str, tool: str, depth: int = 0):
-    for toks in shellwords.variants(command, tool):
+    text = shellwords.strip_heredocs(command) if tool == "Bash" else command
+    for toks in shellwords.variants(text, tool):
         for seg in shellwords.segments(toks):
             yield seg
             if depth < NESTED_DEPTH:
-                for prev, tok in zip(seg, seg[1:]):
-                    if prev.casefold() in shellwords.COMMAND_OPTIONS:
-                        yield from _segments(tok, tool, depth + 1)
+                for k in range(len(seg) - 1):
+                    if seg[k].casefold() in shellwords.COMMAND_OPTIONS:
+                        yield from _segments(*_child(seg, k, tool), depth + 1)
 
 
 def _why_command(words: list[str], ctx: _Ctx, depth: int) -> str | None:
     call = _git_call(words)
     if call is None:
-        return _not_git(words, ctx.names)
+        return _not_git(words, ctx.names, ctx)
     aliases = [c for c in call["configs"] if c.casefold().startswith("alias.")]
     if aliases:
         return f"a git alias defined on the command line ({aliases[0].split('=')[0]})"
