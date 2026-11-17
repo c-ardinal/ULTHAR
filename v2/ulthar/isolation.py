@@ -19,8 +19,8 @@ The lease, relay and ingest rules do not apply to the extractor's own session.
 The flags are read from runtime.db only (project_flags); the context usage behind
 relay_due (AC-2) is recorded by the transcript ingest (`note_context`), never read here.
 
-TRUST-06 (AC-9): `intent_key` of every PreToolUse (the normalized target path of a
-write, else the command's root and first argument, else an MCP tool's name); `suspect`
+TRUST-06 (AC-9): `intent_key` of every PreToolUse (the canonical target path of a
+write -- symlinks and junctions resolved, else the command's root and first argument, else an MCP tool's name); `suspect`
 links an allowed call to a block of the same intent in the same session tree within
 SUSPECT_SEC by another tool or another agent_id, records a suspicion and queues an
 important notification (ulthar.notify).
@@ -45,6 +45,7 @@ RELAY_GUARD = "relay_due"
 FREEZE_GUARD = "frozen"
 MONITOR_GUARD = "monitor_token"
 INGEST_GUARD = "ingest_failed"
+LEASE_GATED = "lease_gated"
 READ_TOOLS = frozenset({"Read", "Glob", "Grep", "LS", "NotebookRead", "WebFetch", "WebSearch"})
 # not reads, but what the relay conditions themselves may need (answer the owner's
 # question, stop a running subagent): allowed while relay_due is set
@@ -258,17 +259,28 @@ def check(payload: dict, rt, store_of, writes: list, detail: dict, read_only_she
                 "(CORE-07). Reads are allowed; retry once the transcript is readable."), INGEST_GUARD
     if not gated:
         return None, None
-    held = lease_mod.state(rt, store.project_id)
-    session = str(payload.get("session_id") or "(none)")
+    msg = lease_block(rt, store.project_id, str(payload.get("session_id") or "(none)"))
+    if msg:
+        return msg, LEASE_GUARD
+    detail[LEASE_GATED] = True  # decided again under the write lock (ulthar.hook._record)
+    return None, None
+
+
+def lease_block(rt, project_id: str, session: str) -> str | None:
+    """Why `session` may not write now (another session's valid lease, or a handover from
+    this session), or None. Called by `check` and -- for the final, serialized decision --
+    again inside the BEGIN IMMEDIATE transaction that acquires or renews the lease, so two
+    sessions racing for a free (or handed-over) lease cannot both be allowed."""
+    held = lease_mod.state(rt, project_id)
     if held is None or held["session_id"] == session or (
             held["session_id"] is None and held["handover_from"] != session):
-        return None, None
+        return None
     who = (f"in handover from this session to its successor (`ulthar relay`)"
            if held["session_id"] is None else f"held by session {held['session_id']}")
     return (f"BLOCKED (ulthar window lease, SES-02): the project's window lease is {who} until "
             f"{held['expires_at']} (fencing token {held['fence_token']}). Only the holding "
             "window and its subagents write product files or change ulthar's state; this "
-            "window may read. Wait for the lease to lapse, or work in the holding window."), LEASE_GUARD
+            "window may read. Wait for the lease to lapse, or work in the holding window.")
 
 
 # ---------------------------------------------------------------------------- TRUST-06
@@ -280,7 +292,10 @@ def intent_key(payload: dict) -> str | None:
     if tool in WRITE_TOOLS or tool in SHELL_TOOLS:
         for raw, _sources in product.targets(payload):
             p = Path(raw)
-            return "path:" + product.fold(os.path.abspath(p if p.is_absolute() else Path(cwd) / p))
+            # the canonical target: symlinks / junctions of the existing part resolved, the
+            # part not created yet appended as written (product.resolved), then folded
+            full = os.path.abspath(p if p.is_absolute() else Path(cwd) / p)
+            return "path:" + product.fold(product.resolved(full))
     if tool in SHELL_TOOLS:
         command = str(ti.get("command") or "")
         for seg in shellwords.segments(shellwords.tokenize(
@@ -318,21 +333,3 @@ def suspect(rt, event_id: int, row: dict, project_id: str) -> list[str]:
             f"ガード {hit[3]}）で遮断された後、{row['tool']}（agent {row['agent_id'] or '窓口'}）で"
             f"許可されました。セッション {row['session_id']}、遮断 #{hit[0]} → 許可 #{event_id}。")
     return [notify.queue(rt, project_id, "evasion_suspected", text, important=True)]
-
-
-def owner_action(rt, event: str, payload: dict, project_id: str, event_id: int,
-                 is_owner_text) -> None:
-    """AUT-03's "read" mark: the owner's prompt (main session) or AskUserQuestion answer."""
-    if payload.get("agent_id"):
-        return
-    if event == "UserPromptSubmit":
-        prompt = payload.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip() or not is_owner_text(prompt):
-            return
-        kind = "prompt"
-    elif event == "PostToolUse" and payload.get("tool_name") == "AskUserQuestion":
-        kind = "answer"
-    else:
-        return
-    rt.execute("INSERT INTO owner_actions (project_id, ts, kind, event_id) VALUES (?,?,?,?)",
-               (project_id, store_mod.now_iso(), kind, event_id))

@@ -10,7 +10,8 @@ Per call, in order:
   6. store one `events` row and refresh the `sessions` row; in the same transaction the
      session's window lease is acquired or renewed and the row stamped with its fencing
      token (R1-d AC-8, ulthar.lease), and (R1-e) the row's intent key is matched against
-     earlier blocks (TRUST-06), the owner's action noted and due resends taken (AUT-03);
+     earlier blocks (TRUST-06) and due resends taken (AUT-03); a lease-gated allow is
+     decided again under the write lock, before the lease is touched (R1-e AC-1);
      the notification senders start after the commit (ulthar.notify);
   7. write stdout/stderr once and exit with the decision.
 An internal failure of the memory step blocks a PreToolUse like a guard-pipeline
@@ -199,33 +200,48 @@ def insert_row(conn: sqlite3.Connection, row: dict) -> int:
     return cur.lastrowid
 
 
+def _recheck_lease(conn: sqlite3.Connection, row: dict, project_id: str) -> None:
+    """R1-e AC-1 under the write lock: an allowed, lease-gated PreToolUse is decided again
+    here, in the transaction that acquires or renews the lease -- the check before the
+    lock (ulthar.isolation.check) may have raced another session for a free or
+    handed-over lease. A refusal turns the row into a deny (`late_block`)."""
+    if row["hook"] != "PreToolUse" or row["decision"] != "allow" or not row["detail"].get(
+            isolation.LEASE_GATED):
+        return
+    msg = isolation.lease_block(conn, project_id, row["session_id"])
+    if msg:
+        row.update(decision="deny", guard_id=isolation.LEASE_GUARD, late_block=msg)
+        row["detail"]["blocked_by"] = "the lease, decided again under the write lock"
+
+
 def _record(conn: sqlite3.Connection, row: dict, after_insert=None,
             lease_project: str | None = None, payload: dict | None = None) -> list[str]:
     """`after_insert(conn, event_id, detail)` runs in the same transaction; a detail it
     changed is stored back on the row. With `lease_project`, the session's lease is
-    acquired / renewed first and the row carries its fencing token (R1-d AC-8); then
-    (R1-e) the owner's action is noted, an allowed PreToolUse is matched against earlier
+    acquired / renewed first and the row carries its fencing token (R1-d AC-8) -- after a
+    lease-gated allow is decided again under the lock (R1-e AC-1); then (R1-e) an
+    allowed PreToolUse is matched against earlier
     blocks of its intent (TRUST-06) and important notifications due a resend are
     taken (AUT-03). Returns the notification ids to send after the commit."""
     sends: list[str] = []
     conn.execute("BEGIN IMMEDIATE")
     try:
         if lease_project is not None:
+            _recheck_lease(conn, row, lease_project)
             row["fence_token"] = lease_mod.touch(conn, lease_project, row["session_id"], row["ts"])
         event_id = insert_row(conn, row)
-        if after_insert is not None:
+        if after_insert is not None and not row.get("late_block"):
             after_insert(conn, event_id, row["detail"])
             conn.execute("UPDATE events SET detail=? WHERE id=?",
                          (json.dumps(row["detail"], ensure_ascii=False), event_id))
         if lease_project is not None:
-            isolation.owner_action(conn, row["hook"], payload or {}, lease_project, event_id,
-                                   ingest_mod.is_owner_text)
             if row["hook"] == "PreToolUse" and row["decision"] == "allow" and row.get("intent_key"):
                 sends += isolation.suspect(conn, event_id, row, lease_project)
             sends += notify_mod.due(conn, lease_project, row["ts"])
         conn.execute("COMMIT")
     except BaseException:
         row.pop("fence_token", None)  # its issue was rolled back: a journaled row has none
+        row.pop("late_block", None)  # a PreToolUse whose event fails to store is denied anyway
         conn.execute("ROLLBACK")
         raise
     return sends
@@ -422,6 +438,8 @@ def _dispatch(event: str, payload: dict, single_guard, loaded, db_path: Path, de
     if db_error is not None:
         return Processed(_db_failure(event, db_path, db_error, row, outcome.result),
                          outcome.guards_run)
+    if row.get("late_block"):
+        return Processed(io_mod.Result(2, "", row["late_block"]), outcome.guards_run)
     return Processed(_with_context(event, outcome.result, act), outcome.guards_run)
 
 
