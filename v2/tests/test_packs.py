@@ -10,7 +10,7 @@ import sys
 from helpers import Probe
 from r1c_helpers import cli, contract, make_unit, write_contract
 from r1d_helpers import (API_SKILLS, CREATOR, UI_SKILLS, WINDOW, agents_dir, bash,
-                         new_r1d_sandbox, pack_defs, payload, start_agent, to_build, write)
+                         expire_lease, new_r1d_sandbox, pack_defs, payload, start_agent, to_build, write)
 from ulthar.store import sha256
 
 
@@ -271,7 +271,9 @@ def check_project_scope(p: Probe) -> None:
         p.check("review #2: a receipt from project B does not authorize a write in project A",
                 bool(in_b) and in_b[0][0] != project_a and cross.returncode == 2
                 and "no receipt" in cross.stderr, cross.stderr[-300:])
+        expire_lease(sb)  # R1-e AC-1 would stop another session at the lease before the receipt
         other = write(sb, "c-a", "src/ui/a3.txt", "c\n", CREATOR, session="another-session")
+        expire_lease(sb)  # ... and the window takes the lease back afterwards
         p.check("review #2: a receipt from another (parent) session does not authorize a write",
                 other.returncode == 2 and "no receipt" in other.stderr, other.stderr[-300:])
         sb.query("UPDATE pack_agents SET skills='{' WHERE project_id=? AND agent_type=?",
