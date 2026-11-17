@@ -104,6 +104,27 @@ def _index_and_worktree(p: Probe, sb) -> None:
             "sees the attribute from the index) -> not in-process; the post-hash equals git "
             "hash-object", attr.endswith("filter: up") and posthash.blob(target) is None
             and got == want, f"{got} {want} {attr}")
+    split = sb.root / "repo3"
+    split.mkdir()
+    for args in (["init", "-q"], ["config", "core.autocrlf", "false"],
+                 ["config", "user.email", "t@example.invalid"], ["config", "user.name", "t"],
+                 ["config", "filter.up.clean", "tr a-z A-Z"]):
+        _git(split, *args)
+    (split / ".gitattributes").write_bytes(b"*.txt filter=up\n")
+    (split / "s.txt").write_bytes(b"lower\n")
+    _git(split, "add", ".gitattributes", "s.txt")
+    _git(split, "commit", "-q", "-m", "attrs")
+    _git(split, "update-index", "--split-index")
+    (split / ".gitattributes").unlink()
+    (split / "s.txt").write_bytes(b"other lower text\n")
+    shared = list((split / ".git").glob("sharedindex.*"))
+    attr = _git(split, "check-attr", "filter", "s.txt")
+    p.check("review r1d-3 #1: a split index (sharedindex.* in use) with the tracked "
+            ".gitattributes removed from the working tree -> not in-process; the post-hash "
+            "equals git hash-object", bool(shared) and attr.endswith("filter: up")
+            and posthash.blob(split / "s.txt") is None
+            and hook.blob_hash(str(split / "s.txt")) == _git(split, "hash-object", "s.txt"),
+            f"{shared} {attr}")
     linked = sb.root / "linked"
     _git(repo, "worktree", "add", "-q", "-b", "wt", str(linked))
     other = linked / "plain.md"

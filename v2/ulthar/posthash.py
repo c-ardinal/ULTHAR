@@ -12,8 +12,10 @@ a false acceptance -- so every source that can change what git stores must be ru
     .gitattributes in the working tree from the file's directory up to the repository
     root; none in the index either (git -- check-attr, add -- reads a tracked
     .gitattributes from the index when the working-tree file is gone): the index must be
-    version 2 or 3 and hold no byte
-    string `.gitattributes` at all (a conservative scan of the whole file); no
+    version 2 or 3 and hold no byte string `.gitattributes` at all (a conservative scan of
+    the whole file), and must not be split -- no `link` bytes anywhere in it (the split
+    index extension; a path containing "link" also sends the call to git) and no
+    sharedindex.* file in the git dir, as a split index keeps its entries there; no
     .git/info/attributes; no user git/attributes; a system gitattributes (next to the git
     executable's etc/) only if no line of it spells `filter` or `encoding` (an attribute
     macro included -- it must spell the attribute it sets);
@@ -87,6 +89,8 @@ def _index_clean(git_dir: Path) -> bool:
         return False
     if data[:4] != b"DIRC" or int.from_bytes(data[4:8], "big") not in INDEX_VERSIONS:
         return False
+    if b"link" in data or any(git_dir.glob("sharedindex.*")):
+        return False  # a split index: its entries live in sharedindex.<hash> (conservative)
     return b".gitattributes" not in data
 
 
