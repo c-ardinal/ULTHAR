@@ -300,7 +300,7 @@ def _pre_writes(payload: dict, project: Project, rt, detail: dict, memo: dict) -
         msg = packs_mod().check_write(payload, entries, project.store(), rt)
         if msg:
             return msg, packs_mod().GUARD_ID
-    if payload.get("tool_name") in SHELL_TOOLS and "git" in _shell_command(payload).casefold():
+    if payload.get("tool_name") in SHELL_TOOLS:  # also indirect spellings without "git"
         from . import gitref  # noqa: PLC0415
 
         msg = gitref.check(payload, project.store)

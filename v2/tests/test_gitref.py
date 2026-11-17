@@ -7,7 +7,7 @@ from __future__ import annotations
 import sys
 
 from helpers import Probe
-from r1d_helpers import WORK_BRANCH, bash, git, new_r1d_sandbox
+from r1d_helpers import WORK_BRANCH, bash, git, new_r1d_sandbox, payload
 
 GUARD = "ulthar git refs"
 
@@ -45,8 +45,44 @@ def check_git_refs(p: Probe) -> None:
                 nested.returncode == 2 and GUARD in nested.stderr, nested.stderr[-300:])
         p.check(f"AC-11: blocked {blocked}/7, allowed {int(allowed.returncode == 0)}/1",
                 blocked == 7 and allowed.returncode == 0)
+        _indirection(p, sb)
     finally:
         sb.cleanup()
+
+
+def _shell(sb, tool: str, command: str):
+    return sb.hook("PreToolUse", payload(tool, {"command": command}))
+
+
+def _indirection(p: Probe, sb) -> None:
+    """Review r1d-1 #3: indirection and ref-moving plumbing fail closed; read-only stays."""
+    on_work = [
+        ("Bash", "an alias defined with -c", "git -c alias.x='update-ref refs/heads/develop HEAD' x"),
+        ("Bash", "an alias defined with --config-env", "git --config-env=alias.y=ULTHAR_T y"),
+        ("Bash", "an unknown subcommand naming develop", "git sync-to develop"),
+        ("Bash", "symbolic-ref naming develop", "git symbolic-ref refs/heads/develop refs/heads/x"),
+        ("Bash", "fast-import", "git fast-import --quiet"),
+        ("Bash", "filter-branch --all", "git filter-branch --all"),
+        ("Bash", "a variable as the command", "g=git; $g update-ref refs/heads/develop HEAD"),
+        ("PowerShell", "PowerShell & $var", "$g = 'git'; & $g update-ref refs/heads/develop HEAD"),
+        ("PowerShell", "PowerShell Invoke-Expression",
+         "Invoke-Expression 'git update-ref refs/heads/develop HEAD'"),
+    ]
+    for tool, name, command in on_work:
+        res = _shell(sb, tool, command)
+        p.check(f"AC-11 (review #3): blocked -- {name}", res.returncode == 2 and GUARD in res.stderr,
+                res.stderr[-300:])
+    git(sb, "checkout", "-q", "develop")
+    res = bash(sb, None, "git st")
+    p.check("AC-11 (review #3): blocked -- an unknown subcommand (an alias) while develop is "
+            "checked out", res.returncode == 2 and GUARD in res.stderr, res.stderr[-300:])
+    allowed = [("git log --oneline -3 develop", "a read-only log naming develop"),
+               ("git status", "status while develop is checked out"),
+               ("git commit --dry-run", "commit --dry-run while develop is checked out")]
+    for command, name in allowed:
+        res = bash(sb, None, command)
+        p.check(f"AC-11 (review #3): allowed -- {name}", res.returncode == 0, res.stderr[-300:])
+    git(sb, "checkout", "-q", WORK_BRANCH)
 
 
 def main() -> int:
