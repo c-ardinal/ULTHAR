@@ -65,12 +65,13 @@ def check_post_hash(p: Probe) -> None:
         lf.write_bytes(b"line\n")
         p.check("a .gitattributes on the way -> git decides", posthash.blob(lf) is None
                 and hook.blob_hash(str(lf)) == _git(repo, "hash-object", "lf.md"))
-        os.environ["GIT_CONFIG_PARAMETERS"] = "'core.attributesfile'='x'"
-        try:
-            p.check("config given through the environment -> git decides",
-                    posthash.blob(plain) is None)
-        finally:
-            os.environ.pop("GIT_CONFIG_PARAMETERS", None)
+        for var in ("GIT_CONFIG_PARAMETERS", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
+            os.environ[var] = "x"
+            try:
+                p.check(f"{var} in the environment -> git decides", posthash.blob(plain) is None)
+            finally:
+                os.environ.pop(var, None)
+        _index_and_worktree(p, sb)
     finally:
         for k, v in saved.items():
             if v is None:
@@ -78,6 +79,39 @@ def check_post_hash(p: Probe) -> None:
             else:
                 os.environ[k] = v
         sb.cleanup()
+
+
+def _index_and_worktree(p: Probe, sb) -> None:
+    """Review r1d-2 C: a tracked .gitattributes removed from the working tree still
+    applies (git reads it from the index); a linked worktree (commondir) goes to git."""
+    repo = sb.root / "repo2"
+    repo.mkdir()
+    for args in (["init", "-q"], ["config", "core.autocrlf", "false"],
+                 ["config", "user.email", "t@example.invalid"], ["config", "user.name", "t"],
+                 ["config", "filter.up.clean", "tr a-z A-Z"]):
+        _git(repo, *args)
+    (repo / ".gitattributes").write_bytes(b"*.txt filter=up\n")
+    target = repo / "f.txt"
+    target.write_bytes(b"lower\n")
+    _git(repo, "add", ".gitattributes", "f.txt")
+    _git(repo, "commit", "-q", "-m", "attrs")
+    (repo / ".gitattributes").unlink()
+    target.write_bytes(b"other lower text\n")
+    want = _git(repo, "hash-object", "f.txt")
+    got = hook.blob_hash(str(target))
+    attr = _git(repo, "check-attr", "filter", "f.txt")
+    p.check("a tracked .gitattributes (clean filter) removed from the working tree (git still "
+            "sees the attribute from the index) -> not in-process; the post-hash equals git "
+            "hash-object", attr.endswith("filter: up") and posthash.blob(target) is None
+            and got == want, f"{got} {want} {attr}")
+    linked = sb.root / "linked"
+    _git(repo, "worktree", "add", "-q", "-b", "wt", str(linked))
+    other = linked / "plain.md"
+    other.write_bytes(b"lf only\n")
+    gitdir = repo / ".git" / "worktrees" / "linked"
+    p.check("a linked worktree (its git dir has commondir) -> git decides",
+            (gitdir / "commondir").exists() and posthash.blob(other) is None
+            and hook.blob_hash(str(other)) == _git(linked, "hash-object", "plain.md"))
 
 
 def main() -> int:
