@@ -4,6 +4,8 @@
   store verify                                                     (R1-b)
   issue add|list, unit new|show|advance|list, contract submit|lint|show,
   review record, verify                                            (R1-c)
+  pack install|list, run, unit advance <u> integrated|done|reopen|contract_draft,
+  unit show <u> --ask reopen --ac <id|なし>                          (R1-d)
   extract                         (internal: the detached extraction worker)
 Project-scoped commands act on the project of --project-dir (default: the current
 directory); see ulthar.store for how that maps to a knowledge_root.
@@ -25,6 +27,10 @@ from . import flow as flow_mod
 from . import worker as worker_mod
 from . import ingest as ingest_mod
 from . import memory
+from . import packinstall
+from . import packs as packs_mod
+from . import runcmd
+from . import stages
 from . import store as store_mod
 from . import tokens as tokens_mod
 
@@ -247,6 +253,9 @@ def cmd_unit_list(args) -> int:
 
 def cmd_unit_show(args) -> int:
     store = _store(args)
+    if args.ask == "reopen":
+        _print_json(_with_rt(args, lambda rt: stages.reopen_question(store, rt, args.unit, args.ac)))
+        return 0
     if args.ask:
         ask = flow_mod.qual_question if args.ask == "qual" else flow_mod.resume_question
         _print_json(_with_rt(args, lambda rt: ask(store, rt, args.unit)))
@@ -258,8 +267,16 @@ def cmd_unit_show(args) -> int:
 def cmd_unit_advance(args) -> int:
     store = _store(args)
     rec = _with_rt(args, lambda rt: flow_mod.advance(
-        store, rt, args.unit, args.to, reason=args.reason, cause=args.cause, actor=_actor()))
-    print(f"{rec['id']}\t{rec['history'][-1]['from']} -> {rec['state']}")
+        store, rt, args.unit, args.to, reason=args.reason, cause=args.cause, actor=_actor(),
+        runner_token=args.runner_token))
+    last = rec["history"][-1]
+    print(f"{rec['id']}\t{last['from']} -> {rec['state']}")
+    if args.to == "done" and rec["state"] != "done":
+        print(f"the verify on the integration branch failed: {json.dumps(last.get('diff'), ensure_ascii=False)}",
+              file=sys.stderr)
+        return 1
+    if rec["state"] == "integrated":
+        print(f"integration commit {rec['integration']['merge_commit']} on {rec['integration']['branch']}")
     return 0
 
 
@@ -278,7 +295,7 @@ def cmd_contract_lint(args) -> int:
     with store.reader() as conn:
         unit = flow_mod.read_unit(conn, args.unit)
     doc = flow_mod.contract_doc(store, unit.get("contract"))
-    found = contract_mod.lint(doc, store.repo or store.root)
+    found = contract_mod.lint(doc, store.repo or store.root, stages.packs_or_error(store))
     for rule, msg in found:
         print(f"{rule}\t{msg}")
     print("contract lint: OK" if not found else f"contract lint: {len(found)} violation(s)")
@@ -314,8 +331,41 @@ def cmd_verify(args) -> int:
     return 0 if manifest["all_quant_passed"] and rec["state"] != "halted" else 1
 
 
+def cmd_pack_install(args) -> int:
+    store = _store(args)
+    rows = _with_rt(args, lambda rt: packinstall.install(store, rt, Path(args.agents_dir)))
+    for r in rows:
+        print(f"{r['agent_type']}\t{r['def_path']}\tskills={','.join(s['name'] for s in r['skills'])}")
+    print(f"pack agents installed: {len(rows)}")
+    return 0
+
+
+def cmd_pack_list(args) -> int:
+    store = _store(args)
+    for p in packs_mod.for_store(store):
+        print(f"pack {p['name']}\tpaths={','.join(p['path_globs'])}\tskills={','.join(p['skills'])}"
+              f"\tdefault_acs={len(p['default_acs'])}")
+    rows = _with_rt(args, lambda rt: packinstall.listing(rt, store.project_id))
+    for r in rows:
+        print(f"{r['agent_type']}\t{'intact' if r['intact'] else 'CHANGED'}\t{r['def_path']}")
+    print(f"registered pack agents: {len(rows)}")
+    return 0 if all(r["intact"] for r in rows) else 1
+
+
+def cmd_run(args) -> int:
+    store = _store(args)
+    res = _with_rt(args, lambda rt: runcmd.run(store, rt, args.unit, args.name, args.runner_token))
+    for path, blob in sorted(res["changed"].items()):
+        print(f"{blob or '(deleted)'}\t{path}")
+    for problem in res["problems"]:
+        print(f"FAILED: {problem}", file=sys.stderr)
+    print(f"event {res['event_id']} {res['decision']}  exit={res['exit_code']}  "
+          f"fence_token={res['fence_token']}  changed={len(res['changed'])}")
+    return 0 if res["decision"] == "allow" and res["exit_code"] == 0 else 1
+
+
 REFUSALS = (flow_mod.FlowError, contract_mod.ContractError, tokens_mod.TokenError,
-            evidence_mod.EvidenceError)
+            evidence_mod.EvidenceError, packs_mod.PackError)
 
 
 def _r1c_parsers(sub) -> None:
@@ -330,13 +380,16 @@ def _r1c_parsers(sub) -> None:
         "--issue", required=True)
     show = _leaf(usub, "show", cmd_unit_show, "the unit's record, or an owner question")
     show.add_argument("unit")
-    show.add_argument("--ask", choices=("qual", "resume"),
-                      help="print (and record) the QUAL-JUDGE / UNIT-RESUME AskUserQuestion input")
+    show.add_argument("--ask", choices=("qual", "resume", "reopen"),
+                      help="print (and record) the QUAL-JUDGE / UNIT-RESUME / UNIT-REOPEN "
+                           "AskUserQuestion input")
+    show.add_argument("--ac", help="with --ask reopen: the AC that should have caught it, or なし")
     adv = _leaf(usub, "advance", cmd_unit_advance, "move the unit (window only)")
     adv.add_argument("unit")
     adv.add_argument("to")
     adv.add_argument("--reason", help="required for a return")
     adv.add_argument("--cause", choices=flow_mod.HALT_CAUSES, help="required to leave halted")
+    adv.add_argument("--runner-token", help="(added by the hook; `integrated` only)")
     _leaf(usub, "list", cmd_unit_list, "every unit with its state")
 
     con = sub.add_parser("contract", help="goal contracts (YAML)")
@@ -362,6 +415,16 @@ def _r1c_parsers(sub) -> None:
     ver.add_argument("unit")
     ver.add_argument("--self", action="store_true", help="the builder's own loop (build)")
     ver.add_argument("--runner-token", help="(added by the hook)")
+
+    pk = sub.add_parser("pack", help="skill packs (R1-d)")
+    psub = pk.add_subparsers(dest="pack_command", required=True)
+    _leaf(psub, "install", cmd_pack_install, "generate and register the pack agents").add_argument(
+        "--agents-dir", required=True, help="where the agent definitions go (created if missing)")
+    _leaf(psub, "list", cmd_pack_list, "the packs and the registered pack agents")
+    run_p = _leaf(sub, "run", cmd_run, "run a write_cmds command of the confirmed contract")
+    run_p.add_argument("unit")
+    run_p.add_argument("name")
+    run_p.add_argument("--runner-token", help="(added by the hook)")
 
 
 def _project_arg(p: argparse.ArgumentParser) -> None:

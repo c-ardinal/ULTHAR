@@ -11,6 +11,14 @@ append, AC-20, a second copy of index.db's) and confirm_ops (progress of a decid
 confirm, so a retry completes it). Episodes themselves live in the knowledge store
 (ulthar.store), not here (R1-b AC-2). Schema 5 (R1-c): tokens also hold `unit_resume`
 (the owner's UNIT-RESUME) and `runner` (a subagent's review/verify run) kinds.
+Schema 6 (R1-d): lease_tokens (every fencing token issued: token, session, acquired,
+expires -- ulthar.lease), pack_agents (the pack agent definitions `ulthar pack install`
+registered, with their file and SKILL.md sha256), agent_blocks (subagents whose
+receipt check failed: all their writes are blocked), receipts.agent_type, and the
+`unit_reopen` token kind (the owner's UNIT-REOPEN). Schema 7 (review r1d-1 #2): pack
+registrations, agent blocks and receipts are project-scoped -- pack_agents and
+agent_blocks keyed by (project_id, agent_type / agent_id), receipts.project_id and
+receipts.session_id (the parent session the subagent started in).
 """
 from __future__ import annotations
 
@@ -18,7 +26,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 BUSY_TIMEOUT_MS = 5000
 WAL_AUTOCHECKPOINT_PAGES = 256  # 1 MB of 4 KB pages; see connect()
 DB_ENV = "ULTHAR_RUNTIME_DB"
@@ -58,11 +66,13 @@ CREATE INDEX IF NOT EXISTS events_session ON events(session_id);
 CREATE TABLE IF NOT EXISTS tokens (
   token_id TEXT PRIMARY KEY,
   kind TEXT CHECK (kind IN ('contract_confirm','decision_confirm','qual_judgement',
-                            'substitution_approval','unit_resume','runner')),
+                            'substitution_approval','unit_resume','runner',
+                            'unit_reopen')),
   bound TEXT, issued_by_hook TEXT, consumed_at TEXT);
 CREATE TABLE IF NOT EXISTS receipts (
   id INTEGER PRIMARY KEY, agent_id TEXT, pack TEXT, agent_def_hash TEXT, skill_hashes TEXT,
-  ts TEXT);
+  ts TEXT, agent_type TEXT, project_id TEXT, session_id TEXT);
+CREATE INDEX IF NOT EXISTS receipts_agent ON receipts(agent_id);
 CREATE TABLE IF NOT EXISTS evidence (
   id INTEGER PRIMARY KEY, unit_id TEXT, manifest_path TEXT, tree_hash TEXT,
   contract_sha TEXT, runner_agent_id TEXT, result TEXT);
@@ -99,6 +109,16 @@ CREATE TABLE IF NOT EXISTS store_chain (
   ts TEXT, PRIMARY KEY (store_dir, name, size));
 CREATE TABLE IF NOT EXISTS confirm_ops (
   token_id TEXT PRIMARY KEY, stage TEXT NOT NULL, detail TEXT, ts TEXT);
+CREATE TABLE IF NOT EXISTS lease_tokens (
+  token INTEGER PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL,
+  acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pack_agents (
+  project_id TEXT NOT NULL, agent_type TEXT NOT NULL, pack TEXT NOT NULL, role TEXT NOT NULL,
+  def_path TEXT NOT NULL, def_sha TEXT NOT NULL, skills TEXT NOT NULL, ts TEXT,
+  PRIMARY KEY (project_id, agent_type));
+CREATE TABLE IF NOT EXISTS agent_blocks (
+  project_id TEXT NOT NULL, session_id TEXT, agent_id TEXT NOT NULL, agent_type TEXT,
+  reason TEXT, ts TEXT, PRIMARY KEY (project_id, agent_id));
 CREATE TABLE IF NOT EXISTS reminders (
   project_id TEXT NOT NULL, candidates_sha TEXT NOT NULL, ts TEXT,
   PRIMARY KEY (project_id, candidates_sha));
@@ -114,10 +134,22 @@ def resolve_path(explicit: str | None = None) -> Path:
 
 
 def _widen_token_kinds(conn: sqlite3.Connection) -> None:
-    """A schema-4 tokens table (its CHECK lacks R1-c's unit_resume/runner kinds) is
-    rebuilt with the current definition, rows kept."""
+    """An older tokens table (its CHECK lacks R1-c's unit_resume/runner or R1-d's
+    unit_reopen kinds) is rebuilt with the current definition, rows kept; an older
+    receipts table gets R1-d's columns. Schema-6 pack_agents / agent_blocks (keyed without
+    the project; R1-d before review r1d-1, never deployed) are recreated empty: run
+    `ulthar pack install` again."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(receipts)")}
+    for col in ("agent_type", "project_id", "session_id"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE receipts ADD COLUMN {col} TEXT")
+    for table in ("pack_agents", "agent_blocks"):
+        sql = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (table,)).fetchone()[0]
+        if "PRIMARY KEY (project_id" not in sql:
+            start = _DDL.index(f"CREATE TABLE IF NOT EXISTS {table}")
+            conn.executescript(f"DROP TABLE {table};" + _DDL[start:_DDL.index(");", start) + 2])
     sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='tokens'").fetchone()[0]
-    if "'runner'" in sql:
+    if "'unit_reopen'" in sql:
         return
     conn.executescript(
         "BEGIN IMMEDIATE; ALTER TABLE tokens RENAME TO tokens_v4;"

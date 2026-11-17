@@ -9,7 +9,9 @@ history entry), consumes its tokens and refers to its evidence in ONE operation:
 runtime.db write transaction around one store transaction (as R1-b's ingest does) --
 a failure anywhere before the commit leaves nothing written. A token a transition
 consumed is also named in that history entry, so it counts as used even if only the
-store's half of the operation survived.
+store's half of the operation survived. R1-d's transitions (accepted -> integrated ->
+done, done -> reopen -> contract_draft) and their preconditions are ulthar.stages and
+ulthar.integrate; their names are looked up here like R1-c's.
 """
 from __future__ import annotations
 
@@ -28,8 +30,9 @@ from . import tokens
 PROCESS_FILE = Path(__file__).resolve().parent / "process" / "unit.yaml"
 HALT_CAUSES = ("implementation", "design", "requirement", "evaluation", "environment")
 REVIEW_KINDS = ("contract", "verify")
-CONTRACT_STATES = ("intake", "contract_draft", "halted")  # where a new version may be submitted
-TOKEN_CHECKS = {"contract_confirm_token", "qual_judgements_passed", "resume_authorized"}
+CONTRACT_STATES = ("intake", "contract_draft", "halted", "reopen")  # where a version may be submitted
+TOKEN_CHECKS = {"contract_confirm_token", "qual_judgements_passed", "resume_authorized",
+                "reopen_authorized"}
 MAX_QUESTIONS = 4  # AskUserQuestion's limit per call
 
 
@@ -39,12 +42,19 @@ class FlowError(Exception):
 
 # ---------------------------------------------------------------------------- process
 
+def all_preconditions() -> dict:
+    from . import stages  # noqa: PLC0415 -- R1-d's checks; stages imports this module
+
+    return {**PRECONDITIONS, **stages.PRECONDITIONS}
+
+
 def load_process() -> dict:
     yaml = contract_mod.load_yaml()
     proc = yaml.safe_load(PROCESS_FILE.read_text(encoding="utf-8"))
     states = set(proc.get("states") or [])
+    known = all_preconditions()
     for t in proc.get("transitions") or []:
-        unknown = [n for n in t.get("requires") or [] if n not in PRECONDITIONS]
+        unknown = [n for n in t.get("requires") or [] if n not in known]
         if t.get("from") not in states or (t.get("to") not in states and t.get("to") != "previous"):
             raise FlowError(f"{PROCESS_FILE.name}: bad transition {t}")
         if unknown:
@@ -104,7 +114,7 @@ def _evidence(rt, unit: dict, self_check: bool) -> tuple[int, dict, str, str, st
             "SELECT id, result, manifest_path, tree_hash, runner_agent_id FROM evidence"
             " WHERE unit_id=? AND contract_sha=? ORDER BY id DESC", (unit["id"], sha)):
         res = json.loads(result or "{}")
-        if bool(res.get("self")) == self_check:
+        if bool(res.get("self")) == self_check and not res.get("stage"):  # R1-d done runs aside
             return row_id, res, path, tree, runner
     return None
 
@@ -113,7 +123,8 @@ def builders(rt, unit_id: str) -> set[str]:
     """agent_ids that wrote the unit's product files (AC-11 allowed events) or ran its
     `verify --self`."""
     out = {r[0] for r in rt.execute(
-        "SELECT DISTINCT agent_id FROM events WHERE hook='PreToolUse' AND decision='allow'"
+        "SELECT DISTINCT agent_id FROM events WHERE hook IN ('PreToolUse', 'cli')"
+        " AND decision='allow'"
         " AND agent_id IS NOT NULL AND detail LIKE ?", (f'%"{unit_id}"%',))}
     out |= {r[0] for r in rt.execute(
         "SELECT DISTINCT runner_agent_id FROM evidence WHERE unit_id=?"
@@ -138,6 +149,7 @@ class Ctx:
         self.refs: list = []
         self._reviewer = None
         self.op_parts: dict = {}  # other runtime.db effects of the operation (apply_op)
+        self.entry: dict = {}  # extra fields of the history entry (R1-d: slip, diff)
 
     def reviewer(self):
         if self._reviewer is None:
@@ -407,8 +419,9 @@ def _contract_intact(ctx) -> str | None:
 def take(tx, ctx: Ctx, t: dict, to: str, actor: dict, extra: dict | None = None) -> dict:
     """Checks every precondition of `t` and writes the transition; FlowError otherwise."""
     failed = [f"confirmed_contract_intact: {why}"] if (why := _contract_intact(ctx)) else []
+    checks = all_preconditions()
     failed += [f"{name}: {why}" for name in t.get("requires") or []
-               if (why := PRECONDITIONS[name](ctx))]
+               if (why := checks[name](ctx))]
     if failed:
         raise FlowError(f"{t['from']} -> {to} refused:\n  " + "\n  ".join(failed))
     op = _new_op(consume=list(ctx.consume), **ctx.op_parts)
@@ -419,6 +432,7 @@ def take(tx, ctx: Ctx, t: dict, to: str, actor: dict, extra: dict | None = None)
              "tokens": ctx.consume}
     if ctx.cause:
         entry["cause"] = ctx.cause
+    entry.update(ctx.entry)
     fields = dict(ctx.fields, state=to, history=(unit.get("history") or []) + [entry], op=op,
                   **(extra or {}))
     if to == "build":
@@ -436,7 +450,14 @@ def _writer(actor: dict, what: str) -> dict:
 
 
 def advance(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, to: str, *,
-            reason: str | None, cause: str | None, actor: dict) -> dict:
+            reason: str | None, cause: str | None, actor: dict,
+            runner_token: str | None = None) -> dict:
+    if to in ("integrated", "done"):
+        from . import integrate  # noqa: PLC0415 -- R1-d (git), CLI only
+
+        if to == "integrated":
+            return integrate.advance_integrated(store, rt, unit_id, actor, runner_token)
+        return integrate.advance_done(store, rt, unit_id, actor)[0]
     proc = load_process()
     unit = recover(store, rt, unit_id)
     t = find_transition(proc, unit, to, "cli")
@@ -446,8 +467,10 @@ def advance(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, to: st
     tree = evidence_mod.tree_state(store) if "evidence_tree_matches" in needs else None
     lint, doc = None, None
     if needs & {"lint_passed", "resume_authorized"} and unit.get("contract"):
+        from . import stages  # noqa: PLC0415
+
         doc = contract_doc(store, unit["contract"])
-        lint = contract_mod.lint(doc, store.repo or store.root)
+        lint = contract_mod.lint(doc, store.repo or store.root, stages.packs_or_error(store))
 
     def body(tx):
         fresh = read_unit(tx.conn, unit_id)
@@ -481,8 +504,12 @@ def new_unit(store: store_mod.Store, issue_id: str, actor: dict) -> dict:
 
 def submit(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, data: bytes,
            actor: dict) -> dict:
-    """AC-2: a new contract version (never overwriting one); intake -> contract_draft."""
-    contract_mod.parse(data)  # refuses before anything is written
+    """AC-2: a new contract version (never overwriting one); intake -> contract_draft.
+    R1-d AC-6: the saved version carries its packs' default ACs."""
+    from . import stages  # noqa: PLC0415
+
+    data = stages.with_default_acs(store, data)
+    doc = contract_mod.parse(data)  # refuses before anything is written
     proc = load_process()
     sha = evidence_mod.sha256_bytes(data)
     created: list[Path] = []
@@ -499,7 +526,7 @@ def submit(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, data: b
         with open(path, "xb") as fh:  # a version is never overwritten
             created.append(path)
             fh.write(data)
-        ref = {"version": version, "sha": sha, "path": rel}
+        ref = {"version": version, "sha": sha, "path": rel, "packs": list(doc.get("packs") or [])}
         if unit["state"] == "intake":
             ctx = Ctx(store, rt, tx.conn, unit)
             ctx.op_parts["invalidate_below"] = version
@@ -559,6 +586,10 @@ def record_review(store: store_mod.Store, rt: sqlite3.Connection, unit_id: str, 
 
     def body(tx):
         unit = read_unit(tx.conn, unit_id)
+        if kind == "verify":
+            from . import stages  # noqa: PLC0415
+
+            stages.check_evaluator(rt, store.project_id, unit, bound)
         ref = unit.get("contract") if kind == "contract" else unit.get("confirmed")
         if not ref:
             raise FlowError(f"unit {unit_id} has no {'submitted' if kind == 'contract' else 'confirmed'}"

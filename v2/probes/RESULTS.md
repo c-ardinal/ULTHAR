@@ -131,3 +131,44 @@ rule is refused in `-p` (D, control). So ulthar's runner token reaches the CLI, 
 permission rules still govern the command that actually runs. 8–9 s per call. Side effect: the
 throwaway projects (`%TEMP%/ulthar-p16-*`) and their `claude -p` session records under
 `~/.claude/projects/` remain (cleanup is the owner's call).
+
+# ULTHAR v2 R1-d — P-17 / P-18 / P-19 subagent dispatch probes (spec 未確認の点)
+
+Measured 2026-11-13 on Windows 11 (native), Claude Code 2.1.322, with `v2/probes/run_p17.py`
+(re-run: `C:/Python314/python.exe -X utf8 v2/probes/run_p17.py [--logs DIR] [A B C]`). Three short
+`claude -p --model haiku` runs, each in a fresh throwaway project under `%TEMP%` with its own
+settings (`--setting-sources project,local`: the owner's user settings and hooks take no part), a
+project agent `probe-worker` (`.claude/agents/probe-worker.md`, `tools: Read`, created before the
+session starts, P-13) and one hook on PreToolUse, SubagentStart and SubagentStop that logs each
+payload's keys and the fields below. Each subagent is asked to Read `probe.txt` (a random word), so
+the subagent's own PreToolUse fires. Nothing was written to `~/.claude/{settings.json,hooks,skills,
+agents}`. `S` = the main session id of that run (taken from the stream's `init` event).
+
+| ID | Premise | Result |
+|---|---|---|
+| P-17 | The Agent tool_input field naming the agent type, and its value when unnamed | **`subagent_type`**; when the model names none, the key is **absent** from tool_input and the agent starts as **`general-purpose`** (the `agent_type` of SubagentStart and of the subagent's PreToolUse) |
+| P-18 | A subagent's PreToolUse carries the PARENT session's session_id | **holds** — its `session_id` is the main session's id, with the subagent's own `agent_id` / `agent_type` added |
+| P-19 | A PreToolUse `updatedInput` that sets `subagent_type` (no permissionDecision) changes the agent that starts (R1-d AC-3) | **holds** |
+| P-20 | An agent named `ulthar-creator@<pack>` (file `ulthar-creator@<pack>.md`) with `skills: a, b` starts by that name with both skills preloaded (R1-d AC-2 naming) | **holds** (named directly, and through the P-19 rewrite) |
+
+| Run | Prompt / hook | Agent PreToolUse tool_input (session S, no agent_id) | SubagentStart | Subagent's PreToolUse (Read) |
+|---|---|---|---|---|
+| A | "use subagent_type probe-worker" | `{description, prompt, subagent_type: "probe-worker", run_in_background: false}` | session S, agent_id `abda…`, agent_type `probe-worker` | session **S**, agent_id `abda…`, agent_type `probe-worker` |
+| B | "do NOT set subagent_type" | `{description, prompt}` (no subagent_type key) | session S, agent_type **`general-purpose`** | session **S**, agent_type `general-purpose` |
+| C | as B; the hook answers `updatedInput` = tool_input + `subagent_type: "probe-worker"` | `{description, prompt}` (as the model wrote it) | session S, agent_type **`probe-worker`** | session **S**, agent_type `probe-worker`; the subagent returned the word and said it is probe-worker |
+
+| D | "use subagent_type ulthar-creator@probe" (`skills: probe-a, probe-b`, one random codeword each; "do not use any tool") | `{description, prompt, subagent_type: "ulthar-creator@probe"}` | agent_type **`ulthar-creator@probe`** | (no tool use) reply `probe-a: CODE-0b1af9, probe-b: CODE-99b345` = both codewords |
+| E | unnamed; the hook rewrites to `ulthar-creator@probe` | `{description, prompt, run_in_background: false}` | agent_type **`ulthar-creator@probe`** | (no tool use) both codewords returned (`CODE-8a5501`, `CODE-da5121`) |
+
+Payload keys seen: Agent PreToolUse (main session) `cwd, effort, hook_event_name, permission_mode,
+prompt_id, session_id, tool_input, tool_name, tool_use_id, transcript_path`; SubagentStart `agent_id,
+agent_type, cwd, hook_event_name, prompt_id, session_id, transcript_path`; a subagent's PreToolUse the
+main-session keys plus `agent_id, agent_type`. 14–58 s per run (runs D and E were added after A–C, same day and setup).
+
+Consequences for R1-d: AC-3 reads and rewrites `tool_input.subagent_type` (absent = `general-purpose`,
+never a pack agent, so it is rewritten); AC-8 (d) stamps a subagent's events with the lease token of
+the payload's `session_id`, which is already the parent's — no extra lookup; AC-2 may name the
+generated agents `ulthar-creator@<pack>` / `ulthar-evaluator@<pack>` with a comma-separated
+`skills:` line. Side effect, as before:
+the throwaway projects (`%TEMP%/ulthar-p17-*`) and their `claude -p` session records under
+`~/.claude/projects/` remain (cleanup is the owner's call).
