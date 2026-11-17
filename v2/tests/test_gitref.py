@@ -82,7 +82,48 @@ def _indirection(p: Probe, sb) -> None:
     for command, name in allowed:
         res = bash(sb, None, command)
         p.check(f"AC-11 (review #3): allowed -- {name}", res.returncode == 0, res.stderr[-300:])
+    _command_position(p, sb)
     git(sb, "checkout", "-q", WORK_BRANCH)
+    _config_aliases(p, sb)
+
+
+def _command_position(p: Probe, sb) -> None:
+    """Review r1d-2 A (develop is checked out): git counts only in command position."""
+    for command in ("echo git commit", 'grep "git reset" notes.txt', "printf 'git push'"):
+        res = bash(sb, None, command)
+        p.check(f"AC-11 (review r1d-2 A): allowed on develop -- `{command}`", res.returncode == 0,
+                res.stderr[-300:])
+    for command in ("xargs git merge x", "x=$(git update-ref refs/heads/develop HEAD)",
+                    "echo $(git update-ref refs/heads/develop HEAD)", "env A=1 git reset"):
+        res = bash(sb, None, command)
+        p.check(f"AC-11 (review r1d-2 A): blocked on develop -- `{command}`",
+                res.returncode == 2 and GUARD in res.stderr, res.stderr[-300:])
+
+
+def _config_aliases(p: Probe, sb) -> None:
+    """Review r1d-2 B (on the work branch): configured aliases are resolved and judged."""
+    git(sb, "config", "alias.x", "update-ref refs/heads/develop HEAD")
+    git(sb, "config", "alias.y", "!git update-ref refs/heads/develop HEAD")
+    git(sb, "config", "alias.st", "status")
+    for command, name in (("git x", "a config alias expanding to update-ref of develop"),
+                          ("git y", "a `!` shell alias doing the same"),
+                          ("g update-ref refs/heads/develop HEAD", "a non-git spelling of update-ref")):
+        res = bash(sb, None, command)
+        p.check(f"AC-11 (review r1d-2 B): blocked -- {name}", res.returncode == 2 and GUARD in res.stderr,
+                res.stderr[-300:])
+    res = bash(sb, None, "git st")
+    p.check("AC-11 (review r1d-2 B): allowed -- a harmless alias (st = status)", res.returncode == 0,
+            res.stderr[-300:])
+    inc = sb.root / "inc.gitconfig"
+    inc.write_text("[core]\n", encoding="utf-8")
+    git(sb, "config", "include.path", inc.as_posix())
+    res = bash(sb, None, "git st")
+    p.check("AC-11 (review r1d-2 B): blocked -- an unknown subcommand when the config uses "
+            "include (fail-closed)", res.returncode == 2 and "certainty" in res.stderr,
+            res.stderr[-300:])
+    git(sb, "config", "--unset", "include.path")
+    for key in ("alias.x", "alias.y", "alias.st"):
+        git(sb, "config", "--unset", key)
 
 
 def main() -> int:
