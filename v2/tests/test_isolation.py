@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 
-from helpers import Probe, Sandbox, write_jsonl
+from helpers import HOOK_ARGV, Probe, Sandbox, write_jsonl
 from r1c_helpers import cli, contract, new_sandbox, quant_ac, set_value, to_build, transcript, write_contract
 from r1d_helpers import advance, expire_lease, integrate, new_r1d_sandbox, to_accepted
 from r1e_helpers import (OTHER, WINDOW, assistant_line, call, clear_relay_due, flags,
@@ -51,6 +52,63 @@ def check_second_window(p: Probe) -> None:
                 len(allowed) == 2, holder.stderr[-300:] + read.stderr[-300:])
         p.check("AC-1: a read-only ulthar command of the other window passes",
                 status.returncode == 0, status.stderr[-300:])
+    finally:
+        sb.cleanup()
+
+
+ROUNDS = 3
+RACERS = 3
+
+
+def _race(sb: Sandbox, sessions: list[str]) -> list[int]:
+    """The same product Edit from several windows at once, as real concurrent hook
+    processes; their exit codes."""
+    procs = []
+    for s in sessions:
+        body = {"session_id": s, "tool_name": "Edit", "tool_use_id": f"race-{s}",
+                "hook_event_name": "PreToolUse", "cwd": str(sb.work),
+                "tool_input": {"file_path": str(sb.work / "src" / "app.txt"),
+                               "old_string": "v", "new_string": "w"}}
+        proc = subprocess.Popen(HOOK_ARGV + ["--event", "PreToolUse"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=sb.env(),
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        procs.append((proc, json.dumps(body).encode("utf-8")))
+    for proc, data in procs:  # every process is started before any gets its input
+        proc.stdin.write(data)
+        proc.stdin.close()
+    codes = []
+    for proc, _ in procs:
+        proc.stdout.read()
+        proc.stderr.read()
+        codes.append(proc.wait(timeout=120))
+        proc.stdout.close()
+        proc.stderr.close()
+    return codes
+
+
+def check_race(p: Probe) -> None:
+    """AC-1 / AC-4: the allow and the lease's acquisition are one serialized decision -- of
+    windows racing for a free lease, or for a lease in handover (ulthar relay), exactly one
+    is allowed, and it is the session that then holds the lease."""
+    sb = new_sandbox()
+    try:
+        to_build(sb)
+        results = []
+        for kind in ("free", "handover"):
+            for r in range(ROUNDS):
+                if kind == "free":
+                    expire_lease(sb)
+                else:
+                    sb.query("UPDATE leases SET session_id=NULL, handover_from=?,"
+                             " expires_at='2999-01-01T00:00:00.000+00:00'", (WINDOW,))
+                sessions = [f"race-{kind}-{r}-{i}" for i in range(RACERS)]
+                codes = _race(sb, sessions)
+                holder = sb.query("SELECT session_id FROM leases")[0][0]
+                allowed = [s for s, c in zip(sessions, codes) if c == 0]
+                results.append(allowed == [holder] and sorted(codes) == [0] + [2] * (RACERS - 1))
+                p.check(f"AC-1: {RACERS} windows racing for a {kind} lease (round {r + 1}) -> exactly "
+                        "one allowed, the one holding the lease", results[-1], f"{codes} {holder}")
+        p.check(f"AC-1: races with exactly one allow {sum(results)}/{len(results)}", all(results))
     finally:
         sb.cleanup()
 
@@ -226,6 +284,8 @@ def main() -> int:
     p = Probe()
     print("\n== R1-e AC-1: the second window ==")
     check_second_window(p)
+    print("\n== R1-e AC-1: racing windows ==")
+    check_race(p)
     print("\n== R1-e AC-3: enforcement while a relay is due ==")
     check_relay_due(p)
     print("\n== R1-e AC-2: relay triggers ==")

@@ -44,6 +44,7 @@ def check_external(p: Probe) -> None:
                 "Invoke-RestMethod -Uri https://api.trello.com/1/cards -Method Post", True),
             "curl GET api.github.com": ("curl -s https://api.github.com/repos/o/r", False),
             "gh -R o/r issue close": ("gh -R o/r issue close 3", True),
+            "gh three shells deep (fail closed)": ("bash -c \"bash -c 'bash -c gh'\"", True),
         }
         for name, (command, should_block) in extra.items():
             tool = "PowerShell" if command.startswith("Invoke") else "Bash"

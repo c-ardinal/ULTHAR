@@ -32,9 +32,17 @@ def _get(url: str):
         return exc.code, exc.read().decode("utf-8", "replace")
 
 
-def _post(url: str, body: dict):
+def _get_with(url: str, headers: dict) -> int:
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+def _post(url: str, body: dict, headers: dict | None = None):
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
@@ -106,6 +114,12 @@ def check_monitor(p: Probe) -> None:
         ok = codes == [403, 403, 403, 403]
         held += ok
         p.check("AC-12: no token or another token -> 403 (GET and POST)", ok, str(codes))
+        port = base.rsplit(":", 1)[1]
+        rebound = _get_with(f"{base}/state?token={token}", {"Host": f"evil.example:{port}"})
+        cross = _post(f"{base}/op?token={token}", {"op": "freeze", "project_id": "x"},
+                      {"Origin": "http://evil.example"})[0]
+        p.check("AC-12 (hardening): a foreign Host (DNS rebinding) or a cross-origin POST -> 403, "
+                "even with the token", rebound == 403 and cross == 403, f"{rebound} {cross}")
         status, body = _get(f"{base}/state?token={token}")
         snap = json.loads(body) if status == 200 else {}
         bad = _matches(sb, snap, unit_id) if snap else ["no snapshot"]
