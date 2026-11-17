@@ -9,7 +9,8 @@ hook side, in a project that has `.claude/ulthar.json`:
       (-f / -F / --field / --raw-field / --input);
   (c) curl / wget / Invoke-WebRequest / Invoke-RestMethod (and httpie) naming a known
       vendor API host with a write method or a request body.
-Shell commands are read with shellwords, also inside `bash -c` / `powershell -Command`.
+Shell commands are read with shellwords, also inside `bash -c` / `powershell -Command`
+(two levels deep; a deeper launcher is blocked, fail closed).
 ulthar's own adapters run in the CLI and never pass through a hook. Known limits (spec):
 an MCP tool named like a read but writing passes; a host or method assembled at run time
 is not seen.
@@ -131,7 +132,12 @@ def check(payload: dict, store_of) -> str | None:
         return None
     if not _configured(store_of()):
         return None
-    for seg in shellwords.all_segments(command, tool):
+    try:
+        found = shellwords.all_segments(command, tool)
+    except shellwords.TooDeep as exc:
+        return _block(f"the command cannot be read to the end ({exc}), so it cannot be shown "
+                      "not to write to GitHub or a vendor API")
+    for seg in found:
         msg = _gh(seg) or _http(seg)
         if msg:
             return msg
