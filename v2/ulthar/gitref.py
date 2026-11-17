@@ -536,6 +536,29 @@ def _mentions_git(text: str, names: set[str]) -> bool:
     return bool(MENTIONS_GIT.search(text) or _guarded_ref(text.split(), names))
 
 
+def _xargs(text: str, consumer: list[str], ctx: "_Ctx", depth: int, what: str) -> str | None:
+    """xargs passes its input as ARGUMENTS to its command, not as code: an executor command
+    (bash -c '{}', iex, ...) is blocked when the input text mentions git or a guarded ref;
+    a display / filter command is inert (`git ls-files | xargs grep foo`); git or any
+    other program is blocked when the text names a guarded ref (`echo refs/heads/develop
+    | xargs git update-ref`) and is otherwise judged with the input as its arguments."""
+    inner = _unwrap(consumer)
+    exe = _exe(inner)
+    if not inner:
+        return None
+    if exe in EXECUTORS:
+        if _mentions_git(text, ctx.names):
+            return f"{what} feeds `xargs {inner[0]}`, an executor, and mentions git or a guarded branch"
+        return None
+    if exe in INERT_READERS and exe != "git":
+        return None
+    hit = _guarded_ref(text.split(), ctx.names)
+    if hit:
+        return f"{what} gives `xargs {inner[0]}` the guarded ref {hit} as an argument"
+    why = _why_text(" ".join(inner + text.split()), "Bash", ctx, depth + 1)
+    return f"{what} run by xargs {inner[0]}: {why}" if why else None
+
+
 def _executed(text: str, consumer: list[str], ctx: "_Ctx", depth: int, what: str,
               produced: str | None = None) -> str | None:
     """Judges input fed to `consumer` (command-position words): `text` is all the text
@@ -552,12 +575,11 @@ def _executed(text: str, consumer: list[str], ctx: "_Ctx", depth: int, what: str
         inner = [c for seg in shellwords.segments(shellwords.tokenize(child[0], "\\"))
                  for c in commands(seg)]
         return _executed(text, inner[0], ctx, depth + 1, what, produced) if inner else None
+    if exe == "xargs":
+        return _xargs(text, consumer, ctx, depth, what)
     if exe in EXECUTORS:
         if _mentions_git(text, ctx.names):
             return f"{what} feeds the executor {exe} and mentions git or a guarded branch"
-        if exe == "xargs":
-            inner = _unwrap(consumer)
-            text = " ".join(inner + text.split()) if inner else text
         why = _why_text(text, EXECUTORS[exe], ctx, depth + 1)
         return f"{what} run by {exe}: {why}" if why else None
     text = text if produced is None else produced

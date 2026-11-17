@@ -160,6 +160,9 @@ def _round4(p: Probe, sb) -> None:
         ("Bash", f'echo -e "{UPDATE}" | bash', "echo -e ... | bash (review r1d-5)"),
         ("PowerShell", f'Write-Output -InputObject "{UPDATE}" | iex',
          "Write-Output -InputObject ... | iex (review r1d-5)"),
+        ("Bash", "echo refs/heads/develop | xargs git update-ref", "a guarded ref as xargs git's argument"),
+        ("Bash", "git branch --list develop | xargs git branch -D", "git branch --list develop | xargs git branch -D"),
+        ("Bash", f"echo '{UPDATE}' | xargs -I{{}} bash -c '{{}}'", "xargs bash -c '{}' (an executor)"),
     ]
     for tool, command, name in executed:
         res = _shell(sb, tool, command)
@@ -168,7 +171,8 @@ def _round4(p: Probe, sb) -> None:
     inert = [f"cat <<'EOF'\n{UPDATE}\nEOF", f"cat <<EOF | grep develop\n{UPDATE}\nEOF",
              "python - <<EOF\nprint(1)\nEOF", f"echo cmd /c {UPDATE}",
              f"echo powershell -Command {UPDATE}", f"grep cmd /c {UPDATE}",
-             f"bash -c 'cat >/dev/null' <<EOF\n{UPDATE}\nEOF", "git log --oneline -3 | less"]
+             f"bash -c 'cat >/dev/null' <<EOF\n{UPDATE}\nEOF", "git log --oneline -3 | less",
+             "git ls-files | xargs grep foo", "git diff --name-only | xargs wc -l"]
     for command in inert:
         res = bash(sb, None, command)
         p.check(f"AC-11 (review r1d-4 #1/#2): allowed -- `{command.splitlines()[0]}`",
