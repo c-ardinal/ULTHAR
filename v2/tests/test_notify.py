@@ -128,6 +128,17 @@ def _canonical_paths(p: Probe, sb) -> None:
     ok = _suspicions(sb) == before + 2 and keys[0] == keys[1]
     p.check("AC-9: spelling variants of a file not created yet (case, `..`, separators) are one "
             "intent", ok, str(keys))
+    if os.name == "nt":
+        target = sb.work / "local-unc.txt"
+        drive, rest = os.path.splitdrive(str(target))
+        unc = "\\\\localhost\\" + drive[0] + "$" + rest
+        blocked = call(sb, "Edit", {"file_path": unc, "old_string": "a", "new_string": "b"})
+        allowed = _redirect(sb, "local-unc.txt")
+        keys = sb.query("SELECT intent_key FROM events WHERE hook='PreToolUse' ORDER BY id DESC LIMIT 2")
+        ok = (blocked.returncode == 2 and allowed.returncode == 0 and keys[0] == keys[1]
+              and _suspicions(sb) == before + 3)
+        p.check("AC-9: a block through \\\\localhost\\C$\\..., then an allow through the drive "
+                "path -> one intent, a suspicion", ok, f"{unc} {keys} {blocked.stderr[-200:]}")
 
 
 def _due_now(sb, nid: str | None = None) -> None:

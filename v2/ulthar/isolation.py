@@ -285,6 +285,28 @@ def lease_block(rt, project_id: str, session: str) -> str | None:
 
 # ---------------------------------------------------------------------------- TRUST-06
 
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]", "."})
+DEVICE_DRIVE = re.compile(r"^//[?.]/([A-Za-z]):(/.*)?$")
+ADMIN_SHARE = re.compile(r"^//([^/]+)/([A-Za-z])\$(/.*)?$")
+
+
+def _local_drive(path: str) -> str | None:
+    """The drive path of a UNC form that provably names this machine -- read from the text
+    alone, no network (separators shown as /): `//?/X:/...` and `//./X:/...`, and an
+    administrative share `X$` on localhost, 127.0.0.1, ::1, `.` or this computer's name
+    (COMPUTERNAME, case-insensitive) -> `X:/...`.
+    None for every other path (other UNC stays as it is)."""
+    s = path.replace("\\", "/")
+    m = DEVICE_DRIVE.match(s)
+    if m:
+        return os.path.abspath(f"{m.group(1)}:{m.group(2) or '/'}")
+    m = ADMIN_SHARE.match(s)
+    me = os.environ.get("COMPUTERNAME", "").casefold()
+    if m and (m.group(1).casefold() in LOCAL_HOSTS or (me and m.group(1).casefold() == me)):
+        return os.path.abspath(f"{m.group(2)}:{m.group(3) or '/'}")
+    return None
+
+
 def intent_key(payload: dict) -> str | None:
     tool = str(payload.get("tool_name") or "")
     ti = payload.get("tool_input") or {}
@@ -294,8 +316,10 @@ def intent_key(payload: dict) -> str | None:
             p = Path(raw)
             # the canonical target: symlinks / junctions of the existing part resolved, the
             # part not created yet appended as written (product.resolved), then folded. A UNC
-            # path is only normalized: resolving it can wait on the network (v1 grants suite)
+            # path is only normalized: resolving it can wait on the network (v1 grants suite);
+            # a UNC form that provably names this machine is its drive path first
             full = os.path.abspath(p if p.is_absolute() else Path(cwd) / p)
+            full = _local_drive(full) or full
             unc = full.replace("\\", "/").startswith("//")
             return "path:" + product.fold(full if unc else product.resolved(full))
     if tool in SHELL_TOOLS:
